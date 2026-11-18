@@ -267,6 +267,76 @@ try {
   check("...and both windows end up showing the same text",
     aScreen7.notes === disk7.notes && bScreen7.notes === disk7.notes, JSON.stringify({ a: aScreen7.notes, b: bScreen7.notes }));
 
+  // ── 8. The Canvas in one window, the Notes typed in the other ────────────
+  //
+  // "When opening the same note in two different windows, like the Canvas in
+  // one and the Notes in the other, it feels like the Canvas is being reset
+  // very often." Every save of the Notes in A was adopted by B as a whole new
+  // meta bag: every ink stroke and Block a new object, so every page's ink was
+  // decoded and drawn again and every Block put back. A record the other window
+  // did not change must be the same object after the adopt, and a save that
+  // moved nothing but where A was reading must not reload B at all.
+  await pageB.evaluate(`async () => {
+    const { api, settle } = window.__mw;
+    api.state.meta = {
+      ...api.state.meta,
+      pdfBlocks: [{ id: "blk-1", page: 1, x: 40, y: 40, w: 80, h: 24, z: 1, kind: "text", md: "a Block", at: 1, slot: "notebook" }],
+      pdfHighlights: [{ id: "mark-1", kind: "shape", page: 1, slot: "notebook", shape: { type: "line", p: [[10, 10], [60, 60]] }, at: 1 }]
+    };
+    api.scheduleDeckAutosave();
+    await api.flushPendingDeckAutosave();
+    await settle(300);
+  }`);
+  await sleep(2000);
+  await pageB.evaluate(`() => {
+    const { api } = window.__mw;
+    window.__refs = { blocks: api.state.meta.pdfBlocks, block: api.state.meta.pdfBlocks?.[0], marks: api.state.meta.pdfHighlights };
+  }`);
+  check("A has the Canvas records B saved", (await pageA.evaluate(`() => (window.__mw.api.state.meta.pdfBlocks || []).some((b) => b.id === "blk-1")`)) === true);
+  await pageA.evaluate(EDIT_NOTES, "Paragraph THREE", "Paragraph THREE, typed in A beside B's Canvas");
+  await sleep(2000);
+  const kept8 = await pageB.evaluate(`() => {
+    const { api } = window.__mw;
+    return {
+      notes: api.state.notes.includes("typed in A beside B's Canvas"),
+      sameBlocks: api.state.meta.pdfBlocks === window.__refs.blocks,
+      sameBlock: api.state.meta.pdfBlocks?.[0] === window.__refs.block,
+      sameMarks: api.state.meta.pdfHighlights === window.__refs.marks,
+      changed: [...(api.lastAdoptedMetaChanges() || [])]
+    };
+  }`);
+  check("a Notes save in A reaches B", kept8.notes, JSON.stringify(kept8));
+  check("...and leaves B's Blocks and marks the very same records, nothing on its Canvas to redraw",
+    kept8.sameBlocks && kept8.sameBlock && kept8.sameMarks && !kept8.changed.includes("pdfBlocks") && !kept8.changed.includes("pdfHighlights"), JSON.stringify(kept8));
+  // Where A was reading, and nothing else.
+  await pageB.evaluate(`() => {
+    const notes = document.getElementById("notesView");
+    window.__notesMutations = 0;
+    window.__notesObserver?.disconnect();
+    window.__notesObserver = new MutationObserver((list) => { window.__notesMutations += list.length; });
+    if (notes) window.__notesObserver.observe(notes, { childList: true, subtree: true });
+  }`);
+  await pageA.evaluate(`async () => {
+    const { api } = window.__mw;
+    api.state.meta = { ...api.state.meta, readingPositionNotebook: { offset: 2, pdfPage: 2, ratio: 0.25, at: Date.now() } };
+    api.scheduleDeckAutosave();
+    await api.flushPendingDeckAutosave();
+  }`);
+  await sleep(2000);
+  const place8 = await pageB.evaluate(`() => {
+    const { api } = window.__mw;
+    window.__notesObserver?.disconnect();
+    return {
+      place: api.state.meta.readingPositionNotebook?.pdfPage || null,
+      sameBlocks: api.state.meta.pdfBlocks === window.__refs.blocks,
+      changed: [...(api.lastAdoptedMetaChanges() || [])],
+      notesMutations: window.__notesMutations
+    };
+  }`);
+  check("a save in A that moved only where it was reading reaches B's meta",
+    place8.place === 2 && place8.changed.length > 0 && place8.changed.every((key) => /^readingPosition|^pdfReadingPositions$/.test(key)), JSON.stringify(place8));
+  check("...without reloading anything on B's screen", place8.sameBlocks && place8.notesMutations === 0, JSON.stringify(place8));
+
 } catch (error) {
   failures += 1;
   console.log(`  FAIL  the check itself failed: ${error.message}`);

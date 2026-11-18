@@ -141,6 +141,20 @@ export function normalizeBlockNumber(value, max = Infinity) {
 // they worked out to against the 13-point body they multiplied. Read only —
 // nothing writes a token any more — so a block styled while the ladder existed
 // keeps the size it was given.
+// Padding, in points, one side at a time. Unlike every size above, 0 is a real
+// answer here — a reader who wants the words to touch the frame says 0, and
+// must get 0, not "the default". So this one accepts zero and refuses only
+// what is not a number or is below it. 72pt (an inch) is the ceiling: past it
+// the padding is the Block, not its margin.
+export const BLOCK_PAD_MAX = 72;
+
+export function normalizeBlockPad(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return Math.min(BLOCK_PAD_MAX, Math.round(number * 10) / 10);
+}
+
 const LEGACY_SIZE_POINTS = { xs: 10, s: 11, m: 13, l: 18, xl: 23 };
 
 export function normalizeBlockSize(value) {
@@ -359,8 +373,19 @@ export const BLOCK_STYLE_DEFAULT = {
   headInk: BLOCK_HEAD_INK_DEFAULT,
   weight: null,
   lineHeight: null,
-  letterSpacing: null
+  letterSpacing: null,
+  // Padding, in points, each side on its own. null is the padding a Block has
+  // always had (see BLOCK_PAD_DEFAULT_PT).
+  padTop: null,
+  padRight: null,
+  padBottom: null,
+  padLeft: null
 };
+
+// The padding a Block has when its style says nothing — the 6px every stylesheet
+// used to write in. Kept here so the placement inset and the sizing maths read
+// the same number the CSS falls back to.
+export const BLOCK_PAD_DEFAULT_PT = 6;
 
 // `fit` and `codeWrap` are the only two boolean fields in the bag, and unlike
 // every field above — which falls back to its own named `_DEFAULT` when the
@@ -406,7 +431,11 @@ export function normalizeBlockStyle(style) {
     headInk: normalizeBlockHeadInk(from.headInk),
     weight: normalizeBlockWeight(from.weight),
     lineHeight: normalizeBlockLineHeight(from.lineHeight),
-    letterSpacing: normalizeBlockLetterSpacing(from.letterSpacing)
+    letterSpacing: normalizeBlockLetterSpacing(from.letterSpacing),
+    padTop: normalizeBlockPad(from.padTop),
+    padRight: normalizeBlockPad(from.padRight),
+    padBottom: normalizeBlockPad(from.padBottom),
+    padLeft: normalizeBlockPad(from.padLeft)
   };
 }
 

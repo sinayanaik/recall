@@ -525,12 +525,51 @@ function onDiagramControlDown(event) {
     x: event.clientX,
     y: event.clientY,
     moved: false,
-    shape: null
+    shape: null,
+    // The press that started it, which the stray-press guard below is added
+    // in time to hear and must not take for a second press.
+    start: event
   };
   diagramLayer(connectDrag.page, false)?.classList.add("is-connecting");
   document.addEventListener("pointermove", onConnectMove, true);
   document.addEventListener("pointerup", onConnectUp, true);
   document.addEventListener("pointercancel", onConnectCancel, true);
+  // ...and every way the release can go missing. The arrow pressed is removed
+  // from the page on the first move (no arrows are drawn while connecting), so
+  // nothing holds the pointer, and a release lost to a window switch, a
+  // context menu or a stylus lifted off the edge of the screen left the drag
+  // live: a connector chasing the pointer, and no arrows on any Block, until
+  // the page was reloaded. A new press, Escape, or the window losing focus
+  // calls it off.
+  document.addEventListener("pointerdown", onConnectStray, true);
+  document.addEventListener("keydown", onConnectKey, true);
+  window.addEventListener("blur", cancelConnectDrag);
+}
+
+function onConnectStray(event) {
+  if (!connectDrag || event === connectDrag.start) return;
+  cancelConnectDrag();
+}
+
+function onConnectKey(event) {
+  if (!connectDrag || event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  cancelConnectDrag();
+}
+
+// A drag of a connect arrow called off, with nothing made. Exported for the
+// press-elsewhere handler (src/documents/canvas-dismiss.js) and a change of tab.
+export function cancelConnectDrag() {
+  if (!connectDrag) return false;
+  const drag = endConnectDrag();
+  paintDocumentShapes(drag.page);
+  paintDiagramOverlay(drag.page);
+  return true;
+}
+
+export function isConnecting() {
+  return Boolean(connectDrag);
 }
 
 function onConnectMove(event) {
@@ -552,13 +591,19 @@ function endConnectDrag() {
   document.removeEventListener("pointermove", onConnectMove, true);
   document.removeEventListener("pointerup", onConnectUp, true);
   document.removeEventListener("pointercancel", onConnectCancel, true);
+  document.removeEventListener("pointerdown", onConnectStray, true);
+  document.removeEventListener("keydown", onConnectKey, true);
+  window.removeEventListener("blur", cancelConnectDrag);
   clearDiagramPart("target");
   if (drag) diagramLayer(drag.page, false)?.classList.remove("is-connecting");
   return drag;
 }
 
 function onConnectUp(event) {
-  if (!connectDrag || event.pointerId !== connectDrag.pointerId) return;
+  if (!connectDrag) return;
+  // Another pointer's release: this drag's own was lost on the way (see
+  // onDiagramControlDown), and nothing is made from a guess.
+  if (event.pointerId !== connectDrag.pointerId) { cancelConnectDrag(); return; }
   event.preventDefault();
   event.stopPropagation();
   const drag = endConnectDrag();
@@ -573,9 +618,7 @@ function onConnectUp(event) {
 
 function onConnectCancel(event) {
   if (!connectDrag || event.pointerId !== connectDrag.pointerId) return;
-  const drag = endConnectDrag();
-  paintDocumentShapes(drag.page);
-  paintDiagramOverlay(drag.page);
+  cancelConnectDrag();
 }
 
 // The click a press on an arrow leaves behind is not a press on the page (no

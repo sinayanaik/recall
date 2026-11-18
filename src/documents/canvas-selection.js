@@ -251,7 +251,10 @@ function onPickPress(event) {
   if (isEraserEvent(event) || isEditingBlock() || editingShapeTextId()) return;
   const pageEl = target.closest?.(".pdf-page[data-page-number]");
   const page = Number(pageEl?.dataset.pageNumber);
-  if (!page) return;
+  // The gap between pages, or the margin round them: nothing to pick up there,
+  // but it is a press away from whatever several are picked — they go down,
+  // and the Arrange bar with them.
+  if (!page) { if (isMultiPicked()) clearPick(); return; }
   const point = pickPointOn(page, event.clientX, event.clientY);
   if (!point) return;
   const blockEl = target.closest(".pdf-block");

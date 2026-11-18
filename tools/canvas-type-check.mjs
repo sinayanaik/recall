@@ -164,6 +164,33 @@ try {
     return bad.length ? bad.join("; ") : true;
   });
 
+  must("padding is stored per side, 0 included, and read back as set", () => {
+    const compact = B.compactBlockStyle({ padTop: 20, padRight: 0, padBottom: "8", padLeft: null });
+    const keys = Object.keys(compact).sort().join(",");
+    if (keys !== "padBottom,padRight,padTop") return `stores ${keys}`;
+    const it = B.normalizeBlockStyle(compact);
+    return (it.padTop === 20 && it.padRight === 0 && it.padBottom === 8 && it.padLeft === null) || JSON.stringify(it);
+  });
+
+  must("...a side's padding takes 0 and up and refuses what cannot be drawn", () => {
+    const bad = [];
+    [[0, 0], ["0", 0], [6, 6], [12.34, 12.3], [-1, null], ["abc", null], ["", null], [null, null], [500, B.BLOCK_PAD_MAX]].forEach(([input, want]) => {
+      const got = B.normalizeBlockPad(input);
+      if (got !== want) bad.push(`normalizeBlockPad(${JSON.stringify(input)}) = ${got}, not ${want}`);
+    });
+    return bad.length ? bad.join("; ") : true;
+  });
+
+  must("...and every side's property is read by the Block's words, typed and rendered", () => {
+    const bad = [];
+    ["top", "right", "bottom", "left"].forEach((side) => {
+      const prop = `--pdf-block-pad-${side}`;
+      if (!styles.includes(`var(${prop}, 6)`)) bad.push(`${prop} not read by a plain Block`);
+      if (!/var\(--pdf-block-pad-(top|bottom), 4\)/.test(styles) || !/var\(--pdf-block-pad-(left|right), 5\)/.test(styles)) bad.push("a shaped Block does not read its padding");
+    });
+    return bad.length ? [...new Set(bad)].join("; ") : true;
+  });
+
   must("a heading colour is a pen token or the default, and an unknown one is the default", () => {
     if (B.normalizeBlockHeadInk("red") !== "red") return "red refused";
     if (B.normalizeBlockHeadInk("#ff0000") !== "default") return "a hex was kept";

@@ -55,10 +55,10 @@
   position: relative;
   z-index: 1;
   padding:
-    calc((var(--pdf-block-inset-top, 0) * 1px + 4px) * var(--pdf-block-scale, 1))
-    calc((var(--pdf-block-inset-right, 0) * 1px + 5px) * var(--pdf-block-scale, 1))
-    calc((var(--pdf-block-inset-bottom, 0) * 1px + 4px) * var(--pdf-block-scale, 1))
-    calc((var(--pdf-block-inset-left, 0) * 1px + 5px) * var(--pdf-block-scale, 1));
+    calc((var(--pdf-block-inset-top, 0) + var(--pdf-block-pad-top, 4)) * 1px * var(--pdf-block-scale, 1))
+    calc((var(--pdf-block-inset-right, 0) + var(--pdf-block-pad-right, 5)) * 1px * var(--pdf-block-scale, 1))
+    calc((var(--pdf-block-inset-bottom, 0) + var(--pdf-block-pad-bottom, 4)) * 1px * var(--pdf-block-scale, 1))
+    calc((var(--pdf-block-inset-left, 0) + var(--pdf-block-pad-left, 5)) * 1px * var(--pdf-block-scale, 1));
 }
 
 /* A shaped block is picked up as a box, the way draw.io frames a shape: a

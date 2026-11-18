@@ -1254,6 +1254,17 @@ function pickupAt(event) {
   return { mode: "move", target: record, handle: null, page, pageEl };
 }
 
+// The selected shape put down, unless the press is on the shape itself (it is
+// about to be carried or reshaped) or on the rail, whose panel restyles it.
+function putShapeDownUnlessHit(event) {
+  if (!selectedShapeId || event.target?.closest?.(".document-ink-rail")) return;
+  const pageEl = shapePageAt(event.clientX, event.clientY);
+  const page = Number(pageEl?.dataset.pageNumber);
+  const point = page ? pdfPointOn(page, pageEl, event.clientX, event.clientY) : null;
+  const hit = point ? shapeAtPoint(page, point[0], point[1]) : null;
+  if (!hit || hit.id !== selectedShapeId) selectShape(null);
+}
+
 function onShapePointerDown(event) {
   if (shapePress) {
     // A second finger while a finger is carrying a shape is a pinch: the
@@ -1276,22 +1287,26 @@ function onShapePointerDown(event) {
     return;
   }
   if (!shapeTakesPointer(event)) {
-    // A press anywhere else, by anything, puts a selected shape down — unless it
-    // is on the rail, whose panel is restyling it.
-    if (selectedShapeId && !event.target?.closest?.(".document-ink-rail") && event.pointerType !== "pen") {
-      const pageEl = shapePageAt(event.clientX, event.clientY);
-      const page = Number(pageEl?.dataset.pageNumber);
-      const point = page ? pdfPointOn(page, pageEl, event.clientX, event.clientY) : null;
-      const hit = point ? shapeAtPoint(page, point[0], point[1]) : null;
-      if (!hit || hit.id !== selectedShapeId) selectShape(null);
-    }
+    // A press anywhere else, by anything — a stylus included: an arrow drawn
+    // and then written past with the pen stayed picked up, handles and all,
+    // until something else was clicked — puts a selected shape down, unless
+    // it is on the rail, whose panel is restyling it.
+    putShapeDownUnlessHit(event);
     return;
   }
   if (event.button !== undefined && event.button > 0) return;
-  if (event.target?.closest?.(SHAPE_PRESS_EXCLUDED)) return;
+  // With the Shapes tool armed, a press on a Block or off the page is not a
+  // shape being drawn — but it is still a press away from the one picked up.
+  if (event.target?.closest?.(SHAPE_PRESS_EXCLUDED)) {
+    if (event.target?.closest?.(".pdf-block")) putShapeDownUnlessHit(event);
+    return;
+  }
   const pageEl = shapePageAt(event.clientX, event.clientY);
   const page = Number(pageEl?.dataset.pageNumber);
-  if (!page || !pdfPageViewport(page)) return;
+  if (!page || !pdfPageViewport(page)) {
+    putShapeDownUnlessHit(event);
+    return;
+  }
   const point = pdfPointOn(page, pageEl, event.clientX, event.clientY);
   if (!point) return;
 

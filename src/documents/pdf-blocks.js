@@ -54,7 +54,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { closeBlockActionsPopover, openBlockActionsPopover, placeBlockActionsPopover } from "./block-actions-popover.js?v=__BUILD__";
 import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
-import { BLOCK_SHAPE_DEFAULT, blockFillVar, blockHeadInkVar, blockInkVar, blockLineVar, compactBlockStyle, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
+import { BLOCK_PAD_DEFAULT_PT, BLOCK_SHAPE_DEFAULT, blockFillVar, blockHeadInkVar, blockInkVar, blockLineVar, compactBlockStyle, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
 import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { normalizeShapeRotation, rotatePoint } from "../render/annot-shapes.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
@@ -102,6 +102,13 @@ export const PDF_BLOCK_MIN_HEIGHT = 16;
 export const PDF_BLOCK_IMAGE_MIN_SIDE = 24;
 const PDF_BLOCK_DEFAULT_WIDTH = 240;
 const PDF_BLOCK_DEFAULT_HEIGHT = 90;
+// What a new Block is put down at before a word is in it. Small, because the
+// width is the words' from the first keystroke (blockTypingWidth) and a 240pt
+// guess near the right edge of the page shoved the Block left of the tap.
+const PDF_BLOCK_START_WIDTH = 120;
+// How close to the page's right edge a Block that follows its words may grow,
+// in points: it widens with its longest line up to here, then wraps.
+const BLOCK_RIGHT_GUTTER = 12;
 
 // In CSS pixels, not points — this is about a finger or a mouse, not the page.
 // Every press on a block used to become a drag gesture on the spot: pointer
@@ -115,8 +122,22 @@ const PDF_BLOCK_DEFAULT_HEIGHT = 90;
 // press on the grip is unambiguously always a resize, never a tap.
 const PDF_BLOCK_DRAG_SLOP_PX = 4;
 // How far up and left of a tap a block placed there starts, in points: the
-// frame's padding, so the caret lands about where the tap was.
-const PLACE_INSET = 8;
+// frame's padding plus its edge, so the caret lands about where the tap was.
+// The padding is the Block's own when its style sets one (placeInset).
+const BLOCK_EDGE_PT = 2;
+function placeInset(style) {
+  const it = normalizeBlockStyle(style);
+  return {
+    x: (it.padLeft ?? BLOCK_PAD_DEFAULT_PT) + BLOCK_EDGE_PT,
+    y: (it.padTop ?? BLOCK_PAD_DEFAULT_PT) + BLOCK_EDGE_PT
+  };
+}
+
+// The width, in points, a Block being typed in is drawn at — its longest line,
+// up to the room left before the page's right edge (blockTypingWidth). Held
+// here rather than written to the record on every key, so a repaint while
+// typing (placeBlock) keeps it, and written once when the words are put down.
+const typingWidths = new Map();
 
 let editingId = null;
 // Blocks just placed with the Block button and not yet written in: put down
@@ -316,26 +337,52 @@ function normalizeBlocks(list) {
       // A turn, in degrees counter-clockwise on the page, as a Shapes-tool
       // box's `rot` is (src/render/annot-shapes.js). Only when there is one.
       ...(normalizeShapeRotation(block.rot) ? { rot: normalizeShapeRotation(block.rot) } : {}),
-      // The width the reader chose, when the block has been drawn in to its
-      // words since (shrinkBlockWidthToContent) — what it opens out to again
-      // to be typed in. Only when it is wider than the block is now.
-      ...(Number(block.wSet) > (Number(block.w) || 0) ? { wSet: Math.round(Number(block.wSet)) } : {}),
-      // The width was dragged by hand since the words were last put down: it
-      // is the reader's, and a render does not draw it in (renderBlockBody).
-      // Typing in it again, or Arrange → Fit to words, does. Only when set.
-      ...(block.wHand === true ? { wHand: true } : {})
+      // `wSet` — the width a Block was drawn in FROM, to open back out to when
+      // typed in — is not carried any more: a Block that follows its words now
+      // grows to them as well as shrinking (fitBlockWidthToContent), up to the
+      // page's right edge, so there is no older width to remember. Dropped here,
+      // so a record that has one loses it on its next write.
+      //
+      // The width was dragged by hand: it is the reader's, and neither a render
+      // nor typing in it draws it in or out — its words wrap at it, and the
+      // height still follows them. Arrange → Fit to words gives the width back
+      // to the words. Only when set.
+      ...(block.wHand === true ? { wHand: true } : {}),
+      // The width is the words', both ways: grown with them as well as drawn
+      // in (fitBlockWidthToContent). Set on a Block made, typed in or fitted
+      // under that rule. A Block without it — one laid out before it, whose
+      // paragraph wraps at the width it was given — is only ever drawn in, so
+      // a page set out with them is not pushed about the next time it opens.
+      ...(block.wFit === true && block.wHand !== true ? { wFit: true } : {})
     }));
 }
 
-// The width the reader placed the block at or dragged it to: its own, or the
-// wider one it was drawn in from — never past the page's right edge, which the
-// block may have been moved towards since, and never narrower than it is.
-function readerWidth(block, viewport = pdfPageViewport(block.page)) {
-  const w = Number(block.w) || 0;
-  const wide = Math.max(w, Number(block.wSet) || 0);
-  if (wide === w || !viewport) return w;
-  return Math.max(w, Math.min(wide, Math.floor(viewport.viewBox[2] - block.x)));
+// The widest a Block that follows its words may be, in points: from its left
+// edge to a little short of the page's right edge. Never under the floor, so a
+// Block pushed right up against the edge can still be typed in.
+function blockWidthCap(block, viewport = pdfPageViewport(block.page)) {
+  if (!viewport) return Math.max(PDF_BLOCK_MIN_WIDTH, Number(block.w) || PDF_BLOCK_DEFAULT_WIDTH);
+  const right = Math.max(viewport.viewBox[0], viewport.viewBox[2]);
+  return Math.max(PDF_BLOCK_MIN_WIDTH, Math.floor(right - BLOCK_RIGHT_GUTTER - (Number(block.x) || 0)));
 }
+
+// Whether a Block's width is its words' — grown to its longest line and drawn
+// in to it — rather than one the reader set: a text Block that follows its
+// words (`fit`) and whose width was not dragged by hand (`wHand`).
+function widthFollowsWords(block) {
+  return block.kind !== PDF_BLOCK_IMAGE && blockStyle(block).fit && !block.wHand;
+}
+
+// Markdown whose rendered width is the Block's rather than its own — a
+// picture, a table, a diagram: typed, its source is a long line of URL or
+// pipes, and growing the Block to that would set the picture page-wide.
+const WIDTHLESS_SOURCE = /!\[|<img|<table|<svg|^\s*\|.*\|\s*$|^\s*(```|~~~)\s*(mermaid|nomnoml)/im;
+
+// Whether a Block being typed in grows with its words, decided as it opens:
+// one already under that rule (`wFit`), and one that hugs its words now —
+// a label drawn in to them. A paragraph laid out at a width it wraps at keeps
+// that width, and its height follows what is typed.
+const typingGrows = new Map();
 
 // A block's style, filled in. The one door between the record's optional bag and
 // everything that draws it.
@@ -713,12 +760,13 @@ function placeBlock(node, viewport, block) {
   const typing = node.classList.contains("is-inline-editing");
   node.style.left = `${box.left}px`;
   node.style.top = `${box.top}px`;
-  // While it is typed in, a block drawn in to a short label opens out to the
-  // width the reader chose, so the next sentence wraps there and not at the
-  // label's — never past the page's right edge. Drawn in again when it is put
-  // down (writeBlockText).
+  // While it is typed in, a Block that follows its words is as wide as its
+  // longest line, up to the page's right edge (blockTypingWidth) — it grows as
+  // the words do and wraps only once it has run out of page. Written to the
+  // record when the words are put down (writeBlockText).
   let width = box.width;
-  if (typing && Number(block.wSet) > block.w) width = box.width * (readerWidth(block, viewport) / block.w);
+  const typed = typing ? typingWidths.get(block.id) : 0;
+  if (typed && block.w > 0) width = box.width * (typed / block.w);
   node.style.width = `${width}px`;
   // While its words are being typed in place the block is as tall as they are,
   // line by line (src/documents/pdf-block-inline.js) — the record catches up
@@ -920,6 +968,13 @@ function paintBlockStyle(node, block) {
   setBlockNumber(node, "blockWeight", "--pdf-block-weight", style.weight);
   setBlockNumber(node, "blockLineHeight", "--pdf-block-line-height", style.lineHeight);
   setBlockNumber(node, "blockLetterSpacing", "--pdf-block-letter-spacing", style.letterSpacing);
+  // Padding, each side on its own, in points. Absent is the padding a Block has
+  // always had: the stylesheets read these with that as their fallback
+  // (styles/53-handwriting.css, 97-diagram.css, 98-block-inline.css).
+  setBlockNumber(node, "blockPadTop", "--pdf-block-pad-top", style.padTop);
+  setBlockNumber(node, "blockPadRight", "--pdf-block-pad-right", style.padRight);
+  setBlockNumber(node, "blockPadBottom", "--pdf-block-pad-bottom", style.padBottom);
+  setBlockNumber(node, "blockPadLeft", "--pdf-block-pad-left", style.padLeft);
 
   // ── A diagram's box: its outline, its edge and where its words sit ───────
   //
@@ -1410,76 +1465,92 @@ function fitImageBlockFrame(node, img) {
 // "predefined size" the height fix above does not reach.
 //
 // So this runs whenever the words render (renderBlockBody): it measures how
-// wide the words actually want to be and shrinks the frame to that, clamped so
-// it can never make a block WIDER than it already is — a real paragraph, whose
-// unwrapped width exceeds the frame, always clamps straight back to unchanged,
-// so this never fights the common case and only ever helps the short one.
-//
-// It used to run once, on a block's first words at the default width. But a
-// block whose words were cut from three lines to one kept the width the three
-// needed — empty frame to the right of the one line left. Tightening to the
-// content's max-content width can never change how anything wraps (the
-// content already fits inside it unwrapped), so it only ever takes away empty
-// frame. Skipped for a block that does not follow its contents (the reader
-// turned that off) and for a body holding a diagram, a picture or a table:
+// wide the words want to be — their longest line, unwrapped — and makes the
+// frame that wide, up to the page's right edge, where they wrap. Skipped for a
+// block that does not follow its contents (the reader turned that off, or
+// dragged its width), and for a body holding a diagram, a picture or a table:
 // those are drawn to the block's width and have no width of their own to read.
-function shouldShrinkBlockWidth(block) {
-  return block.kind !== PDF_BLOCK_IMAGE && blockStyle(block).fit;
-}
-
 function bodyHasWidthlessContent(body) {
   return Boolean(body.querySelector("img, svg, table, .mermaid, .nomnoml-diagram, .diagram-shell"));
 }
 
-function shrinkBlockWidthToContent(node, block) {
-  if (gestureLive || !shouldShrinkBlockWidth(block)) return false;
+// Grown or drawn in to the words: the width of the longest line, up to the room
+// left before the page's right edge (blockWidthCap) — past which the words wrap
+// and the height follows them. It used to only ever draw IN, from a 240pt guess
+// made before a word was typed, so a sentence wrapped at 240pt however much page
+// there was beside it and a Block never grew with what was written in it.
+// `force` is Arrange → Fit to words, which also gives a width dragged by hand
+// (`wHand`) back to the words.
+function fitBlockWidthToContent(node, block, { force = false } = {}) {
+  if (gestureLive || block.kind === PDF_BLOCK_IMAGE || !blockStyle(block).fit) return false;
+  if (block.wHand && !force) return false;
+  if (node.classList.contains("is-inline-editing")) return false;
   const viewport = pdfPageViewport(block.page);
   const body = node.querySelector(".pdf-block-body");
   if (!viewport || !body || bodyHasWidthlessContent(body)) return false;
   const scale = viewport.scale || 1;
-  // The bar, the borders, the padding — everything of the block that is not
-  // the body's own content box — measured the same way fitBlockHeight measures
-  // its chrome, one axis over.
+  // The borders, the padding — everything of the block that is not the body's
+  // own content box — measured the same way fitBlockHeight measures its chrome,
+  // one axis over.
   //
   // ...less a scrollbar down the body's side. A block whose words have just
   // rendered taller than its frame scrolls until its height fit lands a frame
   // later (queueFit), and clientWidth leaves the scrollbar out — so it was
   // counted as frame, and the block drawn in 15px too wide on its first
-  // render and then again, narrower, on the next: a list Block that changed
-  // width every time its page was reopened.
+  // render and then again, narrower, on the next.
   const bodyStyle = getComputedStyle(body);
   const bodyBorders = (parseFloat(bodyStyle.borderLeftWidth) || 0) + (parseFloat(bodyStyle.borderRightWidth) || 0);
   const scrollbar = Math.max(0, body.offsetWidth - body.clientWidth - bodyBorders);
   const chrome = node.offsetWidth - body.clientWidth - scrollbar;
-  // The exact same escape fitBlockHeight uses, one axis over: the body is a
-  // flex child stretched to the block's own width, so `scrollWidth` as-is just
-  // answers with the block's width back. `flex: none` takes the stretch off
-  // and `width: max-content` is what lets the browser compute the content's
-  // own preferred width — the width it would take with nothing forcing it to
-  // wrap — for the length of one synchronous measurement, put straight back.
+  // The body is a flex child stretched to the block's own width, so
+  // `scrollWidth` as-is just answers with the block's width back. `flex: none`
+  // takes the stretch off and `width: max-content` lets the browser compute the
+  // content's own preferred width — the width it would take with nothing
+  // forcing it to wrap — for one synchronous measurement, put straight back.
   body.style.flex = "none";
   body.style.width = "max-content";
-  const content = body.scrollWidth;
+  const content = Math.max(body.scrollWidth, body.getBoundingClientRect().width);
   body.style.flex = "";
   body.style.width = "";
-  // One point of slack on the way in, so the round trip through points never
-  // lands a hair short of the line and wraps its last word.
-  const wanted = Math.min(
-    block.w,
-    Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + content) / scale) + 1)
+  // A pixel of slack on the SCREEN, then up to the next point: a pixel is two
+  // points at half size, and slack of one point let a Block fitted at one zoom
+  // wrap its last word at another.
+  // Grown only under the rule that lets it (`wFit`, or Fit to words); a Block
+  // laid out before it is only drawn in — see normalizeBlocks.
+  const mayGrow = force || block.wFit === true;
+  const natural = Math.min(
+    blockWidthCap(block, viewport),
+    Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + content + 1) / scale))
   );
-  // Nothing narrower than the frame was found — the common case for any real
-  // paragraph — so there is nothing to shrink and nothing to write.
-  if (wanted >= block.w - 1) return false;
+  const wanted = mayGrow ? natural : Math.min(block.w, natural);
+  const promote = force && (block.wHand || !block.wFit);
+  if (Math.abs(wanted - block.w) <= 1 && !promote) return false;
   // Not undoable, for the same reason queueFit's height write is not: this is
-  // the block agreeing with its own words, not a step the reader took. The
-  // width it was drawn in from is kept (`wSet`), to be typed in at next time.
+  // the block agreeing with its own words, not a step the reader took.
   writeBlocks(documentBlocks().map((entry) => {
     if (entry.id !== block.id) return entry;
-    const { wHand: _hand, ...rest } = entry;
-    return { ...rest, w: wanted, wSet: Math.max(readerWidth(entry), block.w), at: Date.now() };
+    const { wHand: _hand, wSet: _set, ...rest } = entry;
+    return { ...rest, w: Math.abs(wanted - block.w) <= 1 ? entry.w : wanted, ...(mayGrow ? { wFit: true } : {}), at: Date.now() };
   }), { undoable: false });
   return true;
+}
+
+// The width, in points, a Block being typed in should be drawn at: the longest
+// line of what is typed (measured by the editor, `contentPx` in screen pixels,
+// padding included) plus the frame, up to the page's right edge. Null for a
+// Block whose width is not its words'.
+function blockTypingWidth(block, node, { contentPx, framePx }, text = "") {
+  if (!widthFollowsWords(block) || !Number.isFinite(contentPx)) return null;
+  const viewport = pdfPageViewport(block.page);
+  if (!viewport) return null;
+  const scale = viewport.scale || 1;
+  const wanted = Math.ceil((contentPx + (Number(framePx) || 0) + 2) / scale);
+  // Decided once, as the editor opens: see typingGrows.
+  if (!typingGrows.has(block.id)) typingGrows.set(block.id, block.wFit === true || wanted <= block.w + 2);
+  if (!typingGrows.get(block.id)) return null;
+  const body = node?.querySelector(".pdf-block-body");
+  if (WIDTHLESS_SOURCE.test(String(text || "")) || (body && bodyHasWidthlessContent(body))) return null;
+  return Math.min(blockWidthCap(block, viewport), Math.max(PDF_BLOCK_MIN_WIDTH, wanted));
 }
 
 // ── A diagram at its own size, never wider than the block ─────────────────
@@ -1533,7 +1604,16 @@ async function renderBlockBody(body, md, node = null, block = null) {
     if (node && block) {
       const current = documentBlocks().find((entry) => entry.id === block.id) || block;
       if (!current.wHand && !node.classList.contains("is-static") && !documentViewOnly()) {
-        shrinkBlockWidthToContent(node, current);
+        fitBlockWidthToContent(node, current);
+        // ...and again once the Block's webfont has arrived: measured in the
+        // fallback face, a wider real one wraps the last word.
+        if (document.fonts?.status === "loading") {
+          document.fonts.ready.then(() => {
+            if (!node.isConnected || renderedMarkdown.get(body) !== md) return;
+            const now = documentBlocks().find((entry) => entry.id === block.id);
+            if (now && !now.wHand) fitBlockWidthToContent(node, now);
+          }).catch(() => {});
+        }
       }
     }
     // The block's own images, which reach here as recall-img: tokens when they
@@ -1728,7 +1808,7 @@ export function repaintDocumentBlocks() {
 //
 // `md` is what it holds from the start — words pasted onto the page (Ctrl+V,
 // src/main.js) — and such a block is put down rather than opened to type in.
-export function addDocumentBlock(pageNumber, at = null, { style = null, w = null, h = null, edit = true, anchor = "center", discardIfEmpty = false, md = "" } = {}) {
+export function addDocumentBlock(pageNumber, at = null, { style = null, w = null, h = null, edit = true, anchor = "center", discardIfEmpty = false, md = "", growToWords = !(Number(w) > 0) } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return null;
   // The page box, which need not start at 0,0: a PDF with margins added on the
@@ -1739,27 +1819,34 @@ export function addDocumentBlock(pageNumber, at = null, { style = null, w = null
   const wanted = at || { x: (vx0 + vx1) / 2, y: (vy0 + vy1) / 2 };
   const given = style ? normalizeBlockStyle(style) : null;
   const inherited = given ? (isDefaultBlockStyle(given) ? null : given) : freshBlockStyle(PDF_BLOCK_MARKDOWN);
-  const width = Math.max(PDF_BLOCK_MIN_WIDTH, Number(w) || PDF_BLOCK_DEFAULT_WIDTH);
+  // A Block that follows its words starts small and takes the width of what is
+  // typed in it (blockTypingWidth); one given a width keeps it.
+  const followsWords = normalizeBlockStyle(inherited).fit;
+  const width = Math.max(PDF_BLOCK_MIN_WIDTH, Number(w) || (followsWords ? PDF_BLOCK_START_WIDTH : PDF_BLOCK_DEFAULT_WIDTH));
   const height = Math.max(PDF_BLOCK_MIN_HEIGHT, Number(h) || PDF_BLOCK_DEFAULT_HEIGHT);
   // "corner" puts the corner exactly at the point (the mouse, for T, B and a
-  // double-click); "top-left" a little above and to the left of it (a tap).
+  // double-click); "top-left" a little above and to the left of it (a tap),
+  // by the Block's own padding, so the caret lands where the tap was.
   const topLeft = (anchor === "top-left" || anchor === "corner") && Boolean(at);
-  const inset = anchor === "top-left" ? PLACE_INSET : 0;
+  const inset = anchor === "top-left" ? placeInset(inherited) : { x: 0, y: 0 };
   const block = {
     // Unique across the DECK, not the surface: a block id is a sync key, and a
     // notebook minting the same one as a block over the paper beside it would
     // make the two records one record on the next merge.
     id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
     page: Number(pageNumber),
-    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - width - 12, wanted.x - (topLeft ? inset : width / 2)))),
-    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - height - 12, wanted.y - (topLeft ? height - inset : height / 2)))),
+    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - width - 12, wanted.x - (topLeft ? inset.x : width / 2)))),
+    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - height - 12, wanted.y - (topLeft ? height - inset.y : height / 2)))),
     w: Math.round(width),
     h: Math.round(height),
     z: nextBlockZ(blocks),
     kind: PDF_BLOCK_MARKDOWN,
     md: String(md || ""),
     at: Date.now(),
-    ...(inherited ? { style: compactBlockStyle(inherited) } : {})
+    ...(inherited ? { style: compactBlockStyle(inherited) } : {}),
+    // A new Block's width is its words', both ways (fitBlockWidthToContent) —
+    // unless it was given one that is not a guess.
+    ...(followsWords && growToWords ? { wFit: true } : {})
   };
   writeBlocks([...blocks, block]);
   setSelectedId(block.id);
@@ -1901,6 +1988,17 @@ function beginBlockEdit(id, { inWindow = false, value = null } = {}) {
         id,
         node,
         value: value ?? block.md,
+        // The width first, before the editor measures how tall its lines
+        // are: a line that fits once the Block has grown is not a second line.
+        onWidth: (measure) => {
+          const viewport = pdfPageViewport(block.page);
+          const live = documentBlocks().find((entry) => entry.id === id);
+          if (!viewport || !live) return;
+          const width = blockTypingWidth(live, node, measure, inlineBlockEditorValue());
+          if (width === null) typingWidths.delete(id);
+          else typingWidths.set(id, width);
+          placeBlock(node, viewport, live);
+        },
         onGrow: () => {
           const viewport = pdfPageViewport(block.page);
           const live = documentBlocks().find((entry) => entry.id === id);
@@ -1912,8 +2010,7 @@ function beginBlockEdit(id, { inWindow = false, value = null } = {}) {
       });
       const viewport = pdfPageViewport(block.page);
       if (viewport) placeBlock(node, viewport, block);
-      // Measured again at the width it is typed at, which placeBlock may just
-      // have opened out (readerWidth).
+      // Measured again at the width it is typed at (blockTypingWidth).
       mountInlineBlockEditor(node);
       syncBlockActionsPopover();
       return;
@@ -1990,7 +2087,27 @@ export function writeBlockStyle(id, patch) {
   // the box it is connected from instead (src/documents/pdf-connectors.js).
   if (next.shape === BLOCK_SHAPE_DEFAULT) writeBlockStylePreference(block.kind, next);
   repaintDocumentBlocks();
+  // A change to how wide the words are — their size, face, weight, spacing, the
+  // padding round them — is a change to how wide a Block that follows them
+  // should be. The body is not re-rendered for a style (its words did not
+  // change), so the width is fitted again here, a frame on, once the new
+  // style has been laid out; the height follows on its own (contentObserver).
+  if (Object.keys(patch || {}).some((key) => WIDTH_STYLE_KEYS.has(key))) refitBlockWidthSoon(id);
   return next;
+}
+
+const WIDTH_STYLE_KEYS = new Set([
+  "size", "font", "weight", "letterSpacing", "lineHeight", "codeSize", "codeFont", "headFont",
+  "padTop", "padRight", "padBottom", "padLeft", "fit", "lineWidth", "shape"
+]);
+
+function refitBlockWidthSoon(id) {
+  requestAnimationFrame(() => {
+    const node = document.querySelector(`[data-pdf-block="${CSS.escape(id)}"]`);
+    const block = documentBlocks().find((entry) => entry.id === id);
+    if (!node || !block || node.classList.contains("is-static") || documentViewOnly()) return;
+    fitBlockWidthToContent(node, block);
+  });
 }
 
 // The style a new block starts with, and the two things that are true of it:
@@ -2008,6 +2125,9 @@ function freshBlockStyle(kind) {
 function writeBlockText(id, text) {
   editingId = null;
   const fresh = freshBlockIds.delete(id);
+  const typedWidth = typingWidths.get(id);
+  typingWidths.delete(id);
+  typingGrows.delete(id);
   if (text === null) { repaintDocumentBlocks(); syncBlockActionsPopover(); return; }
   const blocks = documentBlocks();
   const block = blocks.find((entry) => entry.id === id);
@@ -2022,26 +2142,22 @@ function writeBlockText(id, text) {
     repaintDocumentBlocks();
     return;
   }
-  // ── The width: the reader's, drawn in to the words once they are down ────
+  // ── The width: the words', as they were typed ─────────────────────────────
   //
-  // A label of one word sat in a 240pt frame of empty paper. The width used to
-  // be pulled in to the longest line after every edit, and was then dropped,
-  // because a block narrowed under one word had to be dragged wide again for
-  // the next sentence. Both now: the record keeps the width the reader chose
-  // (`wSet`), the block is typed in at that width (placeBlock), and when the
-  // words are put down it goes back to it and is drawn in to the longest line
-  // once they have rendered (shrinkBlockWidthToContent, from
-  // renderBlockBody). One undo step for the words and the width together.
+  // A Block that follows its words was typed in at the width of its longest
+  // line (blockTypingWidth); that is its width now, and the render refits it to
+  // the rendered words, which are narrower than their markdown
+  // (fitBlockWidthToContent, from renderBlockBody). A width dragged by hand
+  // (`wHand`) is the reader's and stays. One undo step for the words and the
+  // width together.
   if (block && block[field] !== text) {
-    const tighten = field === "md" && shouldShrinkBlockWidth(block);
+    const follow = field === "md" && widthFollowsWords(block) && Number.isFinite(typedWidth) && typedWidth > 0;
     writeBlocks(blocks.map((entry) => {
       if (entry.id !== id) return entry;
       const next = { ...entry, [field]: text, at: Date.now() };
-      if (tighten) {
-        const { wSet: _was, wHand: _hand, ...rest } = next;
-        return { ...rest, w: readerWidth(entry) };
-      }
-      return next;
+      if (!follow) return next;
+      const { wSet: _was, ...rest } = next;
+      return { ...rest, w: typedWidth, wFit: true };
     }));
   }
   repaintDocumentBlocks();
@@ -2396,7 +2512,8 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       const next = { ...entry, ...live, at: Date.now() };
       if (widthDragged) {
         delete next.wSet;
-        // ...and not to be drawn in again by the next render (renderBlockBody).
+        delete next.wFit;
+        // ...and not to be drawn in or out again by a render or by typing.
         if (!isImage) next.wHand = true;
       }
       return next;
@@ -2711,8 +2828,8 @@ function isDoubleTap(event, id, slot) {
 // ── Fit to the contents, on request ────────────────────────────────────────
 //
 // Height follows the contents again (the `fit` a deliberate resize may have
-// turned off in the Style panel) and the width comes in to the widest line, if
-// that is narrower than the frame — never out. A picture is brought back to its
+// turned off in the Style panel) and the width is the widest line's again, up
+// to the page's right edge — a width dragged by hand included. A picture is brought back to its
 // own shape. One undo step for the whole thing.
 export function fitBlockToContents(id = selectedId) {
   const block = documentBlocks().find((entry) => entry.id === id);
@@ -2725,7 +2842,7 @@ export function fitBlockToContents(id = selectedId) {
   }
   if (!blockStyle(block).fit) writeBlockStyle(id, { fit: true });
   const current = documentBlocks().find((entry) => entry.id === id) || block;
-  shrinkBlockWidthToContent(node, current);
+  fitBlockWidthToContent(node, current, { force: true });
   const after = documentBlocks().find((entry) => entry.id === id) || current;
   fitBlockHeight(node, after);
   return true;

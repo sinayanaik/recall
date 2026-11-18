@@ -615,6 +615,16 @@ let catchUpRunning = false;
 // Bumped to end whatever is waiting on the paper beside — a catch-up turn, or
 // a paper just opened beside drawing its first pages.
 let besideTurn = 0;
+// True while the paper opened beside is still being read and parsed — the
+// stretch in which it is live but has no openPdf yet. Nothing may make the
+// other paper live in that stretch: suspendOpenDocument has nothing to
+// suspend, so the opening paper was recorded as an empty offer, and the open
+// still in flight then wrote its openPdf over the paper just made live. The
+// pane it was meant for stayed blank and its tab did nothing until another
+// switch. A press in that stretch is remembered instead (besideRestorePending)
+// and honoured the moment the open is done.
+let besideOpening = false;
+let besideRestorePending = false;
 
 let lastDocumentInputAt = 0;
 let catchUpInputWatched = false;
@@ -811,6 +821,12 @@ function activateDocumentViewer(slot, { quiet = false } = {}) {
 // The reader reached for the paper in `slot` — a press, a wheel, a tab.
 export function focusDocumentViewer(slot) {
   if (!dualDocuments) return false;
+  // Still opening: the focus is noted, and moves when the open is done.
+  if (besideOpening) {
+    chromeDocumentSlot = normalizeDocSlot(slot);
+    besideRestorePending = true;
+    return true;
+  }
   // Whatever was live for a moment goes back first, so the paper reached for
   // is made live the ordinary, loud way — its outline, its switcher, its rail.
   endDocumentCatchUp();
@@ -828,6 +844,7 @@ export function focusDocumentViewer(slot) {
 // in full after an opening, which painted the new paper's.
 function restoreFocusedPaper() {
   if (!dualDocuments || !chromeDocumentSlot || liveDocumentSlot === chromeDocumentSlot) return;
+  if (besideOpening) { besideRestorePending = true; return; }
   besideTurn += 1;
   const quiet = catchUpRunning;
   catchUpRunning = false;
@@ -862,10 +879,21 @@ export async function openDocumentBeside(slot, paint, { focusNew = false } = {})
   chromeDocumentSlot = focusNew ? wanted : keptSlot;
   setDualDocumentContext(wanted);
   if (focusNew) moveDocumentChrome(toStage);
+  besideOpening = true;
+  besideRestorePending = false;
   try {
     await paint();
   } catch (error) {
     console.warn("Could not open the other paper beside this one", error);
+  } finally {
+    besideOpening = false;
+  }
+  // The reader reached for a paper while this one was opening: now it can be
+  // given to them.
+  if (besideRestorePending) {
+    besideRestorePending = false;
+    if (dualDocuments) restoreFocusedPaper();
+    return dualDocuments;
   }
   if (!dualDocuments || focusNew) return dualDocuments;
   // Back to the paper in focus once the new one has drawn what is on screen —
@@ -2066,6 +2094,9 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
   // carries. Only for pages that actually have pixels: an unrendered one has no
   // layers to bring up to date and will run the hook when it draws.
   if (restored) openPdf.rendered.forEach((pageNumber) => onPagePainted(pageNumber));
+  // ...and any of them whose words were still being waited for when the paper
+  // was put away (see ensurePageLayers).
+  if (restored) healRenderedPageLayers();
   // ...except when it is NOT the same picture any more: a canvas detached in the
   // park for an hour is exactly the one the browser clears without telling
   // anyone. See recoverLostPageCanvases.
@@ -2964,7 +2995,14 @@ function resizePageBox(entry, width, height) {
 
 async function renderPage(pageNumber) {
   const entry = openPdf?.pages.get(pageNumber);
-  if (!entry || openPdf.rendered.has(pageNumber)) return;
+  if (!entry) return;
+  if (openPdf.rendered.has(pageNumber)) {
+    // Drawn — but perhaps without its words: see ensurePageLayers. Every
+    // observer callback and sweep that reaches a page near the reader comes
+    // through here, which is what makes this the place to notice.
+    ensurePageLayers(pageNumber);
+    return;
+  }
   // ── A render asked for while one is in flight is REMEMBERED, not dropped ──
   //
   // This used to `return` here and that was a page that never came back. The
@@ -3210,9 +3248,13 @@ async function renderPage(pageNumber) {
     // selects text they have not read yet. Anything that must have them —
     // tools/pdf-preview-check.mjs, a highlight measuring against a text item —
     // goes through whenDocumentPageReady, which awaits this too.
-    entry.layerTask = buildPageLayers(pageNumber, entry, page, viewport, stale, textContent)
+    const layerTask = buildPageLayers(pageNumber, entry, page, viewport, stale, textContent)
       .catch((error) => console.warn(`Could not build the layers for page ${pageNumber}`, error))
-      .finally(() => { if (entry.layerTask) entry.layerTask = null; });
+      // Only this task's own handle: a newer one started since (a relayer, a
+      // heal) is still running, and clearing it told whenDocumentPageReady and
+      // documentPagesSettled the page was done while its words were not.
+      .finally(() => { if (entry.layerTask === layerTask) entry.layerTask = null; });
+    entry.layerTask = layerTask;
   })()
     .catch((error) => {
       // A cancellation is the system working — a scale moved, a page was
@@ -4891,6 +4933,52 @@ function pictureMegapixels(picture) {
   return `${((picture.width * picture.height) / 1e6).toFixed(1)}MP`;
 }
 
+// ── A page drawn without its words ─────────────────────────────────────────
+//
+// A page's text layer is built after its pixels, and only once the page is on
+// screen and still (waitForTextLayerTurn) — so the page just below the one
+// being read is drawn, counted as rendered, and waiting for its words. If the
+// paper is parked or suspended in that wait (a tab, the paper beside taking
+// the focus, a catch-up turn after a sync or a highlight), the wait ends
+// stale and the build gives up. Nothing built it again: renderPage turns away
+// a page that is already rendered, and a restored paper only replays the
+// paint hook. The page kept its pixels and had no words to select until a
+// zoom re-rendered it from scratch — "one page selectable, the very next not".
+//
+// This builds the layers again for a rendered page at the current zoom that
+// has no text layer and nothing building one. Cheap to ask: it returns at
+// once for every page that is fine.
+function ensurePageLayers(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry || !openPdf?.doc || !openPdf.rendered.has(pageNumber)) return false;
+  if (entry.task || entry.layerTask || keptTextLayer(entry)) return false;
+  const viewport = entry.viewport;
+  if (!viewport || viewport.scale !== openPdf.scale) return false;
+  const token = pdfOpenToken;
+  const scale = openPdf.scale;
+  const generation = entry.generation || 0;
+  const doc = openPdf.doc;
+  const stale = () => token !== pdfOpenToken || openPdf?.scale !== scale || entry.generation !== generation;
+  const layerTask = (async () => {
+    const page = await doc.getPage(pageNumber);
+    if (stale()) return;
+    const textContent = readPageTextContent(page, doc);
+    textContent.catch(() => {});
+    await buildPageLayers(pageNumber, entry, page, viewport, stale, textContent);
+  })()
+    .catch((error) => console.warn(`Could not rebuild the layers for page ${pageNumber}`, error))
+    .finally(() => { if (entry.layerTask === layerTask) entry.layerTask = null; });
+  entry.layerTask = layerTask;
+  return true;
+}
+
+// ...for every rendered page, after a paper comes back from a park or a
+// suspension, which is exactly when a wait can have been cut short.
+function healRenderedPageLayers() {
+  if (!openPdf?.rendered) return;
+  [...openPdf.rendered].forEach((pageNumber) => ensurePageLayers(pageNumber));
+}
+
 function relayerPage(pageNumber) {
   const entry = openPdf?.pages.get(pageNumber);
   if (!entry?.viewport) return;
@@ -4917,7 +5005,7 @@ function relayerPage(pageNumber) {
   // page's layers after each page's draw.
   const turn = relayerTurn.then(nextFrame);
   relayerTurn = turn;
-  entry.layerTask = turn.then(async () => {
+  const layerTask = turn.then(async () => {
     if (stale()) return;
     const page = await openPdf.doc.getPage(pageNumber);
     if (stale()) return;
@@ -4926,7 +5014,8 @@ function relayerPage(pageNumber) {
     await buildPageLayers(pageNumber, entry, page, viewport, stale, textContent);
   })
     .catch((error) => console.warn(`Could not rebuild the layers for page ${pageNumber}`, error))
-    .finally(() => { if (entry.layerTask) entry.layerTask = null; });
+    .finally(() => { if (entry.layerTask === layerTask) entry.layerTask = null; });
+  entry.layerTask = layerTask;
   const want = desiredPicture(pageNumber, entry);
   if (!shown || shown.width < pictureMinWidth(target) || shown.paper !== picturePaper()
       || shown.kind !== want.kind || shown.stamp !== want.stamp) schedulePictureUpgrade(pageNumber);
@@ -5952,7 +6041,11 @@ async function buildTextLayerSliced(content, viewport, stale, insert, entry) {
   let index = 0;
   let spent = 0;
   while (index < items.length) {
-    if (stale()) return null;
+    // Given up half built: the half goes too. It was inserted on the page and
+    // never became entry.textLayer, so nothing else would ever take it off —
+    // a layer of some of the page's words, at a scale that may since have
+    // changed, left under the real one.
+    if (stale()) { layer.remove(); return null; }
     if (documentMoving() && !(entry.urgent || entry.textUrgent)) {
       await nextFrame();
       continue;

@@ -660,6 +660,36 @@ export function deckMovedSinceBase(base, previousSnapshot) {
 // raw editor keeps its caret (refreshNotesEditorInPlace), the All Cards panel
 // stays open, and the surfaces repaint through the same hook a sync uses.
 function adoptIntoOpenDeck(snapshot, localId) {
+  // ── What did the other copy actually change? ─────────────────────────────
+  //
+  // Every record of the meta bag on disk is a NEW object, read and parsed from
+  // the store — so an adopt used to hand the Canvas a fresh copy of every ink
+  // stroke, Block and shape, and everything that keys its work on identity
+  // (the ink layer redecoding and redrawing a page whose strokes are "new",
+  // every Block put back where its record says) redid all of it. With the same
+  // file open in a second window, that was the Canvas "reset" on every save of
+  // the Notes being typed there. A record the disk copy did not change is the
+  // record already on screen; only what changed is new.
+  const before = state.meta && typeof state.meta === "object" ? state.meta : {};
+  if (snapshot?.meta && typeof snapshot.meta === "object") {
+    snapshot = { ...snapshot, meta: shareUnchanged(snapshot.meta, before, 0) };
+    // ...and when all it changed is where somebody was reading — the other
+    // window's scroll, written down with its every save — there is nothing to
+    // show. The positions are taken into the meta as they are, and nothing on
+    // screen is reloaded: no Block being typed in is put down, no page repainted.
+    const moved = [...new Set([...Object.keys(before), ...Object.keys(snapshot.meta)])]
+      .filter((key) => before[key] !== snapshot.meta[key]);
+    if (moved.every((key) => READING_PLACE_META_KEYS.has(key))) {
+      const onScreen = deckSnapshot();
+      if (sameDeckContent({ ...snapshot, meta: {} }, { ...onScreen, meta: {} })) {
+        state.meta = snapshot.meta;
+        state.localDeckId = localId;
+        persistWorkingDeck();
+        lastAdoptedMetaKeys = new Set(moved);
+        return;
+      }
+    }
+  }
   // Never allowed to fail the save it follows: the write has already landed,
   // and a deck the other window emptied (loadDeckSnapshot refuses a deck with
   // no content) is still correct on disk — the screen simply keeps what it had
@@ -669,9 +699,68 @@ function adoptIntoOpenDeck(snapshot, localId) {
   } catch (error) {
     console.warn("Could not show the merged copy of the open deck", error);
   }
+  const after = state.meta && typeof state.meta === "object" ? state.meta : {};
+  lastAdoptedMetaKeys = new Set([...Object.keys(before), ...Object.keys(after)].filter((key) => before[key] !== after[key]));
   state.localDeckId = localId;
   persistWorkingDeck();
   try { deckReloadedInPlace?.(); } catch (error) { console.warn("Could not repaint the open deck", error); }
+}
+
+// Where the reader was, per surface: bookkeeping about a deck, not its content.
+// Each window writes its own with a fresh `at` on every save.
+export const READING_PLACE_META_KEYS = new Set([
+  "readingPosition", "readingPositionNotebook", "readingPositionPdf", "pdfReadingPositions"
+]);
+
+// The meta keys the last in-place adopt changed — what the reload hook in
+// src/main.js asks before repainting the pages of a paper.
+let lastAdoptedMetaKeys = null;
+
+export function lastAdoptedMetaChanges() {
+  return lastAdoptedMetaKeys;
+}
+
+function sameJson(a, b) {
+  if (a === b) return true;
+  try { return JSON.stringify(a) === JSON.stringify(b); } catch (_) { return false; }
+}
+
+function isPlainMetaObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// `next`, with every part equal to the same part of `prev` replaced by prev's
+// own object — so an unchanged record keeps its identity. Arrays are matched
+// record by record on `id` where the records have one (meta.pdfHighlights,
+// meta.pdfBlocks), by position otherwise; objects key by key, two levels down
+// (meta → meta.notebook → its pages). Returns `prev` itself when nothing at all
+// differs.
+function shareUnchanged(next, prev, depth) {
+  if (next === prev) return prev;
+  if (Array.isArray(next) && Array.isArray(prev)) {
+    const byId = new Map();
+    prev.forEach((item) => { if (isPlainMetaObject(item) && item.id != null) byId.set(String(item.id), item); });
+    let same = next.length === prev.length;
+    const out = next.map((item, index) => {
+      const old = isPlainMetaObject(item) && item.id != null ? byId.get(String(item.id)) : prev[index];
+      const kept = old !== undefined && sameJson(item, old) ? old : item;
+      if (kept !== prev[index]) same = false;
+      return kept;
+    });
+    return same ? prev : out;
+  }
+  if (isPlainMetaObject(next) && isPlainMetaObject(prev) && depth < 3) {
+    const keys = Object.keys(next);
+    let same = keys.length === Object.keys(prev).length;
+    const out = {};
+    keys.forEach((key) => {
+      const kept = Object.prototype.hasOwnProperty.call(prev, key) ? shareUnchanged(next[key], prev[key], depth + 1) : next[key];
+      if (kept !== prev[key]) same = false;
+      out[key] = kept;
+    });
+    return same ? prev : out;
+  }
+  return sameJson(next, prev) ? prev : next;
 }
 
 export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced, loadToken, base = null }) {

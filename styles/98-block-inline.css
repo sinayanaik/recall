@@ -66,8 +66,15 @@
   font-weight: var(--pdf-block-weight, var(--doc-block-weight, 400)) !important;
   letter-spacing: var(--doc-block-letter-spacing, normal) !important;
   line-height: var(--pdf-block-line-height, var(--doc-block-line-height, 1.4)) !important;
-  padding: calc(6px * var(--pdf-block-scale, 1)) !important;
-  min-height: calc(1em * var(--pdf-block-line-height, var(--doc-block-line-height, 1.4)) + 12px * var(--pdf-block-scale, 1)) !important;
+  /* The Block's own padding, side by side with the rendered body's
+     (styles/53-handwriting.css) — the two must agree or the words jump when
+     the Block is put down. */
+  padding:
+    calc(var(--pdf-block-pad-top, 6) * 1px * var(--pdf-block-scale, 1))
+    calc(var(--pdf-block-pad-right, 6) * 1px * var(--pdf-block-scale, 1))
+    calc(var(--pdf-block-pad-bottom, 6) * 1px * var(--pdf-block-scale, 1))
+    calc(var(--pdf-block-pad-left, 6) * 1px * var(--pdf-block-scale, 1)) !important;
+  min-height: calc(1em * var(--pdf-block-line-height, var(--doc-block-line-height, 1.4)) + (var(--pdf-block-pad-top, 6) + var(--pdf-block-pad-bottom, 6)) * 1px * var(--pdf-block-scale, 1)) !important;
   /* Typed from the left whatever the Block's own alignment: markdown source
      centred or set to the right is hard to write and to read. The alignment
      is the rendered body's (styles/58-block-style.css), seen once the words
