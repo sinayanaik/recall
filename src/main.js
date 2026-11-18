@@ -170,6 +170,7 @@ import { initCanvasDismiss, putCanvasThingsDown } from "./documents/canvas-dismi
 import { armBlockPlacement } from "./documents/block-place.js?v=__BUILD__";
 import { applyViewOnlyClasses, documentViewOnly, setViewOnlyChangedHook } from "./documents/view-only.js?v=__BUILD__";
 import { claimPagePaste, initPageClipboard } from "./documents/page-clipboard.js?v=__BUILD__";
+import { initMiddlePan } from "./documents/middle-pan.js?v=__BUILD__";
 import { initPagePointer, pagePointAtPointer } from "./documents/page-pointer.js?v=__BUILD__";
 import { initGuides } from "./documents/pdf-guides.js?v=__BUILD__";
 import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
@@ -1756,7 +1757,10 @@ onDomReady(() => {
     blockAtPointer: (at) => { addHandwritingBlock(at); }
   });
   // Which clipboard a Ctrl+V on a page means — this app's ink and Blocks, or a
-  // picture on the system's (src/documents/page-clipboard.js).
+  // picture on the system's (src/documents/page-clipboard.js). The middle
+  // button's pan goes first: the paste a middle click fires is not a paste
+  // onto the page (src/documents/middle-pan.js).
+  initMiddlePan();
   initPageClipboard();
 
   // A block moved, typed into or deleted: repaint the pages it is on, and let
