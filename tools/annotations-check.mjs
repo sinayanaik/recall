@@ -982,7 +982,11 @@ sections.push(async () => {
     area.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(30);
     const tall = node.getBoundingClientRect().height;
-    const sameWidth = Math.abs(node.getBoundingClientRect().width - wide) < 1;
+    // The width is the longest line's now — "and a second", narrower than the
+    // placeholder it opened at — and never past the page.
+    const pageBox = node.closest(".pdf-page")?.getBoundingClientRect();
+    const wideAfter = node.getBoundingClientRect().width;
+    const followsLine = wideAfter < wide && wideAfter > 20 && Boolean(pageBox) && node.getBoundingClientRect().right <= pageBox.right + 1;
     api.commitBlockEdit();
     await settle(300);
     const putAway = !api.isInlineBlockEditorOpen() && !api.isBlockPlacementArmed() && button.getAttribute("aria-pressed") === "false";
@@ -994,11 +998,11 @@ sections.push(async () => {
     await settle(60);
     const offAgain = !api.isBlockPlacementArmed() && button.getAttribute("aria-pressed") === "false" && api.inkTool() === "pen";
     api.selectBlock(null);
-    return { visible, flyoutText, armed, lit, penKept, made: api.documentBlocks().length - before, focused, grew: tall > short + 10, sameWidth, putAway, md, offAgain };
+    return { visible, flyoutText, armed, lit, penKept, made: api.documentBlocks().length - before, focused, grew: tall > short + 10, followsLine, putAway, md, offAgain };
   }`);
   check("Insert is in the top row, where Text was; the Shapes list has no Text", placed.visible && !placed.flyoutText, JSON.stringify(placed));
   check("one press arms a block, lit, and leaves the pen as it was", placed.armed && placed.lit && placed.penKept, JSON.stringify(placed));
-  check("a tap (a mouse's too) puts it there, open in place, and it grows taller, not wider, as lines are typed", placed.made === 1 && placed.focused && placed.grew && placed.sameWidth, JSON.stringify(placed));
+  check("a tap (a mouse's too) puts it there, open in place, and it grows taller as lines are typed, as wide as the longest", placed.made === 1 && placed.focused && placed.grew && placed.followsLine, JSON.stringify(placed));
   check("putting the words down keeps them and Insert goes out; armed and pressed again it places nothing", placed.putAway && placed.md === "a first line\nand a second\nand a third" && placed.offAgain, JSON.stringify(placed));
 
   // Words typed with the old Text tool: still there, still typed in. Made by
