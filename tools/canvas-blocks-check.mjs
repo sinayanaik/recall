@@ -495,11 +495,12 @@ try {
       ta.dispatchEvent(new Event("input", { bubbles: true }));
       await settle(50);
       const liveH = document.querySelector('[data-pdf-block="' + block.id + '"]').getBoundingClientRect().height;
+      const liveW = document.querySelector('[data-pdf-block="' + block.id + '"]').getBoundingClientRect().width / scale;
       api.commitBlockEdit();
       for (let i = 0; i < 20; i += 1) await settle(60);
       const node = document.querySelector('[data-pdf-block="' + block.id + '"]');
       const body = node.querySelector(".pdf-block-body");
-      return { ...read(), liveH, liveW0, overflow: body.scrollHeight - body.clientHeight, overflowX: body.scrollWidth - body.clientWidth };
+      return { ...read(), liveH, liveW, liveW0, overflow: body.scrollHeight - body.clientHeight, overflowX: body.scrollWidth - body.clientWidth };
     };
     const w0 = read().w;
     const short = await write("one");
@@ -508,12 +509,18 @@ try {
     return {
       w0,
       short: { w: short.w, h: short.h, wSet: short.wSet, overflowX: short.overflowX },
-      long: { w: long.w, h: long.h, liveH: long.liveH, liveW0: long.liveW0, overflow: long.overflow, wSet: long.wSet },
+      long: { w: long.w, h: long.h, liveH: long.liveH, liveW: long.liveW, liveW0: long.liveW0, overflow: long.overflow, wSet: long.wSet },
       back: { w: back.w, h: back.h }
     };
   }`);
-  check("a block is drawn in to a short word once it is put down, and nothing is cut off", size.short.w < size.w0 / 2 && size.short.wSet === size.w0 && size.short.overflowX <= 1, JSON.stringify(size));
-  check("...opens out to the width it was given to be typed in again, and keeps it for a paragraph", Math.abs(size.long.liveW0 - size.w0) <= 2 && size.long.w === size.w0 && !size.long.wSet && size.back.w === size.short.w, JSON.stringify(size));
+  // "The automatic block size is overly constricted ... adding more content
+  // the block size is not changing dynamically": the width is the words',
+  // both ways — drawn in to one word, grown with a paragraph until the page's
+  // right edge, and drawn in again when the words are cut back.
+  const pageRight = await page.evaluate(`() => window.__recall.api.pdfPageViewport(1).viewBox[2]`);
+  check("a block is drawn in to a short word once it is put down, and nothing is cut off", size.short.w < size.w0 && size.short.wSet === undefined && size.short.overflowX <= 1, JSON.stringify(size));
+  check("...grows wider than it started with a paragraph, up to the page's edge, then wraps — and is drawn in again", size.long.w > size.w0 * 2 && size.long.w <= pageRight && size.long.overflow <= 1 && Math.abs(size.back.w - size.short.w) <= 1, JSON.stringify({ ...size, pageRight }));
+  check("...and widens while it is being typed, not only once it is put down", size.long.liveW > size.long.liveW0 * 3 && size.long.liveW <= pageRight, JSON.stringify(size));
   check("...and its height follows the words, while typed and once put down, with nothing cut off", size.long.h > size.short.h * 2 && size.long.liveH > 60 && size.long.overflow <= 1 && Math.abs(size.back.h - size.short.h) <= 3, JSON.stringify(size));
 
   // ...and a box that keeps a height of its own (a diagram's diamond) keeps it
@@ -564,10 +571,20 @@ try {
     for (let i = 1; i <= 6; i += 1) { fire(grip, "pointermove", x0 + i * 10, y0, { pointerType: "mouse" }); await settle(16); }
     fire(grip, "pointerup", x0 + 60, y0, { pointerType: "mouse", buttons: 0 });
     await settle(200);
-    const after = { w: read().w, wSet: read().wSet };
-    return { drawnIn, after };
+    const after = { w: read().w, wHand: read().wHand };
+    // Typed in again: a width dragged by hand is kept, and the words wrap at it.
+    api.editBlock(block.id);
+    await settle(50);
+    const ta2 = node().querySelector(".pdf-block-inline textarea");
+    ta2.value = "label, and then a good deal more after it, enough words to run well past the width it was dragged to";
+    ta2.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(50);
+    api.commitBlockEdit();
+    for (let i = 0; i < 20; i += 1) await settle(60);
+    const typed = { w: read().w, h: read().h, wHand: read().wHand };
+    return { drawnIn, after, typed };
   }`);
-  check("a width dragged by hand drops the width the block was drawn in from", dragged.drawnIn.wSet > dragged.drawnIn.w && dragged.after.w > dragged.drawnIn.w && dragged.after.wSet === undefined, JSON.stringify(dragged));
+  check("a width dragged by hand is the reader's: kept when it is typed in again, the words wrapping at it", dragged.after.w > dragged.drawnIn.w && dragged.after.wHand === true && dragged.typed.w === dragged.after.w && dragged.typed.wHand === true, JSON.stringify(dragged));
 
   // ── 5b. Compact unless the reader sized it ─────────────────────────────
   //
@@ -661,12 +678,187 @@ try {
     await settle(100);
     return out;
   }`);
-  check("words pasted onto the page are drawn in to their line, nothing cut off", compact.pasted.w < compact.pasted.w0 && compact.pasted.wSet === compact.pasted.w0 && compact.pasted.overflowX <= 1 && compact.pasted.overflowY <= 1, JSON.stringify(compact.pasted));
+  check("words pasted onto the page are drawn in to their line, nothing cut off", compact.pasted.w < compact.pasted.w0 && compact.pasted.wSet === undefined && compact.pasted.overflowX <= 1 && compact.pasted.overflowY <= 1, JSON.stringify(compact.pasted));
   check("a new Block takes the last look but never a height that was dragged", compact.pref.prefFit === true && compact.pref.fit === true && compact.pref.align === "center", JSON.stringify(compact.pref));
   check("the corner dragged mostly sideways sets the width; the height still follows the words", compact.sideways.w < compact.sideways.w0 && compact.sideways.h > compact.sideways.h0 && compact.sideways.fit === true && compact.sideways.wHand === true && compact.sideways.overflowY <= 1, JSON.stringify(compact.sideways));
   check("...dragged mostly down, it sets the height", compact.down.fit === false && compact.down.h > compact.down.h0 + 20, JSON.stringify(compact.down));
   check("Arrange → Fit to words brings a loose Block back to its words", compact.fitOffered && compact.fitted.fit === true && compact.fitted.h < compact.down.h && compact.fitted.overflowY <= 1 && compact.fitted.overflowX <= 1, JSON.stringify(compact.fitted));
   check("a width dragged by hand is not drawn in again when the words render", compact.kept.after === compact.kept.widened && compact.kept.wHand === true, JSON.stringify(compact.kept));
+
+  // ...but a paragraph laid out before the width grew with the words (no
+  // `wFit`) keeps the width it wraps at when its page is opened again — a page
+  // set out with them is not pushed about — until Fit to words gives it back.
+  const laidOut = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const settleLong = async () => { for (let i = 0; i < 20; i += 1) await settle(60); };
+    const md = "An older paragraph, laid out at the width it was given, long enough that it wraps over several lines of that width.";
+    const block = api.addDocumentBlock(1, { x: 80, y: 640 }, { md, w: 200, edit: false });
+    await settleLong();
+    const read = () => api.documentBlocks().find((b) => b.id === block.id);
+    const opened = { w: read().w, wFit: read().wFit };
+    // Typed in, a word changed: still the width it wraps at.
+    api.editBlock(block.id);
+    await settle(80);
+    const ta = document.querySelector('[data-pdf-block="' + block.id + '"] .pdf-block-inline textarea');
+    ta.value = md.replace("older", "old");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(50);
+    api.commitBlockEdit();
+    await settleLong();
+    const typed = { w: read().w, wFit: read().wFit };
+    api.fitBlockToContents(block.id);
+    await settleLong();
+    const fitted = { w: read().w, wFit: read().wFit };
+    api.deleteBlock(block.id);
+    await settle(100);
+    return { opened, typed, fitted };
+  }`);
+  check("a paragraph laid out at its own width keeps it when opened and typed in", laidOut.opened.w === 200 && !laidOut.opened.wFit && laidOut.typed.w === 200, JSON.stringify(laidOut));
+  check("...and Fit to words gives its width back to its words", laidOut.fitted.w > 200 && laidOut.fitted.wFit === true, JSON.stringify(laidOut));
+
+  // ── 5c. Padding, one side at a time ─────────────────────────────────────
+  //
+  // "Add a field for padding (left, right, top, bottom) so I can more
+  // efficiently style the blocks." In the Style panel's More, each side its own
+  // box in points; the rendered words and the words being typed pad alike, the
+  // frame grows round it, and the next Block remembers it.
+  const padded = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const { fire } = window.__h;
+    const settleLong = async () => { for (let i = 0; i < 20; i += 1) await settle(60); };
+    let saved = null;
+    try { saved = localStorage.getItem("recall:ink-prefs-v1"); } catch (_) {}
+    const block = api.addDocumentBlock(1, { x: 100, y: 420 }, { md: "padded", edit: false });
+    await settleLong();
+    const read = () => api.documentBlocks().find((b) => b.id === block.id);
+    const node = () => document.querySelector('[data-pdf-block="' + block.id + '"]');
+    const scale = api.pdfPageViewport(1).scale || 1;
+    const pads = (el) => { const cs = getComputedStyle(el); return [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map((v) => Math.round(parseFloat(v) / scale)); };
+    const before = { w: read().w, h: read().h, pad: pads(node().querySelector(".pdf-block-body")) };
+    // The fields are there, under More, in the Style panel of a picked Block.
+    api.selectBlock(block.id);
+    await settle(150);
+    const strip = document.querySelector(".pdf-block-actions-pop");
+    const styleBtn = strip?.querySelector('[data-block-popover-action="style"]');
+    if (styleBtn) { const r = styleBtn.getBoundingClientRect(); fire(styleBtn, "pointerdown", r.left + 2, r.top + 2, { pointerType: "mouse" }); }
+    await settle(150);
+    const fields = ["padTop", "padRight", "padBottom", "padLeft"].map((key) => Boolean(document.querySelector('.pdf-block-style-pop [data-bstyle-number="' + key + '"]')));
+    // Typed into, as the reader would: the top box, live.
+    const top = document.querySelector('.pdf-block-style-pop [data-bstyle-number="padTop"]');
+    if (top) { top.value = "20"; top.dispatchEvent(new Event("input", { bubbles: true })); }
+    api.writeBlockStyle(block.id, { padRight: 30, padBottom: 0, padLeft: 10 });
+    await settleLong();
+    const after = { w: read().w, h: read().h, style: read().style, pad: pads(node().querySelector(".pdf-block-body")) };
+    api.selectBlock(null);
+    await settle(100);
+    // Typed in: the textarea pads exactly as the rendered words do.
+    api.editBlock(block.id);
+    await settle(100);
+    const typing = pads(node().querySelector(".pdf-block-inline textarea"));
+    api.commitBlockEdit();
+    await settleLong();
+    const remembered = api.blockStylePreference("text");
+    try { if (saved === null) localStorage.removeItem("recall:ink-prefs-v1"); else localStorage.setItem("recall:ink-prefs-v1", saved); } catch (_) {}
+    api.deleteBlock(block.id);
+    await settle(100);
+    return { before, after, typing, fields, remembered: [remembered.padTop, remembered.padRight, remembered.padBottom, remembered.padLeft] };
+  }`);
+  check("the Style panel has a Padding box for each side", padded.fields.every(Boolean), JSON.stringify(padded));
+  check("a Block's own padding reaches its words, side by side, 0 included", JSON.stringify(padded.before.pad) === "[6,6,6,6]" && JSON.stringify(padded.after.pad) === "[20,30,0,10]" && padded.after.style?.padTop === 20 && padded.after.style?.padBottom === 0, JSON.stringify(padded));
+  check("...the frame grows round the wider padding, and the words being typed are padded alike", padded.after.w > padded.before.w && padded.after.h > padded.before.h && JSON.stringify(padded.typing) === "[20,30,0,10]", JSON.stringify(padded));
+  check("...and the next Block remembers it", JSON.stringify(padded.remembered) === "[20,30,0,10]", JSON.stringify(padded));
+
+  // ── 5d. A press elsewhere puts things down ──────────────────────────────
+  //
+  // "Almost always when an arrow is being connected it stays connected even if
+  // clicking elsewhere; when a block is edited or selected the controls related
+  // to it also stick unless clicking some other block."
+  const dismiss = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const { fire, drag, pageEl } = window.__h;
+    const out = {};
+    pageEl(1).scrollIntoView({ block: "start" });
+    await settle(300);
+    const block = api.addDocumentBlock(1, { x: 120, y: 520 }, { md: "pick me", edit: false });
+    await settle(500);
+    // (a) Picked up, then a press on the tab row — off the page altogether.
+    api.selectBlock(block.id);
+    await settle(150);
+    out.picked = api.selectedBlockId() === block.id && Boolean(document.querySelector(".pdf-block-actions-pop")) && Boolean(document.querySelector(".pdf-connect-arrow"));
+    const row = document.getElementById("viewModeToggle");
+    const rr = row.getBoundingClientRect();
+    fire(row, "pointerdown", rr.left + 1, rr.top + 1, { pointerType: "mouse" });
+    fire(row, "pointerup", rr.left + 1, rr.top + 1, { pointerType: "mouse", buttons: 0 });
+    await settle(150);
+    out.tabRow = { selected: api.selectedBlockId(), ring: Boolean(document.querySelector(".pdf-block.is-selected")), strip: Boolean(document.querySelector(".pdf-block-actions-pop:not([hidden])")), arrows: document.querySelectorAll(".pdf-connect-arrow").length };
+    // (b) Typed in, then the same press: the words are kept and the editor goes.
+    api.editBlock(block.id);
+    await settle(100);
+    const ta = document.querySelector('[data-pdf-block="' + block.id + '"] .pdf-block-inline textarea');
+    ta.value = "pick me, typed";
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    fire(row, "pointerdown", rr.left + 1, rr.top + 1, { pointerType: "mouse" });
+    await settle(400);
+    out.typed = { editing: api.isEditingBlock(), md: api.documentBlocks().find((b) => b.id === block.id)?.md };
+    // (c) A connector picked up, then a stylus on the paper with the pen.
+    api.setInkArmed(true);
+    api.setInkTool("pen");
+    api.refreshInkRail();
+    await settle(200);
+    const arrow = api.addDocumentShape(1, { type: "arrow", p: [[300, 700], [460, 700]], stroke: "#000000", width: 1.5 });
+    await settle(200);
+    api.selectShape(arrow.id);
+    await settle(150);
+    out.shapePicked = api.selectedShapeRecord()?.id === arrow.id;
+    const box = pageEl(1).getBoundingClientRect();
+    const low = Math.min(box.bottom, innerHeight) - 50;
+    await drag(box.left + 40, low, box.left + 120, low + 6, { pointerType: "pen" });
+    await settle(150);
+    out.shapeAfterPen = api.selectedShapeRecord()?.id || null;
+    api.setInkArmed(false);
+    api.refreshInkRail();
+    await settle(150);
+    // (d) A connect arrow pressed and dragged, then Escape: nothing made, and
+    // the arrows come back for the Block.
+    api.selectBlock(block.id);
+    await settle(200);
+    const shapesBefore = (api.state.meta.pdfHighlights || []).length;
+    const handle = document.querySelector(".pdf-connect-arrow");
+    out.handle = Boolean(handle);
+    if (handle) {
+      const a = handle.getBoundingClientRect();
+      const x0 = a.left + a.width / 2;
+      const y0 = a.top + a.height / 2;
+      fire(handle, "pointerdown", x0, y0, { pointerType: "mouse" });
+      for (let i = 1; i <= 5; i += 1) { fire(document.elementFromPoint(x0 + i * 20, y0 + i * 10) || document.body, "pointermove", x0 + i * 20, y0 + i * 10, { pointerType: "mouse" }); await settle(16); }
+      out.connecting = Boolean(document.querySelector(".is-connecting"));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await settle(150);
+      out.afterEscape = { connecting: Boolean(document.querySelector(".is-connecting")), made: (api.state.meta.pdfHighlights || []).length - shapesBefore };
+      // A drag whose release was lost (a second press with another pointer id)
+      // is called off too, rather than chasing the pointer.
+      api.selectBlock(block.id);
+      await settle(200);
+      const again = document.querySelector(".pdf-connect-arrow");
+      const b = again.getBoundingClientRect();
+      fire(again, "pointerdown", b.left + b.width / 2, b.top + b.height / 2, { pointerType: "touch", pointerId: 7 });
+      fire(document.body, "pointermove", b.left + 80, b.top + 60, { pointerType: "touch", pointerId: 7 });
+      await settle(50);
+      fire(document.body, "pointerdown", 5, 5, { pointerType: "touch", pointerId: 8 });
+      await settle(150);
+      out.afterStray = { connecting: Boolean(document.querySelector(".is-connecting")), made: (api.state.meta.pdfHighlights || []).length - shapesBefore };
+    }
+    api.selectBlock(null);
+    api.selectShape(null);
+    api.deleteBlock(block.id);
+    await settle(150);
+    return out;
+  }`);
+  check("a press on the tab row puts a picked Block down — ring, arrows and strip", dismiss.picked && dismiss.tabRow.selected === null && !dismiss.tabRow.ring && !dismiss.tabRow.strip && dismiss.tabRow.arrows === 0, JSON.stringify(dismiss));
+  check("...and puts down a Block being typed in, keeping its words", dismiss.typed.editing === false && dismiss.typed.md === "pick me, typed", JSON.stringify(dismiss));
+  check("a stylus writing on the paper puts a picked connector down", dismiss.shapePicked && dismiss.shapeAfterPen === null, JSON.stringify(dismiss));
+  check("a connector being drawn is called off by Escape, with nothing made", dismiss.handle && dismiss.connecting && dismiss.afterEscape?.connecting === false && dismiss.afterEscape?.made === 0, JSON.stringify(dismiss));
+  check("...and by a press that is not its own release", dismiss.afterStray?.connecting === false && dismiss.afterStray?.made === 0, JSON.stringify(dismiss));
 
   // A block set to the centre is typed from the left, and centred once down.
   const aligned = await page.evaluate(`async () => {

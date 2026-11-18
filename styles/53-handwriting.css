@@ -455,7 +455,13 @@
 .pdf-block-edit {
   flex: 1;
   min-height: 0;
-  padding: calc(6px * var(--pdf-block-scale, 1));
+  /* Each side is the Block's own padding in points when its Style sets one
+     (src/documents/pdf-blocks.js paintBlockStyle), else the 6 it has always had. */
+  padding:
+    calc(var(--pdf-block-pad-top, 6) * 1px * var(--pdf-block-scale, 1))
+    calc(var(--pdf-block-pad-right, 6) * 1px * var(--pdf-block-scale, 1))
+    calc(var(--pdf-block-pad-bottom, 6) * 1px * var(--pdf-block-scale, 1))
+    calc(var(--pdf-block-pad-left, 6) * 1px * var(--pdf-block-scale, 1));
   font-size: calc(0.82rem * var(--pdf-block-scale, 1));
   line-height: 1.4;
   overflow: auto;

@@ -365,6 +365,24 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, p
   const typeLine = document.createElement("div");
   typeLine.className = "bstyle-line bstyle-type";
   typeLine.append(weight.wrap, lineHeight.wrap, letterSpacing.wrap);
+  // The room between the frame and the words, one box per side, in points.
+  // Empty is the padding a Block has always had (6pt); 0 is no padding at all.
+  // The sides go round the way CSS writes them — top, right, bottom, left.
+  const padTop = styleNumber("padTop", { label: "↑", unit: "", placeholder: "6" });
+  const padRight = styleNumber("padRight", { label: "→", unit: "", placeholder: "6" });
+  const padBottom = styleNumber("padBottom", { label: "↓", unit: "", placeholder: "6" });
+  const padLeft = styleNumber("padLeft", { label: "←", unit: "pt", placeholder: "6" });
+  [[padTop, "Padding at the top"], [padRight, "Padding on the right"],
+    [padBottom, "Padding at the bottom"], [padLeft, "Padding on the left"]].forEach(([field, title]) => {
+    field.input.setAttribute("aria-label", title);
+    field.wrap.title = title;
+  });
+  const padLine = document.createElement("div");
+  padLine.className = "bstyle-line bstyle-type bstyle-pad";
+  const padName = document.createElement("span");
+  padName.className = "bstyle-label";
+  padName.textContent = "Padding";
+  padLine.append(padName, padTop.wrap, padRight.wrap, padBottom.wrap, padLeft.wrap);
   const frame = styleSelect("frame", {
     label: "Frame",
     groups: [{ label: "Frame", options: BLOCK_FRAMES.map((token) => [token, labelFor(BLOCK_FRAME_LABEL, token)]) }]
@@ -413,7 +431,7 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, p
     more.append(shapes.wrap, face.wrap);
     if (holds.heading) more.appendChild(headFace.wrap);
     if (holds.code || holds.inlineCode) more.appendChild(codeFace.wrap);
-    more.append(typeLine, frame.wrap, edgeColours.wrap, edgeLine, valign.wrap, fit.wrap);
+    more.append(typeLine, padLine, frame.wrap, edgeColours.wrap, edgeLine, valign.wrap, fit.wrap);
     if (holds.code) {
       // The two code controls share a line, the way the size and the alignment
       // do above: neither fills one, and a switch on a row of its own under a

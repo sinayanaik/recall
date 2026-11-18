@@ -470,6 +470,23 @@
   width: 3.6em;
 }
 
+/* Padding: four sides, each a short box under an arrow, behind one label. */
+.bstyle-more .bstyle-pad {
+  column-gap: 4px;
+}
+
+.bstyle-more .bstyle-pad > .bstyle-label {
+  width: 54px;
+}
+
+.bstyle-more .bstyle-pad .bstyle-number {
+  gap: 2px;
+}
+
+.bstyle-more .bstyle-pad .bstyle-input {
+  width: 2.6em;
+}
+
 /* ── ...where they float over the page ─────────────────────────────────────
  *
  * 610: over the document stage and everything in it (the pen's rail is 6 inside

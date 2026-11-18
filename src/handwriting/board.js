@@ -376,8 +376,8 @@ export function addHandwritingBlock(at = null) {
 // as markdown, its top-left corner at the mouse when there is one, as a pasted
 // picture's is. A Block rather than Text because what is copied is as often a
 // paragraph, a list or a table as a word, and a Block keeps all of those. It
-// fits its height to the words (block style `fit`); its width follows the
-// longest line, between a Block's usual width and most of the page's.
+// fits its height to the words (block style `fit`); its width starts at a guess
+// from the longest line and is then the words' own (`growToWords`).
 const PASTED_BLOCK_MIN_WIDTH = 240;
 const PASTED_POINTS_PER_CHAR = 5.6;
 
@@ -391,8 +391,8 @@ export function addHandwritingTextBlock(markdown, at = null) {
   const longest = md.split("\n").reduce((most, line) => Math.max(most, line.length), 0);
   const w = Math.round(Math.min((vx1 - vx0) * 0.62, Math.max(PASTED_BLOCK_MIN_WIDTH, longest * PASTED_POINTS_PER_CHAR)));
   const block = at
-    ? addDocumentBlock(page, at, { anchor: "corner", md, w, edit: false })
-    : addDocumentBlock(page, handwritingDropPoint(page), { md, w, edit: false });
+    ? addDocumentBlock(page, at, { anchor: "corner", md, w, edit: false, growToWords: true })
+    : addDocumentBlock(page, handwritingDropPoint(page), { md, w, edit: false, growToWords: true });
   paintHandwritingControls();
   return block;
 }

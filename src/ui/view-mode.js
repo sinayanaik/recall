@@ -181,7 +181,13 @@ export function setViewMode(mode, options = {}) {
     }
   }
   if (next === "cards" && state.splitPart !== "notes") resetNotesEditingUI();
-  blockEditFlushHook?.();
+  // A file rewritten in place under the reader (a sync, the same file saved in
+  // another window — loadDeckSnapshot's `keepPlace`) is not the reader leaving
+  // the page: the Block being typed in stays open (the repaint moves its editor
+  // into the Block's new node, and its words are written by id when it is put
+  // down). Putting it down here closed the editor under the caret every time
+  // the other window saved.
+  if (!(options.keepPlace && next === state.viewMode)) blockEditFlushHook?.();
   // A note being typed in the highlights pane commits on the way out, exactly
   // as the note popup flushes in closeHighlightNoteEditor: leaving a view is not
   // a reason to lose a sentence. A no-op when nothing is open.
@@ -252,7 +258,10 @@ export function setViewMode(mode, options = {}) {
 
   const token = ++viewModePaintToken;
   const paint = becomesTwoPapers
-    ? () => openDocumentBeside(paperSlotOf(next), () => paintPart(next, options, changed), { focusNew: true })
+    // `focusNew` read when the paint runs, which may be a frame later: a press
+    // on the other paper in that frame moved the focus back to it (focusPart),
+    // and the new paper must not then take the tools and the pager from it.
+    ? () => openDocumentBeside(paperSlotOf(next), () => paintPart(next, options, changed), { focusNew: state.viewMode === next })
     : () => paintPart(next, options, changed);
 
   // ── ...except between the two papers, where the frame is pure cost ────────
@@ -657,7 +666,15 @@ export function initSplitPartsFocus() {
     const mode = splitPartAt(event.target);
     if (mode && mode !== state.viewMode) focusPart(mode);
   };
-  quizPanel.addEventListener("pointerdown", follow, { capture: true, passive: true });
+  // The press on WINDOW, in its capture phase — the first place any press is
+  // heard. On the panel it came after the page's own capture listeners on the
+  // document (the Canvas's pick and Select tool, a connect arrow, Insert),
+  // which claim a left press with stopPropagation: the press acted on the
+  // Canvas beside, but never reached here, so the focus stayed on Notes — and a
+  // right-click, which none of them claim, was the only press that moved it.
+  window.addEventListener("pointerdown", (event) => {
+    if (quizPanel.contains(event.target)) follow(event);
+  }, { capture: true, passive: true });
   quizPanel.addEventListener("focusin", follow, { capture: true });
   quizPanel.addEventListener("wheel", follow, { capture: true, passive: true });
   // Below the 720px boundary there is not room for two parts; the focused one

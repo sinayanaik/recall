@@ -438,6 +438,102 @@ try {
     focusSwap.notesRenders === 0 && focusSwap.sameNote && focusSwap.samePages,
     `note mutations=${focusSwap.notesRenders}, same note=${focusSwap.sameNote}, same pages=${focusSwap.samePages}`);
 
+  // ── 2b. ...on the Canvas too, where the page's own tools claim a press ───
+  //
+  // "Sometimes even after clicking a tab in side by side it does not work; I
+  // have to right click." A left press on the Canvas beside the Notes was
+  // claimed by the Canvas's own capture listeners (the pick, the Select tool, a
+  // connect arrow) before the panel heard it, so it acted on the Canvas while
+  // the focus stayed on the Notes; only a right-click, which none of them
+  // claim, moved it. A left press — mouse and pen — moves it now.
+  await page.evaluate(OPEN_SRC, "notes", "handwriting");
+  const canvasFocus = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const out = {};
+    const stage = document.querySelector(".quiz-panel > .document-stage[data-doc-slot='notebook']:not([hidden])");
+    const page1 = stage?.querySelector(".pdf-page[data-page-number='1']");
+    if (!page1) return { error: "no Canvas page beside the Notes" };
+    out.before = api.state.viewMode;
+    // The pen's bar shut: a mouse on a Canvas then picks things up and draws a
+    // box round them (src/documents/canvas-selection.js), claiming the press.
+    const wasArmed = api.isInkArmed();
+    api.setInkArmed(false);
+    await settle(100);
+    for (const pointerType of ["mouse", "pen"]) {
+      const box = page1.getBoundingClientRect();
+      const x = box.left + box.width / 2;
+      const y = box.top + Math.min(box.height, innerHeight - box.top) / 2;
+      const at = document.elementFromPoint(x, y) || page1;
+      at.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType, pointerId: 3, isPrimary: true, button: 0, buttons: 1 }));
+      at.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType, pointerId: 3, isPrimary: true, button: 0, buttons: 0 }));
+      await settle(200);
+      out[pointerType] = api.state.viewMode;
+      // Back to the Notes for the next pointer.
+      const notes = document.getElementById("notesView");
+      const nb = notes.getBoundingClientRect();
+      notes.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: nb.left + 30, clientY: nb.top + 30, pointerType: "mouse", buttons: 1 }));
+      await settle(200);
+      out[pointerType + "Back"] = api.state.viewMode;
+    }
+    api.setInkArmed(wasArmed);
+    await settle(100);
+    return out;
+  }`);
+  check("a left press on the Canvas beside the Notes moves the focus to it — mouse and pen",
+    !canvasFocus.error && canvasFocus.before === "notes" && canvasFocus.mouse === "handwriting" && canvasFocus.pen === "handwriting" && canvasFocus.mouseBack === "notes",
+    JSON.stringify(canvasFocus));
+
+  // ── 2c. A page drawn ahead of the reader keeps its words through a park ──
+  //
+  // "In the same page zoom, one page's text is selectable but the very next
+  // page's is not; it only gets selectable on a zoom in or out." A page drawn
+  // ahead of the reader waits to be on screen before its words are laid over
+  // it; the PDFs put away in that wait (a tab, the paper beside taking a turn)
+  // gave the wait up, and the page came back drawn and wordless for good.
+  const words = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.closeSplitPart();
+    api.setViewMode("document");
+    const stage = () => document.querySelector(".quiz-panel > .document-stage[data-doc-slot='doc']:not([hidden])");
+    const view = () => stage()?.querySelector(".document-scroll");
+    // The foot of page 1 on screen, page 2 just below it, out of sight: drawn
+    // ahead of the reader, its words waiting for it to be seen.
+    const p2 = stage().querySelector(".pdf-page[data-page-number='2']");
+    const v = view();
+    v.scrollTop = Math.max(0, v.scrollTop + (p2.getBoundingClientRect().top - v.getBoundingClientRect().top) - v.clientHeight - 120);
+    for (let i = 0; i < 60 && !p2.querySelector("canvas.pdf-canvas, .pdf-picture"); i += 1) await settle(100);
+    await settle(300);
+    const debug = { pages: stage().querySelectorAll(".pdf-page").length, p2Top: p2 ? Math.round(p2.getBoundingClientRect().top) : null, inner: innerHeight, viewH: view().clientHeight };
+    const drawnAhead = () => [...stage().querySelectorAll(".pdf-page")].filter((p) => p.querySelector("canvas.pdf-canvas, .pdf-picture") && !p.querySelector(".pdf-text-layer")).map((p) => Number(p.dataset.pageNumber));
+    const before = drawnAhead();
+    // Away and straight back: the PDFs are parked and restored in place.
+    api.setViewMode("handwriting");
+    await settle(300);
+    api.setViewMode("document");
+    await settle(400);
+    // Each page that is drawn, brought on screen in turn, gets its words.
+    const pages = [...stage().querySelectorAll(".pdf-page")].filter((p) => p.querySelector("canvas.pdf-canvas, .pdf-picture"));
+    const out = { before, debug, pages: {} };
+    for (const p of pages) {
+      p.scrollIntoView({ block: "start" });
+      let spans = 0;
+      for (let i = 0; i < 30; i += 1) {
+        await settle(100);
+        spans = p.querySelector(".pdf-text-layer")?.children.length || 0;
+        if (spans) break;
+      }
+      out.pages[p.dataset.pageNumber] = { spans, layers: p.querySelectorAll(".pdf-text-layer").length };
+    }
+    view().scrollTop = 0;
+    return out;
+  }`);
+  check("every page drawn ahead of the reader still has its words after the PDFs were put away and back",
+    Object.keys(words.pages).length >= 2 && Object.values(words.pages).every((p) => p.spans > 0 && p.layers === 1),
+    JSON.stringify(words));
+
+  // Back to the Notes beside the PDFs, which the cases below are written for.
+  await page.evaluate(OPEN_SRC, "notes", "document");
+
   // ── 3. Each pane does its own job beside the other ───────────────────────
   const scrolling = await page.evaluate(`async () => {
     const { settle } = window.__recall;

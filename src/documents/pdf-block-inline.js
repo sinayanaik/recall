@@ -9,9 +9,10 @@
 // text inside and apply styling — it directly goes to pan and move."
 //
 // So a block opens IN PLACE: its rendered body steps aside and the markdown is
-// typed into the block itself, at the block's own width, in its own size, face
-// and colour, with the markdown coloured as the Notes editor colours it. The
-// block's height follows the lines as they are typed; its width does not move.
+// typed into the block itself, in its own size, face and colour, with the
+// markdown coloured as the Notes editor colours it. The block grows with the
+// lines as they are typed — wider with the longest line, up to the page's
+// edge, then taller; one whose width was dragged by hand wraps at it.
 // Selecting words raises the Notes selection bar — bold, colour, highlight,
 // maths, a cloze — because the editor is the Notes editor's own kit
 // (src/notes/note-editor-kit.js) registered as the surface the bar acts on. Its
@@ -61,12 +62,47 @@ function ensureKit() {
 function growToFit() {
   if (!inlineKit || !inlineSession) return;
   const { textarea } = inlineKit;
+  // The width first: the Block grows with its longest line (up to the page's
+  // edge — the caller's to say), and only then is the height measured, at the
+  // width the lines will actually wrap at.
+  if (inlineSession.onWidth) {
+    const measure = measureTypedWidth(textarea, inlineSession.node);
+    if (measure) inlineSession.onWidth(measure);
+  }
   textarea.style.setProperty("height", "auto", "important");
   textarea.style.setProperty("height", `${Math.ceil(textarea.scrollHeight)}px`, "important");
   inlineSession.onGrow?.();
   // Words still picked (a press of the selection bar's B wraps them and can
   // add a line): the bar goes back above the Block's new edge, not over it.
   if (textarea.selectionEnd > textarea.selectionStart) scheduleNotesSelectionCheck();
+}
+
+// How wide the typed words want to be, in screen pixels: the longest line as
+// typed, unwrapped, in the textarea's own face, size, spacing and padding — set
+// once in a hidden box beside it. An empty editor measures its placeholder, so a
+// new Block opens wide enough to say what it is for. `framePx` is everything of
+// the Block that is not the textarea (its edges).
+let typedWidthProbe = null;
+const PROBE_PROPS = ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "wordSpacing",
+  "fontFeatureSettings", "fontVariant", "tabSize", "paddingLeft", "paddingRight", "textTransform"];
+
+function measureTypedWidth(textarea, node) {
+  if (!textarea?.isConnected || !node) return null;
+  if (!typedWidthProbe) {
+    typedWidthProbe = document.createElement("div");
+    typedWidthProbe.setAttribute("aria-hidden", "true");
+    typedWidthProbe.style.cssText = "position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none;"
+      + "white-space:pre;width:max-content;height:auto;border:0;margin:0;contain:layout style;";
+  }
+  const style = getComputedStyle(textarea);
+  PROBE_PROPS.forEach((key) => { typedWidthProbe.style[key] = style[key]; });
+  // A trailing space so a line that ends in one is measured with it, the way
+  // the caret sees it.
+  typedWidthProbe.textContent = `${textarea.value || textarea.placeholder || " "} `;
+  if (!typedWidthProbe.isConnected) document.body.appendChild(typedWidthProbe);
+  const contentPx = typedWidthProbe.getBoundingClientRect().width;
+  const framePx = Math.max(0, node.offsetWidth - textarea.offsetWidth);
+  return { contentPx, framePx };
 }
 
 export function isInlineBlockEditorOpen() {
@@ -105,10 +141,10 @@ export function mountInlineBlockEditor(node) {
 
 // `onDone` is handed the text (always: there is no cancel here), `onGrow` is
 // told whenever the editor changed height.
-export function openInlineBlockEditor({ id, node, value = "", placeholder = "", onDone = () => {}, onGrow = () => {} } = {}) {
+export function openInlineBlockEditor({ id, node, value = "", placeholder = "", onDone = () => {}, onGrow = () => {}, onWidth = null } = {}) {
   if (inlineSession) closeInlineBlockEditor(true);
   const built = ensureKit();
-  inlineSession = { id, node: null, onDone, onGrow };
+  inlineSession = { id, node: null, onDone, onGrow, onWidth };
   built.setMode("write");
   built.setValue(value);
   built.clearHistory();

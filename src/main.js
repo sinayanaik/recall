@@ -24,7 +24,7 @@ import { onS3ConfigAdopted } from "./cloud/s3-config-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSignedInListener, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus, markWebDeckExportMenuOpen } from "./cloud/web-decks.js?v=__BUILD__";
 import { deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
-import { noteWheelActivity, readerActedSince } from "./core/gesture.js?v=__BUILD__";
+import { inkPenIsDown, noteWheelActivity, readerActedSince } from "./core/gesture.js?v=__BUILD__";
 import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
 import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
@@ -51,7 +51,7 @@ import { clearImportStaging, commitStagedImport, importAimFolder, importDestinat
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory, setKnownFoldersChangedHook } from "./library/folders.js?v=__BUILD__";
-import { flushIndexBatch, readLocalDeckIndex, reconcileOpenDeckWithStore, setDeckContentSavedHook, setDeckOpenedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
+import { READING_PLACE_META_KEYS, flushIndexBatch, lastAdoptedMetaChanges, readLocalDeckIndex, reconcileOpenDeckWithStore, setDeckContentSavedHook, setDeckOpenedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
 import { checkDeckFreshness, startRealtimeSync, stopRealtimeSync } from "./sync/live-sync.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadDeckEntry, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
@@ -118,7 +118,7 @@ import { reconcileAllDecks, syncAllDecksAndWait } from "./sync/reconcile.js?v=__
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, syncChromeState, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
-import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, documentSurfaceShown, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, docSlotReadingPositionKey, documentSurfaceShown, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
 import { isCardsShown, isNotesShown } from "./ui/split-parts.js?v=__BUILD__";
 import { onDocumentScrollers } from "./documents/doc-scrollers.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
@@ -161,11 +161,12 @@ import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelec
 import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
-import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, rerenderPaperDiagrams, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
+import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, isEditingBlock, liveBlockGesture, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, rerenderPaperDiagrams, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail, rehomeInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, repaintDocumentShapes, selectShape, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
-import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
+import { deleteWithConnectors, initConnectors, isConnecting, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
 import { clearPick, initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
+import { initCanvasDismiss, putCanvasThingsDown } from "./documents/canvas-dismiss.js?v=__BUILD__";
 import { armBlockPlacement } from "./documents/block-place.js?v=__BUILD__";
 import { applyViewOnlyClasses, documentViewOnly, setViewOnlyChangedHook } from "./documents/view-only.js?v=__BUILD__";
 import { claimPagePaste, initPageClipboard } from "./documents/page-clipboard.js?v=__BUILD__";
@@ -1674,6 +1675,9 @@ onDomReady(() => {
   // Several things picked up at once, and the bar that arranges them
   // (src/documents/canvas-selection.js).
   initCanvasSelection();
+  // ...and a press anywhere off the live paper putting all of it down
+  // (src/documents/canvas-dismiss.js).
+  initCanvasDismiss();
   // ...and the guides and grid a drag settles onto (src/documents/pdf-guides.js).
   initGuides();
   // What a new callout, text box or sticky note opens straight away: the box
@@ -1803,8 +1807,15 @@ onDomReady(() => {
     // rewritten under the reader. The note first: the document's branch below
     // returns early on its own paths.
     if (isNotesShown()) renderNotesViewPinned();
+    // What the adopt changed in the meta (src/library/local-library.js). Only
+    // where somebody was reading — the other window's Notes scroll, saved with
+    // its every keystroke — is nothing the pages show, and repainting every
+    // page's ink, Blocks and shapes for it was the Canvas "resetting" each time
+    // the Notes beside it in another window were saved.
+    const metaChanges = lastAdoptedMetaChanges();
+    const pagesMoved = !metaChanges || [...metaChanges].some((key) => !READING_PLACE_META_KEYS.has(key));
     // ...and with both papers up, the suspended one repaints on its next turn.
-    noteBesideDocumentStale();
+    if (pagesMoved) noteBesideDocumentStale();
     if (documentSurfaceShown()) {
       // No paper on the stage at all — the offer to attach one, a notebook not
       // started yet, an open that failed. loadDeckSnapshot no longer paints the
@@ -1831,14 +1842,22 @@ onDomReady(() => {
       if (!openDocumentIsCurrent()) { openDocumentView({ slot: activeDocSlot(), holdReader: true }); return; }
       // ...and when the file is the same, only what sits ON the pages can have
       // moved: the marks, the ink, the blocks, the badges.
-      repaintOpenDocumentPages();
-      notifyHighlightsChanged();
+      if (pagesMoved) {
+        repaintOpenDocumentPages();
+        notifyHighlightsChanged();
+      }
       // The merge just wrote over meta.readingPositionPdf with whichever side's
       // copy carried the newer `at` — which can be a copy on-disk still made
       // before the reader's most recent scroll on THIS device. Re-stamping the
       // reader's actual current page over it now is what stops that staleness
       // from surviving to the next device's pull or this device's next reopen.
-      scheduleDocumentPositionSave();
+      //
+      // Only when this paper's OWN place was among what changed. Re-stamping on
+      // every adopt also re-stamped the shared meta.readingPosition, which a
+      // second window on the Notes writes too — each window's save then moved
+      // the other's, back and forth, an adopt every time.
+      const ownPlace = docSlotReadingPositionKey(activeDocSlot());
+      if (!metaChanges || metaChanges.has(ownPlace) || metaChanges.has("pdfReadingPositions")) scheduleDocumentPositionSave();
     }
     // Cards need nothing — loadDeckSnapshot ends in showCard() either way.
   });
@@ -1971,8 +1990,15 @@ function scheduleOpenDeckReconcile(delay = 60) {
   if (openDeckReconcileTimer) clearTimeout(openDeckReconcileTimer);
   openDeckReconcileTimer = setTimeout(() => {
     openDeckReconcileTimer = null;
+    // ...and while the hand is on the Canvas: the pen down, a Block being typed
+    // in or dragged, a connector being drawn. The merge is safe at any moment,
+    // but repainting the page under a stroke, a caret or a drag is not.
     const busy = cardEditActive()
       || isHighlightNoteEditorOpen()
+      || inkPenIsDown()
+      || isEditingBlock()
+      || liveBlockGesture()
+      || isConnecting()
       || Boolean(el.allCardsPanel && !el.allCardsPanel.hidden && el.allCardsPanel.contains(document.activeElement)
         && /^(TEXTAREA|INPUT)$/.test(document.activeElement?.tagName || ""));
     if (busy) { scheduleOpenDeckReconcile(1500); return; }
@@ -3815,7 +3841,13 @@ initHome();
 
 // Reading progress and the time log (src/stats/). Measured on this device, kept
 // on this device, and carried to the others by the sync (src/stats/stats-sync.js).
-setViewSwitchHook(noteViewSwitch);
+// A change of the part in focus puts down whatever was picked up on the page
+// being left — a Block's ring and arrows, a connector's handles, the Arrange
+// bar — rather than leaving them drawn on a paper the keys no longer reach.
+setViewSwitchHook((previous, next) => {
+  putCanvasThingsDown();
+  noteViewSwitch(previous, next);
+});
 setPageIndicatorUpdatedHook(noteDocumentProgress);
 setReadingAnchorCapturedHook(noteNotesProgress);
 initReadingProgressToggles();
