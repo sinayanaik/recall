@@ -19,6 +19,9 @@
 //      opens it in place, where words select and the Notes selection bar
 //      styles them. A single tap never does: "I am just clicking on a block
 //      and the text cursor starts blinking, but I haven't started writing."
+//      Nor does it leave the browser's own caret in the Block's words: "we
+//      are not in the editing mode, then why is it showing a typewriter?" —
+//      checked with real input (4b), which a synthesised tap never reaches.
 //   5. A block is typed at the width it was given and drawn in to its longest
 //      line once put down; its height follows the words. It is typed from the
 //      left, whatever its alignment.
@@ -478,6 +481,67 @@ try {
   check("a press on the paper puts the words down; a drag on a picked-up block moves it", edit.paperCommits && edit.dragMoves, JSON.stringify(edit));
   check("a picked-up block's strip is one slim row: Style, Edit, Duplicate, Copy, Card, Arrange, Delete", edit.stripHeight > 0 && edit.stripHeight < 48 && edit.stripRow === "style,edit,duplicate,copy,card,arrange,delete", JSON.stringify(edit));
   check("...and Arrange opens the four restack verbs, a quarter turn, Fit to words and Cut", edit.menuShut && edit.menuOpen && edit.menuItems === "restack-forward,restack-back,to-front,to-back,turn,fit,cut", JSON.stringify(edit));
+
+  // ── 4b. A real click leaves no caret in a Block's words ────────────────
+  //
+  // The taps above are dispatched inside the page, and a synthesised event
+  // never reaches the browser's own caret placement. A real one did: the Block
+  // was only picked up, but a caret blinked in its paragraph — at its end, for
+  // a click right of the words. Driven here through the browser's own input.
+  const caretBlock = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.commitBlockEdit();
+    api.selectBlock(null);
+    const b = api.addDocumentBlock(1, { x: 80, y: 420 }, { edit: false, md: "A paragraph of words in a block, here." });
+    await settle(600);
+    const node = document.querySelector('[data-pdf-block="' + b.id + '"]');
+    node.scrollIntoView({ block: "center" });
+    await settle(400);
+    const p = node.querySelector(".pdf-block-body p").getBoundingClientRect();
+    window.__caretId = b.id;
+    // Right of the last word (where the caret went to the paragraph's end), and
+    // the middle of the words, clear of a picked-up Block's resize edges.
+    return { x: Math.round(p.right - 3), mid: Math.round(p.left + p.width / 2), y: Math.round(p.top + p.height / 2) };
+  }`);
+  const realPress = async (x, y, { pointerType = "mouse", clickCount = 1 } = {}) => {
+    const base = { x, y, button: "left", clickCount, pointerType };
+    await page.call("Input.dispatchMouseEvent", { ...base, type: "mouseMoved", buttons: 0 });
+    await page.call("Input.dispatchMouseEvent", { ...base, type: "mousePressed", buttons: 1 });
+    await page.call("Input.dispatchMouseEvent", { ...base, type: "mouseReleased", buttons: 0 });
+  };
+  const caretState = `async () => {
+    const { api, settle } = window.__recall;
+    await settle(250);
+    const node = document.querySelector('[data-pdf-block="' + window.__caretId + '"]');
+    const sel = getSelection();
+    return {
+      picked: api.selectedBlockId() === window.__caretId,
+      open: api.isInlineBlockEditorOpen(),
+      textarea: Boolean(node.querySelector(".pdf-block-inline textarea")),
+      caretInBlock: Boolean(sel.rangeCount && node.contains(sel.anchorNode)),
+      selectable: getComputedStyle(node.querySelector(".pdf-block-body p") || node).userSelect,
+      typingIn: document.activeElement?.matches?.(".pdf-block-inline textarea") || false
+    };
+  }`;
+  await realPress(caretBlock.x, caretBlock.y);
+  const caretClick = await page.evaluate(caretState);
+  await new Promise((r) => setTimeout(r, 600));
+  await realPress(caretBlock.mid, caretBlock.y);
+  const caretAgain = await page.evaluate(caretState);
+  await page.evaluate(`async () => { window.__recall.api.selectBlock(null); getSelection().removeAllRanges(); await window.__recall.settle(450); }`);
+  await realPress(caretBlock.x, caretBlock.y, { pointerType: "pen" });
+  const caretPen = await page.evaluate(caretState);
+  await new Promise((r) => setTimeout(r, 600));
+  await realPress(caretBlock.mid, caretBlock.y);
+  await new Promise((r) => setTimeout(r, 80));
+  await realPress(caretBlock.mid, caretBlock.y, { clickCount: 2 });
+  const caretDouble = await page.evaluate(caretState);
+  await page.evaluate(`async () => { window.__recall.api.commitBlockEdit(); window.__recall.api.selectBlock(null); await window.__recall.settle(300); }`);
+  const noCaret = (s) => s.picked && !s.open && !s.textarea && !s.caretInBlock && !s.typingIn;
+  check("a real click on a Block picks it up and leaves no caret in its words", noCaret(caretClick) && caretClick.selectable === "none", JSON.stringify(caretClick));
+  check("...nor does a second click on it a moment later", noCaret(caretAgain), JSON.stringify(caretAgain));
+  check("...nor a pen's tap", noCaret(caretPen), JSON.stringify(caretPen));
+  check("...and a real double-click opens it, the caret in its editor", caretDouble.open && caretDouble.textarea && caretDouble.typingIn, JSON.stringify(caretDouble));
 
   // ── 5. The width hugs the words once down; the height follows them ─────
   const size = await page.evaluate(`async () => {

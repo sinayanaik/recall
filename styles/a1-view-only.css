@@ -101,6 +101,15 @@
   cursor: auto;
 }
 
+/* ...and its words can be selected and copied, as any words read here can.
+   Off the page's edit mode, a press on a Block only picks it up, and its words
+   take no caret (styles/98-block-inline.css). */
+:is(.view-only-doc, #cs-specificity).view-only-doc :is(#documentStage, #documentStageAlt)[data-doc-slot="doc"] :is(.pdf-block-body, .pdf-block-body *),
+:is(.view-only-notebook, #cs-specificity).view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] :is(.pdf-block-body, .pdf-block-body *) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* A link in a Block's words still opens. */
 :is(.view-only-doc, #cs-specificity).view-only-doc :is(#documentStage, #documentStageAlt)[data-doc-slot="doc"] .pdf-block a[href],
 :is(.view-only-notebook, #cs-specificity).view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-block a[href] {
