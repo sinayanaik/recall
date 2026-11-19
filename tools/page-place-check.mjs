@@ -69,6 +69,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-guides.js?v=__BUILD__",
     "/src/documents/pdf-annot-export.js?v=__BUILD__",
     "/src/render/annot-shapes.js?v=__BUILD__",
+    "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-view.js?v=__BUILD__",
     "/src/documents/pdf-ink.js?v=__BUILD__",
@@ -295,6 +296,105 @@ try {
   check("...and a Ctrl+V that fires no paste event still pastes the Blocks", copied.fallback === 1, JSON.stringify(copied));
 
   await page.evaluate(`() => window.__recall.clearBlocks()`);
+
+  // ── 2b. Copied Blocks and ink paste where the mouse is ──────────────────
+  // They used to land beside the original whatever the mouse was pointing at.
+  const blockAt = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    document.activeElement?.blur?.();
+    const block = api.addDocumentBlock(1, { x: 420, y: 300 }, { edit: false });
+    await settle(80);
+    api.selectBlock(block.id);
+    await settle(30);
+    return block.id;
+  }`);
+  await key("c", 2);
+  await pause(80);
+  const [pbx, pby] = await screenOf(200, 720);
+  await mouseMove(pbx, pby);
+  await pause(80);
+  await key("v", 2);
+  await pause(250);
+  await key("v", 2);
+  await pause(250);
+  const pastedBlocks = await page.evaluate(`(original) => {
+    const { api } = window.__recall;
+    return api.documentBlocks().filter((b) => b.kind !== "image" && b.id !== original)
+      .map((b) => ({ page: b.page, cx: b.x + b.w / 2, cy: b.y + b.h / 2 }));
+  }`, blockAt);
+  const firstBlock = pastedBlocks[0];
+  const secondBlock = pastedBlocks[1];
+  check("Ctrl+C, then Ctrl+V of a Block pastes it centred where the mouse is",
+    pastedBlocks.length === 2 && firstBlock.page === 1 && Math.abs(firstBlock.cx - 200) <= 2 && Math.abs(firstBlock.cy - 720) <= 2,
+    JSON.stringify(pastedBlocks));
+  check("...and a second Ctrl+V without moving the mouse is stepped off the first",
+    secondBlock && Math.abs(secondBlock.cx - firstBlock.cx - 16) <= 1 && Math.abs(firstBlock.cy - secondBlock.cy - 16) <= 1,
+    JSON.stringify(pastedBlocks));
+
+  await page.evaluate(`async () => { const { api, settle } = window.__recall; api.clearPick?.(); api.selectBlock?.(null); await window.__recall.clearBlocks(); await settle(50); }`);
+
+  // Ink: drawn and lassoed with the mouse, copied, pasted somewhere else.
+  await page.evaluate(`async () => { const { api, settle } = window.__recall; api.setInkArmed(true); api.setInkTool("pen"); await settle(150); }`);
+  const mouseDrag = async (points) => {
+    await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: points[0][0], y: points[0][1], button: "none", buttons: 0, pointerType: "mouse" });
+    await page.call("Input.dispatchMouseEvent", { type: "mousePressed", x: points[0][0], y: points[0][1], button: "left", buttons: 1, clickCount: 1, pointerType: "mouse" });
+    for (const [x, y] of points.slice(1)) {
+      await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1, pointerType: "mouse" });
+      await pause(16);
+    }
+    const [lx, ly] = points[points.length - 1];
+    await page.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: lx, y: ly, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse" });
+    await pause(250);
+  };
+  const strokePoints = [];
+  for (let i = 0; i <= 12; i += 1) strokePoints.push(await screenOf(380 + i * 6, 720 - i * 3));
+  await mouseDrag(strokePoints);
+  await page.evaluate(`async () => { const { api, settle } = window.__recall; api.setInkTool("lasso"); await settle(150); }`);
+  const loop = [];
+  const corners = [[360, 750], [470, 750], [470, 670], [360, 670], [360, 750]];
+  for (let c = 0; c < corners.length - 1; c += 1) {
+    for (let i = 0; i < 8; i += 1) {
+      const [x0, y0] = corners[c];
+      const [x1, y1] = corners[c + 1];
+      loop.push(await screenOf(x0 + ((x1 - x0) * i) / 8, y0 + ((y1 - y0) * i) / 8));
+    }
+  }
+  loop.push(await screenOf(360, 750));
+  // The lasso with a pen, as tools/handwriting-check.mjs draws it.
+  await page.evaluate(`async (loop) => {
+    const { settle } = window.__recall;
+    const view = document.getElementById("documentView");
+    const pen = (type, [x, y], buttons) => view.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, pointerId: 7, pointerType: "pen", isPrimary: true, clientX: x, clientY: y, buttons, pressure: buttons ? 0.55 : 0
+    }));
+    pen("pointerdown", loop[0], 1);
+    loop.slice(1).forEach((point) => pen("pointermove", point, 1));
+    await settle(120);
+    pen("pointerup", loop[loop.length - 1], 0);
+    await settle(250);
+  }`, loop);
+  const lassoed = await page.evaluate(`() => window.__recall.api.inkSelectionCount()`);
+  await key("c", 2);
+  await pause(80);
+  const [ix, iy] = await screenOf(160, 740);
+  await mouseMove(ix, iy);
+  await pause(80);
+  await key("v", 2);
+  await pause(300);
+  const inkPasted = await page.evaluate(`() => {
+    const { api } = window.__recall;
+    const strokes = (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink && r.ink.s) || []);
+    const boxOf = (stroke) => {
+      const xs = []; const ys = [];
+      for (let i = 0; i < stroke.p.length; i += 3) { xs.push(stroke.p[i]); ys.push(stroke.p[i + 1]); }
+      return { cx: (Math.min(...xs) + Math.max(...xs)) / 2, cy: (Math.min(...ys) + Math.max(...ys)) / 2 };
+    };
+    return strokes.map(boxOf);
+  }`);
+  await page.evaluate(`async () => { const { api, settle } = window.__recall; api.clearInkPage?.(1); api.setInkTool("pen"); api.setInkArmed(false); await settle(150); }`);
+  const inkCopy = inkPasted.find((b) => Math.abs(b.cx - 160) <= 4 && Math.abs(b.cy - 740) <= 4);
+  check("Ctrl+C, then Ctrl+V of lassoed ink pastes it centred where the mouse is",
+    lassoed >= 1 && inkPasted.length === 2 && Boolean(inkCopy), JSON.stringify({ lassoed, inkPasted }));
 
   // ── 3. T: a Block at the mouse (it was Text; there is one thing to add now) ─
   await page.evaluate(`async () => { document.activeElement?.blur?.(); window.__recall.api.clearPick?.(); await window.__recall.settle(50); }`);

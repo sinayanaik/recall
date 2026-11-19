@@ -3390,7 +3390,13 @@ document.addEventListener("keydown", (event) => {
     // picture (src/documents/page-clipboard.js): no preventDefault here, or the
     // browser fires no paste event to decide with.
     if (key === "v" && hasInkClipboard() && !documentViewOnly()) {
-      claimPagePaste(() => { pasteInkSelection(); refreshInkRail(); });
+      // At the mouse, when it is over a page — that is where the reader is
+      // pasting; otherwise onto the page in view, beside where it was taken.
+      claimPagePaste(() => {
+        const at = pagePointAtPointer();
+        pasteInkSelection(at ? at.page : null, at);
+        refreshInkRail();
+      });
       return;
     }
     if (key === "d" && inkSelectionCount() > 0) {
