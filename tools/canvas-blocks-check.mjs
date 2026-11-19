@@ -79,7 +79,8 @@ const API_SRC = `async () => {
     "/src/storage/ink-prefs.js?v=__BUILD__",
     "/src/documents/page-handoff.js?v=__BUILD__",
     "/src/documents/pdf-timing.js?v=__BUILD__",
-    "/src/documents/canvas-selection.js?v=__BUILD__"
+    "/src/documents/canvas-selection.js?v=__BUILD__",
+    "/src/documents/block-measure.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -579,11 +580,11 @@ try {
   }`);
   // "The automatic block size is overly constricted ... adding more content
   // the block size is not changing dynamically": the width is the words',
-  // both ways — drawn in to one word, grown with a paragraph until the page's
-  // right edge, and drawn in again when the words are cut back.
+  // both ways — drawn in to one word, grown with a paragraph until the Canvas
+  // measure (see 5b′), and drawn in again when the words are cut back.
   const pageRight = await page.evaluate(`() => window.__recall.api.pdfPageViewport(1).viewBox[2]`);
   check("a block is drawn in to a short word once it is put down, and nothing is cut off", size.short.w < size.w0 && size.short.wSet === undefined && size.short.overflowX <= 1, JSON.stringify(size));
-  check("...grows wider than it started with a paragraph, up to the page's edge, then wraps — and is drawn in again", size.long.w > size.w0 * 2 && size.long.w <= pageRight && size.long.overflow <= 1 && Math.abs(size.back.w - size.short.w) <= 1, JSON.stringify({ ...size, pageRight }));
+  check("...grows wider than it started with a paragraph, up to the Canvas measure, then wraps — and is drawn in again", size.long.w > size.w0 * 2 && size.long.w <= pageRight && size.long.overflow <= 1 && Math.abs(size.back.w - size.short.w) <= 1, JSON.stringify({ ...size, pageRight }));
   check("...and widens while it is being typed, not only once it is put down", size.long.liveW > size.long.liveW0 * 3 && size.long.liveW <= pageRight, JSON.stringify(size));
   check("...and its height follows the words, while typed and once put down, with nothing cut off", size.long.h > size.short.h * 2 && size.long.liveH > 60 && size.long.overflow <= 1 && Math.abs(size.back.h - size.short.h) <= 3, JSON.stringify(size));
 
@@ -827,6 +828,53 @@ try {
   }`);
   check("a paragraph laid out at its own width keeps it when opened and typed in", laidOut.opened.w === 200 && !laidOut.opened.wFit && laidOut.typed.w === 200, JSON.stringify(laidOut));
   check("...and Fit to words gives its width back to its words", laidOut.fitted.w > 200 && laidOut.fitted.wFit === true, JSON.stringify(laidOut));
+
+  // ── 5b′. Pasted words keep to a reading measure ─────────────────────────
+  //
+  // "Almost always when pasting some content in canvas it is growing width
+  // wise too much." A pasted paragraph is one long line, and a Block that
+  // follows its words grew to it — to the page's right edge. It grows to the
+  // Canvas measure now (◐ Canvas → Blocks → Widest a Block grows, 62%), wraps
+  // there, and its height follows; code may still run to the edge; a Block
+  // already wider is not drawn in when its page opens, but Fit to words is.
+  const measure = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const settleLong = async () => { for (let i = 0; i < 20; i += 1) await settle(60); };
+    const read = (id) => api.documentBlocks().find((b) => b.id === id);
+    const [vx0, , vx1] = api.pdfPageViewport(1).viewBox;
+    const pageW = vx1 - vx0;
+    const prose = "A pasted paragraph is a single long line of words, and it should wrap at a comfortable reading width rather than stretching across the whole page from the place it landed to the far edge of the paper. ".repeat(2).trim();
+    const pasted = api.addHandwritingTextBlock(prose, { page: 1, x: 40, y: 120 });
+    await settleLong();
+    const p = read(pasted.id);
+    const out = { pageW, measure: Math.floor(pageW * 0.62), prose: { w: p.w, h: p.h, wFit: p.wFit } };
+    const code = api.addHandwritingTextBlock("\\u0060\\u0060\\u0060\\nconst aVeryLongLineOfCode = someFunction(withArguments, andMoreArguments, andEvenMoreArgumentsThanThat);\\n\\u0060\\u0060\\u0060", { page: 1, x: 40, y: 400 });
+    await settleLong();
+    out.code = { w: read(code.id).w };
+    // A wide Block from before, following its words: kept as it is on open...
+    const wide = api.addDocumentBlock(1, { x: 30, y: 560 }, { md: prose, w: Math.round(pageW * 0.85), edit: false, growToWords: true });
+    await settleLong();
+    out.wide = { given: Math.round(pageW * 0.85), opened: read(wide.id).w };
+    // ...until Fit to words brings it to the measure.
+    api.fitBlockToContents(wide.id);
+    await settleLong();
+    out.wide.fitted = read(wide.id).w;
+    // The setting moves the measure.
+    api.setCanvasBlockMeasure("40");
+    const narrow = api.addHandwritingTextBlock(prose, { page: 1, x: 40, y: 700 });
+    await settleLong();
+    out.narrow = { w: read(narrow.id).w, measure: Math.floor(pageW * 0.4) };
+    api.setCanvasBlockMeasure("auto");
+    [pasted.id, code.id, wide.id, narrow.id].forEach((id) => api.deleteBlock(id));
+    await settle(100);
+    return out;
+  }`);
+  check("pasted prose grows to the reading measure, not the page's edge", measure.prose.w <= measure.measure && measure.prose.w >= measure.measure - 40 && measure.prose.wFit === true, JSON.stringify(measure));
+  check("...and wraps there, its height following the words", measure.prose.h > 40, JSON.stringify(measure.prose));
+  check("pasted code may run wider than the measure rather than wrap", measure.code.w > measure.measure, JSON.stringify(measure.code));
+  check("a Block already wider is not drawn in when its page opens", measure.wide.opened === measure.wide.given, JSON.stringify(measure.wide));
+  check("...but Fit to words brings it to the measure", measure.wide.fitted <= measure.measure, JSON.stringify(measure.wide));
+  check("◐ Canvas → Widest a Block grows moves the measure", measure.narrow.w <= measure.narrow.measure && measure.narrow.w >= measure.narrow.measure - 40, JSON.stringify(measure.narrow));
 
   // ── 5c. Padding, one side at a time ─────────────────────────────────────
   //

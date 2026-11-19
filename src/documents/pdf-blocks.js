@@ -57,7 +57,8 @@ import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar
 import { BLOCK_PAD_DEFAULT_PT, BLOCK_SHAPE_DEFAULT, blockFillVar, blockHeadInkVar, blockInkVar, blockLineVar, compactBlockStyle, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
 import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { normalizeShapeRotation, rotatePoint } from "../render/annot-shapes.js?v=__BUILD__";
-import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { activeDocSlot, DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { canvasBlockMeasurePercent } from "./block-measure.js?v=__BUILD__";
 import { documentStages } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
@@ -365,6 +366,41 @@ function blockWidthCap(block, viewport = pdfPageViewport(block.page)) {
   const right = Math.max(viewport.viewBox[0], viewport.viewBox[2]);
   return Math.max(PDF_BLOCK_MIN_WIDTH, Math.floor(right - BLOCK_RIGHT_GUTTER - (Number(block.x) || 0)));
 }
+
+// ── The widest a Canvas Block grows to by itself ───────────────────────────
+//
+// A Block that follows its words grows with its longest line. A pasted
+// paragraph IS one long line, so it used to grow to the page's right edge — a
+// strip of text across the whole page, dragged narrower by hand every time.
+// On a Canvas, growing now stops at a reading measure: a share of the page's
+// width (◐ Canvas → Blocks → Widest a Block grows, 62% unless set), past which
+// the words wrap and the height follows. A Block already wider than that is
+// never drawn in by a render — pages laid out before keep their shape — but
+// Arrange → Fit to words brings it to the measure.
+//
+// Code keeps the page's edge: a listing that wraps is a listing misread. And
+// a PDF's page is not a Canvas: there a Block grows as it always has.
+// The setting itself lives in ./block-measure.js.
+//
+// The measure in points for a page of this viewport, or Infinity off a Canvas.
+export function canvasBlockMeasure(viewport, slot = activeDocSlot()) {
+  if (!viewport || slot !== DOC_SLOT_NOTEBOOK) return Infinity;
+  const [vx0, , vx1] = viewport.viewBox;
+  return Math.max(PDF_BLOCK_MIN_WIDTH, Math.floor(Math.abs(vx1 - vx0) * canvasBlockMeasurePercent() / 100));
+}
+
+// The widest a Block that follows its words may grow by itself: the page's
+// edge, held to the Canvas measure for prose. `strict` (Fit to words) holds it
+// there outright; otherwise a Block already wider keeps the width it has.
+function blockGrowCap(block, viewport, { strict = false, code = false } = {}) {
+  const edge = blockWidthCap(block, viewport);
+  if (code) return edge;
+  const measure = canvasBlockMeasure(viewport);
+  if (!Number.isFinite(measure)) return edge;
+  return Math.min(edge, strict ? measure : Math.max(measure, Number(block.w) || 0));
+}
+
+const CODE_SOURCE = /^\s*(```|~~~)/m;
 
 // Whether a Block's width is its words' — grown to its longest line and drawn
 // in to it — rather than one the reader set: a text Block that follows its
@@ -1519,7 +1555,7 @@ function fitBlockWidthToContent(node, block, { force = false } = {}) {
   // laid out before it is only drawn in — see normalizeBlocks.
   const mayGrow = force || block.wFit === true;
   const natural = Math.min(
-    blockWidthCap(block, viewport),
+    blockGrowCap(block, viewport, { strict: force, code: Boolean(body.querySelector("pre")) }),
     Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + content + 1) / scale))
   );
   const wanted = mayGrow ? natural : Math.min(block.w, natural);
@@ -1550,7 +1586,8 @@ function blockTypingWidth(block, node, { contentPx, framePx }, text = "") {
   if (!typingGrows.get(block.id)) return null;
   const body = node?.querySelector(".pdf-block-body");
   if (WIDTHLESS_SOURCE.test(String(text || "")) || (body && bodyHasWidthlessContent(body))) return null;
-  return Math.min(blockWidthCap(block, viewport), Math.max(PDF_BLOCK_MIN_WIDTH, wanted));
+  const code = CODE_SOURCE.test(String(text || "")) || Boolean(body?.querySelector("pre"));
+  return Math.min(blockGrowCap(block, viewport, { code }), Math.max(PDF_BLOCK_MIN_WIDTH, wanted));
 }
 
 // ── A diagram at its own size, never wider than the block ─────────────────

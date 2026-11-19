@@ -165,6 +165,8 @@
     <link rel="stylesheet" href="styles/a2-canvas-setup.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/a3-canvas-type.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/a4-block-scale.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/a5-section-lines.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/a6-list-lead.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -338,6 +340,7 @@
     <link rel="modulepreload" href="src/documents/block-style-bar.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/doc-scrollers.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/doc-slot.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/block-measure.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/notebook.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/notebook-migrate.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-block-editor.js?v=__BUILD__">
@@ -434,6 +437,8 @@
     <link rel="modulepreload" href="src/notes/teleprompter.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/toc-tree.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/toc.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/section-lines.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/section-lines-gutter.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/touch-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/cloze-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/drawer-highlights.js?v=__BUILD__">
@@ -2464,6 +2469,7 @@
               <li><strong>See what points here</strong> — open the <strong>contents</strong> drawer beside the tabs (the icon of three lines with dots beside them — <strong>not</strong> the ☰ at top-left, which is the app's own menu); under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
               <li><strong>...and what you marked, beside what you marked it in</strong> — that drawer's <strong>Highlights</strong> half lists every highlight in this note, and <strong>Side by side</strong> at the top of it splits the panel: the note on one side, its highlights with their notes on the other, <strong>◀ ▶</strong> to walk through them. Drag the divider to resize the two — they start at 3:2 and stack top-and-bottom on a phone</li>
               <li><strong>Numbered headings</strong> — headings are numbered the way a paper is: <strong>1</strong>, <strong>1.1</strong>, <strong>1.2</strong>, <strong>1.2.1</strong>, and so on, in the note, in the contents drawer and in the highlights lists. The numbers follow the note as you write it — add or move a section and everything after it renumbers itself — and they are never typed into your text, so the Markdown stays exactly as you wrote it. Your top headings are <strong>1, 2, 3</strong> whether they are <code>#</code> or <code>##</code>, and a heading that skips a level (a <code>###</code> straight under a <code>#</code>) is still <strong>1.1</strong>. PDF, Word and HTML exports of the notes keep the numbers. Turn them off with the <strong>◐</strong> beside <strong>⇓</strong> on the Notes tab: <strong>Headings → Number headings</strong></li>
+              <li><strong>Section lines</strong> — the text under each heading is set one small step in, with a thin line down its left side, so you can see at a glance how deep in the note you are, the way replies hang under the comment they answer. Click a line to fold that section, the same as the ▾ on its heading. A note whose only big heading is its title leaves the title out, so the whole note isn't pushed in one step for nothing. Turn them off, or set the step, the line's thickness, position, colour and strength, with the <strong>◐</strong> on the Notes tab: <strong>Section lines</strong></li>
               <li><strong>Highlights from some sections only</strong> — the <strong>All sections ▾</strong> button above the highlights (in the drawer's <strong>Highlights</strong> half and at the top of <strong>Side by side</strong>) opens a checklist shaped like the contents, with how many highlights each section holds. Tick one or more sections — a section brings its subsections with it — and the list, the counter and <strong>◀ ▶</strong> keep to them. The drawer and the side-by-side pane share the choice, and it goes back to all sections when you close side by side or open another file. On a PDF the sections are the PDF's own contents, or its pages when it has none. <strong>Export highlights</strong> has the same checklist, so you can export just one chapter</li>
               <li>Notes save, sync, and export together with the rest of the file — or skip notes entirely and make cards directly, as before</li>
               <li><strong>Let the text come to you</strong> — <strong>⋯ → Teleprompter</strong> (or <strong>&#9654; Teleprompter</strong> on the <strong>‹</strong> tab at the right edge) scrolls the notes by themselves, under a soft band that marks the line to read. The bar at the foot sets the speed in words a minute (it starts at your own reading speed once Recall has measured it), the text size with <strong>A− A+</strong>, and everything else under <strong>⚙</strong>: spacing, width, font, where the band sits and how many lines tall it is, how much the rest is dimmed, a countdown, and keeping the screen on. <strong>Touch the text and it stops</strong> — select, highlight, open a highlight, make a card, exactly as usual — then <strong>&#9654; Resume</strong> carries on from wherever the text is. Turn on <em>Carry on by itself</em> and it resumes a few seconds after you stop touching it. Going to Cards, a PDF or Home pauses it; <strong>✕</strong>, <kbd>Esc</kbd> or Back puts the normal Notes text back, on the same line</li>

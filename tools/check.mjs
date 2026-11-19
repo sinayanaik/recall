@@ -658,6 +658,11 @@ const checks = [
     // pane, another file and a window too narrow for two.
     ["split-parts   ", ["node", ["tools/split-parts-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
+    // Section lines in Notes: drawn as each block's own border-image, so only
+    // a screenshot can say a line is unbroken across the gaps between blocks
+    // (and beside a code block, a quote and a rule). Plus the depths, a click
+    // folding a section, the setting off, and a list hugging its lead-in line.
+    ["section-lines ", ["node", ["tools/section-lines-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
     // The JOIN nothing used to ask about: a contents row is a descriptor scanned
     // out of the SOURCE, a jump needs an ELEMENT, and the two are married by

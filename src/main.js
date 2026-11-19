@@ -73,6 +73,7 @@ import { isInkSheetOpen, redoInkSheet, repaintInkSheet, undoInkSheet } from "./n
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
 import { initNotesFoldTwisties } from "./render/block-cache.js?v=__BUILD__";
+import { initNotesSectionLines } from "./notes/section-lines-gutter.js?v=__BUILD__";
 import { installCodeCopyCleaner } from "./render/code-marks.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource, toggleAllNotesHeadings } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
@@ -1290,6 +1291,7 @@ onDomReady(initRenderToolbars);
 onDomReady(initNotesHeadOverflow);
 onDomReady(initNotesTocFolding);
 onDomReady(initNotesFoldTwisties);
+onDomReady(initNotesSectionLines);
 onDomReady(initPagedNotes);
 // After the paged view, whose own ResizeObserver this hands the block to hold.
 onDomReady(initNotesResizeHold);

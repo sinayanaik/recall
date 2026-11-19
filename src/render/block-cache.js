@@ -15,6 +15,7 @@ import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, findSourceImages, imageMatchKey, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { bindNotesHeadingElements, bindNotesHeadingsAcrossView, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
 import { foldKeyFor, hiddenBlockMaskFor, pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
+import { paintNotesOutline, sectionLinesOn } from "../notes/section-lines.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
@@ -1146,11 +1147,14 @@ function headingNodeText(node) {
 // built them) costs one more linear pass over blocks.length, the same order
 // as the hide/show pass right after it — not one more pass over the note's
 // character count.
-function domHeadingSectionsFor(blocks) {
-  const levels = blocks.map((node) => {
+function domHeadingLevels(blocks) {
+  return blocks.map((node) => {
     const match = /^H([1-6])$/.exec(node.tagName || "");
     return match ? Number(match[1]) : 0;
   });
+}
+
+function domHeadingSectionsFor(blocks, levels = domHeadingLevels(blocks)) {
   const used = new Set();
   const sections = [];
   levels.forEach((level, index) => {
@@ -1184,8 +1188,15 @@ function domHeadingSectionsFor(blocks) {
 export function applyNotesFoldState(container) {
   if (container !== el.notesView || container.classList.contains("is-paged")) return null;
   const blocks = notesTopLevelBlocks(container);
-  const sections = domHeadingSectionsFor(blocks);
+  const levels = domHeadingLevels(blocks);
+  const sections = domHeadingSectionsFor(blocks, levels);
   const mask = hiddenBlockMaskFor(blocks.length, sections, notesFoldedHeadings);
+  // Section lines (src/notes/section-lines.js) ride the same pass: the depth of
+  // every block comes from the levels just read. Whether a lone title is alone
+  // is asked of the whole note's headings — the scan is cached per source — so
+  // a book built a part at a time does not change its mind as parts arrive.
+  const prepared = renderedBlockCache.get(container)?.prepared;
+  paintNotesOutline(blocks, levels, sectionLinesOn() && typeof prepared === "string" ? notesHeadingScan(prepared) : null);
   const sectionByBlock = new Map(sections.map((section) => [section.blockIndex, section]));
   const foldable = sections.filter((section) => section.blockEnd > section.blockIndex + 1);
   blocks.forEach((node, index) => {

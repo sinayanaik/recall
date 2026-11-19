@@ -394,6 +394,8 @@ const APP_SHELL = [
   `./styles/a2-canvas-setup.css?v=${STAMP}`,
   `./styles/a3-canvas-type.css?v=${STAMP}`,
   `./styles/a4-block-scale.css?v=${STAMP}`,
+  `./styles/a5-section-lines.css?v=${STAMP}`,
+  `./styles/a6-list-lead.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -462,6 +464,7 @@ const APP_SHELL = [
   `./src/documents/pdf-blocks.js?v=${STAMP}`,
   `./src/documents/doc-scrollers.js?v=${STAMP}`,
   `./src/documents/doc-slot.js?v=${STAMP}`,
+  `./src/documents/block-measure.js?v=${STAMP}`,
   `./src/documents/notebook.js?v=${STAMP}`,
   `./src/documents/notebook-migrate.js?v=${STAMP}`,
   `./src/documents/pdf-highlights.js?v=${STAMP}`,
@@ -652,6 +655,8 @@ const APP_SHELL = [
   `./src/notes/teleprompter.js?v=${STAMP}`,
   `./src/notes/toc-tree.js?v=${STAMP}`,
   `./src/notes/toc.js?v=${STAMP}`,
+  `./src/notes/section-lines.js?v=${STAMP}`,
+  `./src/notes/section-lines-gutter.js?v=${STAMP}`,
   `./src/notes/touch-selection.js?v=${STAMP}`,
   `./src/panels/cloze-panel.js?v=${STAMP}`,
   `./src/panels/drawer-highlights.js?v=${STAMP}`,
