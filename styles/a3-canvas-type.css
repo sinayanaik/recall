@@ -182,9 +182,11 @@
 :is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.property, .token.attr-name, .token.selector, .token.tag) { color: var(--code-tok-property); }
 :is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.regex, .token.important, .token.variable) { color: var(--code-tok-variable); }
 
+/* At rest the label is plain text, as everywhere else (55-code-copy-label.css);
+   the paper's own fill comes back on hover. */
 :is(.document-stage .pdf-page, .paper-tokens) .rendered pre .code-copy-btn {
-  border-color: var(--code-copy-border);
-  background: var(--code-copy-bg);
+  border-color: transparent;
+  background: transparent;
   color: var(--code-copy-fg);
 }
 

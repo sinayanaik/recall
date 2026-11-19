@@ -619,7 +619,8 @@ const POST_SPLIT = {
     "The code block's copy button draws its label from data-label with ::before, " +
     "rather than carrying it as a text node — a text node there is selectable " +
     "however much user-select: none it has, and turned up on the clipboard in " +
-    "the middle of any selection that crossed the block. Belongs beside " +
+    "the middle of any selection that crossed the block. Also keeps that " +
+    "label quiet: small faint text, not a pill, brightening on hover. Belongs beside " +
     ".code-copy-btn in 06-rendered.css and cannot live there, for the reason " +
     "this whole list exists. See tools/selection-check.mjs.",
   "56-pen-text.css":
