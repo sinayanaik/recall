@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a4-block-scale.css":
+    "A Block looks the same on every screen: everything inside it (a code " +
+    "panel's badge and padding, a quote's bar, a table's cells) is points × the " +
+    "page's zoom like its words, no scrollbar takes room in it, its resize " +
+    "corner is not painted, and a finger's handles never cover a small one.",
   "a3-canvas-type.css":
     "What is written on a page looks like the page it is on: code panels that " +
     "follow the paper, and the Canvas's type — ◐ Canvas → Blocks, Headings, " +

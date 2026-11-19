@@ -608,6 +608,54 @@ try {
   }`);
   check("a diamond keeps its width and its height as the least, and grows to hold its words", shaped.grown.w === shaped.set.w && shaped.grown.h > shaped.set.h && shaped.overflow <= 1, JSON.stringify(shaped));
 
+  // "The same canvas blocks look different on different devices": a phone
+  // draws the page at about 0.4×, a laptop at about 2×. Everything inside a
+  // Block — a code panel's badge and padding included — is points × that zoom
+  // (styles/a4-block-scale.css), so the Block measures the same in points at
+  // both, its code is not cut off, and its resize corner is not painted.
+  // At a phone's pixel density, where a 1px frame is several points of page.
+  const viewSize = await page.evaluate(`() => ({ width: innerWidth, height: innerHeight })`);
+  await page.call("Emulation.setDeviceMetricsOverride", { ...viewSize, deviceScaleFactor: 3, mobile: false });
+  const zoomed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const md = "Two kinds of text:\\n\\n- str is text\\n- bytes is binary\\n\\n\\u0060\\u0060\\u0060python\\ntext = 'cafe'\\nbinary = text.encode('utf-8')\\nprint(binary)\\n\\u0060\\u0060\\u0060";
+    const block = api.addDocumentBlock(1, { x: 60, y: 760 }, { anchor: "top-left", edit: false, md });
+    await settle(200);
+    const fitW = api.fitWidthScale();
+    const measure = async (scale) => {
+      api.setDocumentScale(scale);
+      for (let i = 0; i < 25; i += 1) await settle(80);
+      const s = api.pdfPageViewport(1).scale;
+      const node = document.querySelector('[data-pdf-block="' + block.id + '"]');
+      const body = node.querySelector(".pdf-block-body");
+      const code = body.querySelector("pre code");
+      const badge = body.querySelector("pre .code-copy-btn");
+      const record = api.documentBlocks().find((b) => b.id === block.id);
+      return {
+        scale: Math.round(s * 100) / 100,
+        codePadTop: parseFloat(getComputedStyle(code).paddingTop) / s,
+        badgeSize: badge ? parseFloat(getComputedStyle(badge).fontSize) / s : -1,
+        badgeTop: badge ? (badge.getBoundingClientRect().top - badge.parentElement.getBoundingClientRect().top) / s : -1,
+        nodeH: node.getBoundingClientRect().height / s,
+        h: record.h,
+        w: record.w,
+        overflow: body.scrollHeight - body.clientHeight,
+        grip: getComputedStyle(node.querySelector(".pdf-block-grip")).backgroundImage
+      };
+    };
+    const small = await measure(0.45);
+    const large = await measure(1.9);
+    api.setDocumentScale(fitW, { fitWidth: true });
+    for (let i = 0; i < 10; i += 1) await settle(80);
+    return { small, large };
+  }`);
+  await page.call("Emulation.clearDeviceMetricsOverride", {});
+  const near = (a, b, d = 1) => Math.abs(a - b) <= d;
+  check("a Block with code is the same size in points on a phone's zoom and a laptop's", zoomed.small.scale < 0.6 && zoomed.large.scale > 1.5 && near(zoomed.small.h, zoomed.large.h, 2) && near(zoomed.small.w, zoomed.large.w, 2) && near(zoomed.small.nodeH, zoomed.large.nodeH, 2), JSON.stringify(zoomed));
+  check("...its code panel's badge and the room above the code scale with the page", zoomed.small.badgeSize > 0 && near(zoomed.small.badgeSize, zoomed.large.badgeSize, 0.2) && near(zoomed.small.badgeTop, zoomed.large.badgeTop) && near(zoomed.small.codePadTop, zoomed.large.codePadTop), JSON.stringify(zoomed));
+  check("...nothing in it is cut off at either zoom", zoomed.small.overflow <= 1 && zoomed.large.overflow <= 1, JSON.stringify(zoomed));
+  check("...and no corner is painted on it", zoomed.small.grip === "none" && zoomed.large.grip === "none", JSON.stringify(zoomed));
+
   // ...a width dragged by hand is the reader's from then on: what the block
   // opens out to the next time it is typed in, not the one it was drawn in from.
   const dragged = await page.evaluate(`async () => {
@@ -1478,6 +1526,36 @@ try {
       await settle(800);
     }`);
     await snap("7-canvas-type-serif-rounded-mono.png");
+
+    // The same Blocks at a laptop's zoom and a phone's: the same proportions,
+    // the code not cut off, no painted corner (styles/a4-block-scale.css).
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.applyStyleSettings({ ...api.state.styleSettings, canvasBlockFontFamily: "inherit", canvasHeadingFontFamily: "inherit", canvasCodeFontFamily: "inherit", canvasLabelFontFamily: "inherit", canvasHeadingColor: "ladder" });
+      api.setTheme("dark-navy");
+      api.setPaperTone("theme");
+      api.state.meta.pdfBlocks = [];
+      api.repaintDocumentBlocks();
+      const fence = "\\u0060\\u0060\\u0060";
+      api.addDocumentBlock(1, { x: 40, y: 800 }, { anchor: "top-left", edit: false, md: "In Python 3, text and raw binary data are different things.\\n\\n- **str**: human-readable text\\n- **bytes**: raw 8-bit values" });
+      api.addDocumentBlock(1, { x: 300, y: 800 }, { anchor: "top-left", edit: false, md: fence + "python\\ntext = 'cafe'\\nbinary_data = text.encode('utf-8')\\nprint('Encoded:', binary_data)\\n" + fence + "\\n\\n" + fence + "text\\nEncoded: b'cafe'\\n" + fence });
+      api.addDocumentBlock(1, { x: 40, y: 640 }, { anchor: "top-left", edit: false, md: "Whitespace" });
+      api.addDocumentBlock(1, { x: 40, y: 600 }, { anchor: "top-left", edit: false, md: "Imports" });
+      api.selectBlock(null);
+      await settle(1200);
+    }`);
+    for (const [name, metrics] of [["8-same-blocks-laptop.png", { width: 1366, height: 768, deviceScaleFactor: 1, mobile: false }], ["9-same-blocks-phone.png", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true }]]) {
+      await page.call("Emulation.setDeviceMetricsOverride", metrics);
+      await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        api.setDocumentScale(api.fitWidthScale(), { fitWidth: true });
+        await settle(1500);
+        window.__h.pageEl(1).scrollIntoView({ block: "start" });
+        await settle(400);
+        document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+      }`);
+      await snap(name);
+    }
   }
 
   const errs = await page.evaluate("() => window.__errs");

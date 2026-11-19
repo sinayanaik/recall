@@ -1,0 +1,161 @@
+/* A Block looks the same on every screen
+ *
+ * "The same canvas blocks look different on different devices." Screenshots
+ * of one Canvas on a laptop (the page drawn at about 1.9×) and on a phone
+ * (about 0.4×) showed the words of every Block wrapping at the same words —
+ * their size and padding are points × --pdf-block-scale (styles/53-handwriting
+ * .css, 79-tab-text.css, set per Block by placeBlock in
+ * src/documents/pdf-blocks.js) — while everything else inside a Block was a
+ * fixed number of CSS pixels, and so four or five times bigger, against the
+ * page, on the phone than on the laptop:
+ *
+ *   - a code panel's "PYTHON" / "TEXT" badge (06-rendered.css .code-copy-btn);
+ *   - the room above the code that badge sits in (padding-top: 24px), which on
+ *     the phone pushed the last lines of the code out of the Block's height;
+ *   - the code's own side padding, a quote's bar, a table cell's padding;
+ *   - a desktop scrollbar under a code panel, thick on the laptop and absent on
+ *     the phone, which made the same Block a different height on each;
+ *   - the green corner (the resize grip), drawn over the words on a phone.
+ *
+ * So every length inside a Block is points × the page's scale here, as its
+ * words are, the corner is no longer painted — a Block is resized by grabbing
+ * any edge or corner of it, which the invisible handles always allowed — and
+ * on a touch screen those handles never take more than a share of a small
+ * Block, so its middle still drags it.
+ *
+ * Every selector starts at `.pdf-block` or `.pdf-block-body`, so a Block keeps
+ * its proportions wherever it is drawn (a page, a picture of a page, the Canvas
+ * PDF, a card of a spot) and Notes and Cards are untouched.
+ */
+
+/* ── 0. The frame's one pixel ──────────────────────────────────────────────
+ * Chrome draws no border under one CSS pixel, so a Block's 1px frame is three
+ * points of its width at a phone's zoom and one at a laptop's — enough that a
+ * Block drawn in to "Whitespace" on one wrapped it to "Whitespac / e" on the
+ * other. Its insides reach under the frame by the difference (a negative
+ * margin at a zoom under 1, a positive one over it), so the room left for the
+ * words is the Block's width less one POINT each side at every zoom. A picture
+ * has no frame to speak of, and a shaped Block or one given its own edge width
+ * is measured another way (97-diagram.css). */
+.pdf-block:not([data-block-shape]):not([data-block-line-width]):not([data-pdf-block-kind="image"]) > :is(.pdf-block-body, .pdf-block-inline) {
+  margin: calc(1px * var(--pdf-block-scale, 1) - 1px);
+}
+
+/* ── 1. A code panel scales with the page ──────────────────────────────────
+ * (0,4,2) and up, over 06-rendered.css's (0,2,2)/(0,3,2).
+ *
+ * Its edge is an outline drawn inside it rather than a border: Chrome draws no
+ * border thinner than one CSS pixel, so a border's two pixels were two points
+ * of height at a phone's zoom and one at a laptop's. An outline takes no room. */
+.pdf-block-body.rendered pre {
+  border-width: 0;
+  outline: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  outline-offset: -1px;
+  border-radius: calc(var(--diagram-radius, 10px) * var(--pdf-block-scale, 1));
+}
+
+.pdf-block-body.rendered pre code[class*="language-"] {
+  padding:
+    calc(6px * var(--pdf-block-scale, 1))
+    calc(12px * var(--pdf-block-scale, 1));
+}
+
+.pdf-block-body.rendered pre.has-code-language code[class*="language-"] {
+  padding-top: calc(24px * var(--pdf-block-scale, 1));
+}
+
+.pdf-block-body.rendered pre .code-copy-btn {
+  top: calc(6px * var(--pdf-block-scale, 1));
+  right: calc(8px * var(--pdf-block-scale, 1));
+  padding:
+    calc(4px * var(--pdf-block-scale, 1))
+    calc(8px * var(--pdf-block-scale, 1));
+  font-size: calc(0.6rem * var(--pdf-block-scale, 1));
+}
+
+/* ── 2. No scrollbar takes room inside a Block ─────────────────────────────
+ * A Block is as wide as its longest line and as tall as its words, so a
+ * scrollbar in it only ever appears where two devices measure a line a hair
+ * differently — and a desktop's takes height a phone's never does. Hidden, not
+ * removed: a wheel or a trackpad still scrolls. */
+.pdf-block-body,
+.pdf-block-body pre,
+.pdf-block-body .markdown-table-wrap {
+  scrollbar-width: none;
+}
+
+.pdf-block-body::-webkit-scrollbar,
+.pdf-block-body pre::-webkit-scrollbar,
+.pdf-block-body .markdown-table-wrap::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── 3. The rest of the words' furniture ───────────────────────────────────
+ * Lists and margins are already in em; these were pixels. */
+.pdf-block-body.rendered blockquote {
+  border-left-width: calc(4px * var(--pdf-block-scale, 1));
+}
+
+.pdf-block-body.rendered :is(th, td) {
+  padding:
+    calc(8px * var(--pdf-block-scale, 1))
+    calc(10px * var(--pdf-block-scale, 1));
+}
+
+.pdf-block-body .math-display {
+  padding: calc(8px * var(--pdf-block-scale, 1)) 0;
+}
+
+/* ── 4. No green corner ────────────────────────────────────────────────────
+ * The grip is still there — the same corner, cursor, title and double-click to
+ * fit — only not painted. */
+.pdf-block .pdf-block-grip {
+  background: none;
+}
+
+/* The edges' hover hint, only where there IS hover: a tap on a phone left the
+ * last strip it touched lit. */
+@media (hover: none) {
+  .pdf-block .pdf-block-edge:hover {
+    background: none;
+  }
+}
+
+/* ── 5. A finger's handles never cover a small Block ───────────────────────
+ * Sized for a fingertip (53-handwriting.css, 97-diagram.css), but at a phone's
+ * zoom a short Block is barely taller than two of them, and every press on it
+ * resized it. Each is capped at a share of the Block (percentages of the
+ * .pdf-block), so its middle is always a drag. */
+@media (pointer: coarse) {
+  .pdf-block .pdf-block-edge-e,
+  .pdf-block .pdf-block-edge-w {
+    width: min(14px, 20%);
+    bottom: min(22px, 30%);
+  }
+
+  .pdf-block .pdf-block-edge-s,
+  .pdf-block .pdf-block-edge-n {
+    height: min(14px, 25%);
+    left: min(22px, 30%);
+    right: min(22px, 30%);
+  }
+
+  .pdf-block .pdf-block-edge-sw,
+  .pdf-block .pdf-block-edge-ne,
+  .pdf-block .pdf-block-edge-nw {
+    width: min(22px, 30%);
+    height: min(22px, 30%);
+  }
+
+  /* The grip drew 22px and reached 32px through a ::before, so the drawn corner
+     would not cover a picture. Nothing is drawn now, so the grip is simply the
+     reach — capped like the rest. */
+  .pdf-block .pdf-block-grip {
+    width: min(32px, 35%);
+    height: min(32px, 35%);
+  }
+
+  .pdf-block .pdf-block-grip::before {
+    content: none;
+  }
+}
