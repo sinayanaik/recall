@@ -41,6 +41,7 @@ import {
 } from "./pdf-shapes.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlightById, freshDocumentHighlightId } from "./pdf-highlights.js?v=__BUILD__";
 import { claimPagePaste, noteInAppCopy } from "./page-clipboard.js?v=__BUILD__";
+import { pagePointAtPointer } from "./page-pointer.js?v=__BUILD__";
 import { currentDocumentPage, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { normalizeShape, rectFromPoints, shapeBounds, translateShape } from "../render/annot-shapes.js?v=__BUILD__";
 import {
@@ -802,10 +803,18 @@ export function duplicatePicked() {
   return placeCopies(data, data.page, 14, -14, { keepOutsideTies: true });
 }
 
-// Onto the page in view: beside the original on its own page, a step further
-// with each paste; on another page, in the middle of what is in view.
-export function pastePicked() {
+// Where the mouse is, when it is over a page (`at`, from pagePointAtPointer):
+// centred on it, on that page, kept on the paper — and a step further with
+// each paste made without moving the mouse, so the copies do not stack into
+// what looks like one. With no mouse over a page (a finger, a pen not
+// hovering, Insert → Paste blocks pressed in its menu): onto the page in view,
+// beside the original on its own page, a step further with each paste; on
+// another page, in the middle of what is in view.
+const PASTE_STEP = 16;
+
+export function pastePicked(at = null) {
   if (!clipboard || clipboard.deck !== pickDeckKey()) return false;
+  if (at && pdfPageViewport(at.page)) return pasteAtPoint(at);
   const page = Number(currentDocumentPage()) || clipboard.page;
   if (!pdfPageViewport(page)) return false;
   let dx;
@@ -821,6 +830,42 @@ export function pastePicked() {
     dy = centre ? centre[1] - (y0 + y1) / 2 : 0;
   }
   return placeCopies(clipboard, page, dx, dy);
+}
+
+function pasteAtPoint(at) {
+  const page = Number(at.page);
+  const last = clipboard.lastAt;
+  const again = last && last.page === page && Math.abs(last.x - at.x) <= 1 && Math.abs(last.y - at.y) <= 1;
+  clipboard.atPastes = again ? (clipboard.atPastes || 0) + 1 : 0;
+  clipboard.lastAt = { page, x: at.x, y: at.y };
+  const step = PASTE_STEP * clipboard.atPastes;
+  const [x0, y0, x1, y1] = clipboard.box;
+  let dx = at.x + step - (x0 + x1) / 2;
+  let dy = at.y - step - (y0 + y1) / 2;
+  const paper = pageBounds(page);
+  if (paper) {
+    dx = keepWithin(dx, x0, x1, paper[0], paper[2]);
+    dy = keepWithin(dy, y0, y1, paper[1], paper[3]);
+  }
+  return placeCopies(clipboard, page, dx, dy);
+}
+
+// The page's paper, in its own points: [minX, minY, maxX, maxY].
+function pageBounds(page) {
+  const viewport = pdfPageViewport(page);
+  if (!viewport?.convertToPdfPoint || !viewport.width || !viewport.height) return null;
+  const [ax, ay] = viewport.convertToPdfPoint(0, 0);
+  const [bx, by] = viewport.convertToPdfPoint(viewport.width, viewport.height);
+  return [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
+}
+
+// A shift `d` for a span lo..hi, moved as little as it takes to keep the span
+// inside min..max — or, for a span wider than that, its start at min.
+function keepWithin(d, lo, hi, min, max) {
+  if (hi - lo >= max - min) return min - lo;
+  if (lo + d < min) return min - lo;
+  if (hi + d > max) return max - hi;
+  return d;
 }
 
 function viewCentre(page) {
@@ -1035,7 +1080,9 @@ function onKey(event) {
     // holds something newer — a picture — which then pastes instead
     // (src/documents/page-clipboard.js). No other key handler may take this
     // press, and nothing may preventDefault it, or no paste event comes.
-    claimPagePaste(() => pastePicked());
+    // Where the mouse is when the paste runs, over a page: that is where the
+    // reader is pasting (src/documents/page-pointer.js).
+    claimPagePaste(() => pastePicked(pagePointAtPointer()));
     event.stopPropagation();
     return;
   }

@@ -1332,12 +1332,26 @@ export function hasInkClipboard() { return Boolean(inkClipboard?.strokes?.length
 // Pasted onto the page the reader is looking at, which is the point: copy on
 // page 1, scroll to page 4, paste. ensureInkLayer first, because that page may
 // never have been drawn on and so may have no host for the engine to paste into.
-export function pasteInkSelection(page = null) {
+// With `at` — where the mouse is over a page, { page, x, y } in its points —
+// the strokes go there, centred on it, and a step further with each paste made
+// without moving the mouse, so the copies do not land on top of each other.
+const INK_PASTE_STEP = 16;
+let lastInkPasteAt = null;
+let inkPastesAtPoint = 0;
+
+export function pasteInkSelection(page = null, at = null) {
   if (!hasInkClipboard()) return false;
-  const target = Number.isFinite(page) ? page : currentDocumentPage();
+  const point = at && Number.isFinite(at.x) && Number.isFinite(at.y) && Number(at.page) ? at : null;
+  const target = point ? Number(point.page) : (Number.isFinite(page) ? page : currentDocumentPage());
   if (!inkLayerForWriting(target)) return false;
   closeOpenMark();
-  return ensureEngine().pasteStrokes(target, inkClipboard);
+  if (!point) return ensureEngine().pasteStrokes(target, inkClipboard);
+  const last = lastInkPasteAt;
+  const again = last && last.page === target && last.clip === inkClipboard && Math.abs(last.x - point.x) <= 1 && Math.abs(last.y - point.y) <= 1;
+  inkPastesAtPoint = again ? inkPastesAtPoint + 1 : 0;
+  lastInkPasteAt = { page: target, x: point.x, y: point.y, clip: inkClipboard };
+  const step = INK_PASTE_STEP * inkPastesAtPoint;
+  return ensureEngine().pasteStrokes(target, inkClipboard, { x: point.x + step, y: point.y - step });
 }
 
 export function nudgeInkSelection(dx, dy) { closeOpenMark(); return ensureEngine().nudgeSelection(dx, dy); }
