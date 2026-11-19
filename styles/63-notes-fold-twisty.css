@@ -54,6 +54,18 @@
 :is(h1, h2, h3, h4, h5, h6)[data-fold-collapsed="true"] > .notes-fold-twisty:hover {
   background: var(--accent);
 }
+/* In Notes the tile is one size at every heading level, set in the Notes text
+   size (--ol-twisty, styles/a5-section-lines.css), so a section's line can run
+   straight down through its middle. The arrow inside keeps its proportion to
+   the tile. */
+#notesView .notes-fold-twisty {
+  width: var(--ol-twisty);
+  height: var(--ol-twisty);
+  border-radius: calc(var(--ol-twisty) * 0.23);
+}
+#notesView .notes-fold-twisty-glyph {
+  font-size: calc(var(--ol-twisty) / 1.3);
+}
 @media (prefers-reduced-motion: reduce) {
   .notes-fold-twisty,
   .notes-fold-twisty-glyph {

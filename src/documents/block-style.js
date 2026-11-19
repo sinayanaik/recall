@@ -130,9 +130,24 @@ export function blockInkVar(token) {
 // values" took it away, so a type size is uncapped. `max` is still taken by the
 // one caller with a real domain — a picture's width as a PERCENT of its block,
 // where 100 is the whole block and not an opinion.
+// What a Style-bar box was given, as a number in the box's own unit. The unit
+// is written beside each box, so nobody has to type it — and somebody who does
+// ("12pt", "12 pt", "1,5", "1.4x", "80%") must not have the box quietly reset,
+// which is what Number("12pt") → NaN did. Pixels typed into a points box are
+// converted (1px = 0.75pt). Anything else that is not a number is NaN.
+export function blockNumberOf(value, unit = "pt") {
+  if (typeof value === "number") return value;
+  const text = String(value ?? "").trim().toLowerCase().replace(",", ".");
+  const match = text.match(/^(-?\d*\.?\d+)\.?\s*(pt|px|%|x|×)?$/);
+  if (!match) return NaN;
+  const number = Number(match[1]);
+  if (match[2] === "px" && unit === "pt") return number * 0.75;
+  return number;
+}
+
 export function normalizeBlockNumber(value, max = Infinity) {
   if (value === null || value === undefined || value === "") return null;
-  const number = Number(value);
+  const number = blockNumberOf(value, max === 100 ? "%" : "pt");
   if (!Number.isFinite(number) || number <= 0) return null;
   return Math.min(max, Math.round(number * 10) / 10);
 }
@@ -150,7 +165,7 @@ export const BLOCK_PAD_MAX = 72;
 
 export function normalizeBlockPad(value) {
   if (value === null || value === undefined || value === "") return null;
-  const number = Number(value);
+  const number = blockNumberOf(value);
   if (!Number.isFinite(number) || number < 0) return null;
   return Math.min(BLOCK_PAD_MAX, Math.round(number * 10) / 10);
 }
@@ -309,20 +324,20 @@ export function blockHeadInkVar(token) {
 
 export function normalizeBlockWeight(value) {
   if (value === null || value === undefined || value === "") return null;
-  const number = Math.round(Number(value));
+  const number = Math.round(blockNumberOf(value, ""));
   return Number.isFinite(number) && number >= 1 && number <= 1000 ? number : null;
 }
 
 export function normalizeBlockLineHeight(value) {
   if (value === null || value === undefined || value === "") return null;
-  const number = Number(value);
+  const number = blockNumberOf(value, "×");
   if (!Number.isFinite(number) || number <= 0) return null;
   return Math.round(number * 100) / 100;
 }
 
 export function normalizeBlockLetterSpacing(value) {
   if (value === null || value === undefined || value === "") return null;
-  const number = Number(value);
+  const number = blockNumberOf(value);
   if (!Number.isFinite(number)) return null;
   const rounded = Math.round(number * 10) / 10;
   return rounded === 0 ? null : rounded;

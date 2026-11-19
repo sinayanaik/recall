@@ -1,0 +1,17 @@
+/* ── Code line spacing reaches the code ─────────────────────────────────────
+ *
+ * ◐ Notes → Code line spacing (and ◐ Cards') writes --code-line-height, and
+ * `.rendered pre` reads it (styles/06-rendered.css). But every code block's
+ * <code> carries a language-* class (src/render/enhance.js — a plain fence is
+ * "text"), and the vendored Prism theme sets `line-height: 1.5; tab-size: 4`
+ * on code[class*=language-] directly. <code> is a block inside the <pre>, so
+ * its own 1.5 was the spacing of every line, whatever the setting said — and
+ * an ASCII diagram's `|` and `v` stood apart with a gap between each line.
+ *
+ * So the code inherits both from its <pre>. The Canvas's code (styles/a3-
+ * canvas-type.css) already set its own and out-ranks this; it is unchanged.
+ */
+.rendered pre code[class*="language-"] {
+  line-height: inherit;
+  tab-size: inherit;
+}

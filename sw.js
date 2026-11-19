@@ -396,6 +396,7 @@ const APP_SHELL = [
   `./styles/a4-block-scale.css?v=${STAMP}`,
   `./styles/a5-section-lines.css?v=${STAMP}`,
   `./styles/a6-list-lead.css?v=${STAMP}`,
+  `./styles/a7-code-lines.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never

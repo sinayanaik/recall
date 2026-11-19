@@ -539,9 +539,9 @@ export const styleControlGroups = [
         optionLabels: { auto: "Auto — a lone title stays out", h1: "H1", h2: "H2", h3: "H3", h4: "H4" },
         hint: "The heading level the lines start from; bigger headings are titles, with no line. Auto leaves out a note's title when it is its only heading of that size."
       },
-      { key: "notesOutlineIndent", label: "Step", type: "text", unit: "px", probe: "width", auto: "0.85em", hint: "How far each level of section is set in. Lines and steps are measured in the Notes text size, so em works too." },
+      { key: "notesOutlineIndent", label: "Step", type: "text", unit: "px", probe: "width", auto: "1.3em", hint: "How far each level of section is set in. Empty is one fold arrow wide. A bare number is px; lines and steps are measured in the Notes text size, so em works too." },
       { key: "notesOutlineLineWidth", label: "Line thickness", type: "text", unit: "px", probe: "border-top-width", auto: "1px", hint: "Thickness of each line." },
-      { key: "notesOutlineOffset", label: "Line position", type: "text", unit: "px", probe: "width", auto: "0.55em", hint: "Where in its step a line runs, from the left: under the fold arrow of the heading it belongs to." },
+      { key: "notesOutlineOffset", label: "Line position", type: "text", unit: "px", probe: "width", auto: "0.65em", hint: "Where in its step a line runs, from the left. Empty runs it straight down through the middle of its heading's fold arrow." },
       {
         key: "notesOutlineColor", label: "Colour", type: "select", options: ["quiet", "accent"],
         optionLabels: { quiet: "Quiet — the text's colour", accent: "Accent" },
@@ -576,7 +576,7 @@ export const styleControlGroups = [
       pxField("hlNoteFontSize", "Text size", "Notes in the side-by-side highlights pane; the cards scale with it. Leave empty to follow Notes.", { inherits: followsNotes("notesFontSize") }),
       lineField("hlNoteLineHeight", "Line spacing", "Reading spacing in the pane. Leave empty to follow Notes.", { inherits: followsNotes("notesLineHeight") }),
       { key: "hlNoteWeight", label: "Weight", type: "text", probe: "font-weight", inherits: followsNotes("notesFontWeight"), hint: "Text thickness in the pane. Leave empty to follow Notes." },
-      { key: "hlQuoteFontSize", label: "Quoted line size", type: "text", probe: "font-size", hint: "The highlighted passage at the top of each card, relative to its note." },
+      { key: "hlQuoteFontSize", label: "Quoted line size", type: "text", unit: "px", probe: "font-size", hint: "The highlighted passage at the top of each card, relative to its note: 0.9 is 0.9em, 14 is 14px." },
       { key: "hlQuoteInkPercent", label: "Quoted line contrast %", type: "text", probe: "number", hint: "How strongly the quoted passage is inked against its note." }
     ]
   },
@@ -611,7 +611,7 @@ export const styleControlGroups = [
         hint: "The line under a highlight that has a note."
       },
       { key: "markNoteUnderlineWidth", label: "Underline thickness", type: "text", unit: "px", probe: "border-top-width", auto: "1.5px", hint: "Thickness of that line." },
-      { key: "markNoteFoldSize", label: "Note marker size", type: "text", probe: "width", auto: "0.36em", hint: "The folded corner on a highlight that has a note. em is relative to the text." }
+      { key: "markNoteFoldSize", label: "Note marker size", type: "text", unit: "px", probe: "width", auto: "0.36em", hint: "The folded corner on a highlight that has a note, relative to the text: 0.4 is 0.4em, 6 is 6px." }
     ]
   },
 
@@ -623,7 +623,7 @@ export const styleControlGroups = [
       pxField("noteEdTextSize", "Preview text size", "The note as it reads, in the window.", { auto: "0.88rem" }),
       lineField("noteEdLineHeight", "Preview line spacing", "Line spacing of the preview.", { auto: "1.4" }),
       pxField("noteEdRawFontSize", "Editor text size", "Markdown while writing the note."),
-      { key: "noteEdWidth", label: "Width", type: "text", probe: "width", auto: "min(460px, 100vw - 24px)", hint: "How wide the window opens. Dragging its corner still sizes it; on a phone it is a sheet across the screen." },
+      { key: "noteEdWidth", label: "Width", type: "text", unit: "px", probe: "width", auto: "min(460px, 100vw - 24px)", hint: "How wide the window opens. Dragging its corner still sizes it; on a phone it is a sheet across the screen." },
       spacingField("noteEdPadding", "Padding", "Inside spacing of the window.", { auto: "12px", spacing: false }),
       radiusField("noteEdRadius", "Corners", "Roundness of the window.", { auto: "14px" })
     ]
@@ -637,7 +637,7 @@ export const styleControlGroups = [
       pxField("tocFontSize", "Text size", "Entries in the contents drawer of Notes and PDFs. Deeper levels stay a touch smaller.", { auto: "0.82rem" }),
       lineField("tocLineHeight", "Line spacing", "Line spacing of an entry that wraps.", { auto: "1.35" }),
       { key: "tocRowPadding", label: "Entry padding", type: "text", unit: "px", probe: "padding", auto: "3px 8px", hint: "Inside spacing of each entry: one value, or top/bottom then left/right." },
-      { key: "tocWidth", label: "Drawer width", type: "text", probe: "width", auto: "min(300px, 82%)", hint: "Width of the drawer. Any CSS width works as written." }
+      { key: "tocWidth", label: "Drawer width", type: "text", unit: "px", probe: "width", auto: "min(300px, 82%)", hint: "Width of the drawer. A number is px; any CSS width works as written." }
     ]
   },
 
@@ -768,7 +768,7 @@ export const styleControlGroups = [
     title: "Home",
     scope: "home",
     fields: [
-      { key: "homeWidth", label: "Page width", type: "text", probe: "width", auto: "min(1040px, 100%)", hint: "How wide Home's content runs. Any CSS width works as written." },
+      { key: "homeWidth", label: "Page width", type: "text", unit: "px", probe: "width", auto: "min(1040px, 100%)", hint: "How wide Home's content runs. A number is px; any CSS width works as written." },
       { key: "homeTileWidth", label: "File tile width", type: "text", unit: "px", probe: "width", auto: "190px", hint: "The narrowest a recent-file tile gets." },
       pxField("homeTitleSize", "File title size", "Titles on the recent-file tiles.", { auto: "0.98rem" }),
       radiusField("homeCardRadius", "Card corners", "Roundness of the Continue card and the reading-time card.")
@@ -780,7 +780,7 @@ export const styleControlGroups = [
     title: "My Files",
     scope: "myFiles",
     fields: [
-      { key: "myFilesWidth", label: "Panel width", type: "text", probe: "width", auto: "min(85vw, 1160px)", hint: "Width of the My Files panel. Any CSS width works as written." },
+      { key: "myFilesWidth", label: "Panel width", type: "text", unit: "px", probe: "width", auto: "min(85vw, 1160px)", hint: "Width of the My Files panel. A number is px; any CSS width works as written." },
       pxField("myFilesTextSize", "List text size", "Text in the list view's rows.", { auto: "0.84rem" }),
       { key: "myFilesTileWidth", label: "Tile width", type: "text", unit: "px", probe: "width", auto: "190px", hint: "The narrowest a file or folder tile gets." },
       spacingField("myFilesPadding", "Padding", "Inside spacing of the My Files panel.")
