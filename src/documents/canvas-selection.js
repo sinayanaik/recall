@@ -261,8 +261,10 @@ function onPickPress(event) {
   const blockEl = target.closest(".pdf-block");
   const onHandle = Boolean(target.closest("[data-pdf-block-action]"));
   const textBox = target.closest(".pdf-shape-text");
-  // A handle of the selected shape is the shape module's, always.
-  if (!blockEl && selectedShapeHandleAt(event.clientX, event.clientY)) { clearPick(); return; }
+  // A handle of the selected shape is the shape module's, always — even over
+  // a block: a connector's end sits on its edge, and its handle is drawn above
+  // it (src/documents/pdf-shapes.js).
+  if (!onHandle && selectedShapeHandleAt(event.clientX, event.clientY)) { clearPick(); return; }
   let hitId = blockEl ? blockEl.dataset.pdfBlock : null;
   if (!hitId && textBox) hitId = textBox.dataset.highlightId || null;
   if (!hitId) hitId = shapeAtPoint(page, point[0], point[1])?.id || null;

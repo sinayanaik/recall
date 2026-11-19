@@ -26,8 +26,11 @@
 //      one whose route is shortest, turns least and crosses nothing; the side
 //      it took last time (the record's `exits`) is kept unless another is
 //      clearly better, so a point either way does not flip it.
+//      An end PINNED to a point of the outline (`at`, src/render/annot-shapes.js)
+//      leaves by the side that point is on, whatever else is going on.
 //   2. Ports. Ends that leave one side of one box share that side out between
-//      them, in the order of where they are going, so they do not cross.
+//      them, in the order of where they are going, so they do not cross. A
+//      pinned end stays where it was pinned, and is not shared out.
 //   3. Routes. An elbow whose plain route crosses a box on the page goes round
 //      it: the shortest path with the fewest turns over a sparse grid of the
 //      boxes' edges (orthogonalRoute). Its corners are stored as `via`, so
@@ -38,12 +41,68 @@
 //
 // Pure: no DOM, no state. tools/diagram-geometry-check.mjs asserts it in Node.
 
-import { CONNECTOR_STUB, ROUTE_TURN_COST, elbowPath, freeExits, normalizeShape, pathLength, pathTurns, simplifyPath } from "./annot-shapes.js?v=__BUILD__";
-import { NODE_SIDES, SIDE_VECTORS, polygonCentre, polygonPerimeterPoint, polygonRayExit } from "./node-outlines.js?v=__BUILD__";
+import { CONNECTOR_STUB, ROUTE_TURN_COST, elbowPath, freeExits, normalizeShape, pathLength, pathTurns, rotatePoint, simplifyPath } from "./annot-shapes.js?v=__BUILD__";
+import {
+  NODE_SIDES, SIDE_VECTORS, polygonCentre, polygonNearestPoint, polygonPerimeterPoint, polygonRayExit, sideOfVector
+} from "./node-outlines.js?v=__BUILD__";
 
-// How far short of the outline a tied end stops, so its head is never under
-// the box it points at (a block is drawn over every shape).
-export const CONNECTOR_END_GAP = 2;
+// ── Where an end stops ────────────────────────────────────────────────────
+//
+// "The arrow is not really continuous with the block." An end used to stop a
+// fixed 2pt short of the outline — and a block's border is drawn inside its
+// outline, a Shapes-tool box's half outside it — so the line visibly stopped
+// short of the edge it joins. Now an end stops ON the edge as it is drawn:
+//
+//   • a node's `pad` is how far outside its outline its visible edge is — half
+//     its line for a Shapes-tool box (whose line is centred on the outline),
+//     nothing for a Block (whose border is drawn inside it);
+//   • and a head's tip, drawn with round joins, reaches half the line's width
+//     past the point it is drawn to — so an end with a head stops that much
+//     short, and the tip, not the line under it, touches the edge. (A block is
+//     drawn over every shape: a head pushed into the edge would be hidden under
+//     it.)
+export function connectorEndGap(node, head = "none", width = 0) {
+  const pad = Math.max(0, Number(node?.pad) || 0);
+  const tip = head === "filled" || head === "open" ? Math.max(0, Number(width) || 0) / 2 : 0;
+  return pad + tip;
+}
+
+// ── A pinned end ──────────────────────────────────────────────────────────
+//
+// A node's frame is its UNTURNED box and its turn: { rect, rot }. Absent, it is
+// its box, unturned.
+function nodeFrame(node) {
+  return node.frame || { rect: node.rect, rot: 0 };
+}
+
+// The point `at` names on a node: the fraction of its unturned box, turned
+// with it.
+export function pinPoint(node, at) {
+  const { rect, rot } = nodeFrame(node);
+  const [x0, y0, x1, y1] = rect;
+  const local = [x0 + (x1 - x0) * at[0], y0 + (y1 - y0) * at[1]];
+  return rot ? rotatePoint(local, [(x0 + x1) / 2, (y0 + y1) / 2], rot) : local;
+}
+
+// ...and the other way: the `at` of a point on (or near) a node.
+export function pinOf(node, point) {
+  const { rect, rot } = nodeFrame(node);
+  const [x0, y0, x1, y1] = rect;
+  const local = rot ? rotatePoint(point, [(x0 + x1) / 2, (y0 + y1) / 2], -rot) : point;
+  const f = (value, low, high) => (high - low > 1e-9 ? Math.min(1, Math.max(0, (value - low) / (high - low))) : 0.5);
+  const round4 = (n) => Math.round(n * 10000) / 10000;
+  return [round4(f(local[0], x0, x1)), round4(f(local[1], y0, y1))];
+}
+
+// Where a pinned end is drawn — on the outline, nearest the point it names,
+// moved out to the visible edge — and the side it leaves by: the way the edge
+// there faces.
+export function fixedPort(node, at, gap = connectorEndGap(node)) {
+  const raw = pinPoint(node, at);
+  const near = polygonNearestPoint(node.poly, raw[0], raw[1]);
+  if (!near) return { point: raw, side: "e" };
+  return { point: [near.point[0] + near.normal[0] * gap, near.point[1] + near.normal[1] * gap], side: sideOfVector(near.normal) };
+}
 
 // How far a route keeps from a box it goes round, in points.
 export const ROUTE_CLEARANCE = 10;
@@ -127,13 +186,13 @@ function pathCrossings(points, rects) {
 // `offset` is along the side, from its middle, in points. Straight out from
 // that point on the box's middle line, to the outline — on a box, a point on
 // the edge; on a diamond, on its slope.
-export function sidePort(node, side, offset = 0) {
+export function sidePort(node, side, offset = 0, gap = connectorEndGap(node)) {
   const v = SIDE_VECTORS[side];
   const centre = polygonCentre(node.poly);
   const along = v[0] === 0 ? [1, 0] : [0, 1];
   const from = [centre[0] + along[0] * offset, centre[1] + along[1] * offset];
   const hit = polygonRayExit(node.poly, from, [from[0] + v[0], from[1] + v[1]]) || polygonRayExit(node.poly, centre, [centre[0] + v[0], centre[1] + v[1]]) || centre;
-  return [hit[0] + v[0] * CONNECTOR_END_GAP, hit[1] + v[1] * CONNECTOR_END_GAP];
+  return [hit[0] + v[0] * gap, hit[1] + v[1] * gap];
 }
 
 // How far apart the ports on one side may spread: the side's length, less a
@@ -327,8 +386,11 @@ export function layoutConnectors(entries, nodes) {
   items.forEach((item) => {
     const { s, found } = item;
     const routed = Boolean(s.route);
+    item.gaps = [0, 1].map((i) => (found[i] ? connectorEndGap(found[i], s.heads[i], s.width) : 0));
+    item.pins = [0, 1].map((i) => (found[i] && s.ends[i].at ? fixedPort(found[i], s.ends[i].at, item.gaps[i]) : null));
     item.sides = [0, 1].map((i) => {
       if (!found[i]) return null;
+      if (item.pins[i]) return item.pins[i].side;
       const side = s.ends[i].side;
       if (side !== "auto") return side;
       return routed ? undefined : "float";
@@ -343,8 +405,8 @@ export function layoutConnectors(entries, nodes) {
     let best = null;
     candidates(0).forEach((sa) => {
       candidates(1).forEach((sb) => {
-        const a = sa ? sidePort(found[0], sa) : s.p[0];
-        const b = sb ? sidePort(found[1], sb) : s.p[1];
+        const a = item.pins[0] ? item.pins[0].point : sa ? sidePort(found[0], sa, 0, item.gaps[0]) : s.p[0];
+        const b = item.pins[1] ? item.pins[1].point : sb ? sidePort(found[1], sb, 0, item.gaps[1]) : s.p[1];
         const guess = freeExits(a, b);
         const da = sa || guess[0];
         const db = sb || guess[1];
@@ -365,7 +427,7 @@ export function layoutConnectors(entries, nodes) {
     item.offsets = [0, 0];
     [0, 1].forEach((i) => {
       const side = item.sides[i];
-      if (!item.found[i] || !SIDE_VECTORS[side]) return;
+      if (!item.found[i] || !SIDE_VECTORS[side] || item.pins[i]) return;
       const key = `${item.found[i].id}|${side}`;
       if (!bySide.has(key)) bySide.set(key, []);
       bySide.get(key).push({ item, i, side, node: item.found[i] });
@@ -377,6 +439,7 @@ export function layoutConnectors(entries, nodes) {
     const along = side === "n" || side === "s" ? 0 : 1;
     const towards = ({ item, i }) => {
       const other = item.found[1 - i];
+      if (item.pins[1 - i]) return item.pins[1 - i].point;
       return other ? polygonCentre(other.poly) : item.s.p[1 - i];
     };
     ends.sort((m, n) => (towards(m)[along] - towards(n)[along]) || (m.item.id < n.item.id ? -1 : m.item.id > n.item.id ? 1 : m.i - n.i));
@@ -388,21 +451,28 @@ export function layoutConnectors(entries, nodes) {
 
   // 3. The ends, and the way between them.
   items.forEach((item) => {
-    const { s, found, sides, offsets } = item;
+    const { s, found, sides, offsets, pins, gaps } = item;
     const p = s.p.map((point) => point.slice());
     const exits = [null, null];
-    const centreOf = (i) => (found[i] ? polygonCentre(found[i].poly) : s.p[i]);
+    // What a floating end looks toward: the other end's pin, or the middle of
+    // what it is tied to, or where it is.
+    const centreOf = (i) => (pins[i] ? pins[i].point : found[i] ? polygonCentre(found[i].poly) : s.p[i]);
     [0, 1].forEach((i) => {
       const node = found[i];
       if (!node) return;
+      if (pins[i]) {
+        p[i] = pins[i].point;
+        exits[i] = pins[i].side;
+        return;
+      }
       if (sides[i] === "float") {
         const centre = polygonCentre(node.poly);
         const edge = polygonPerimeterPoint(node.poly, centreOf(1 - i));
         const len = Math.hypot(edge[0] - centre[0], edge[1] - centre[1]) || 1;
-        p[i] = [edge[0] + ((edge[0] - centre[0]) / len) * CONNECTOR_END_GAP, edge[1] + ((edge[1] - centre[1]) / len) * CONNECTOR_END_GAP];
+        p[i] = [edge[0] + ((edge[0] - centre[0]) / len) * gaps[i], edge[1] + ((edge[1] - centre[1]) / len) * gaps[i]];
         return;
       }
-      p[i] = sidePort(node, sides[i], offsets[i]);
+      p[i] = sidePort(node, sides[i], offsets[i], gaps[i]);
       exits[i] = sides[i];
     });
     p[0] = roundPoint(p[0]);

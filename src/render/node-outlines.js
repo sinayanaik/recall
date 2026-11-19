@@ -291,6 +291,40 @@ export function pointInOutline(points, px, py) {
   return inside;
 }
 
+// The point of a polygon's outline nearest to (px, py), and the way out of the
+// polygon there: { point, normal, distance }. The normal is the nearest edge's
+// own, turned to face away from the polygon's middle.
+export function polygonNearestPoint(points, px, py) {
+  if (!points?.length) return null;
+  const centre = polygonCentre(points);
+  let best = null;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((px - a[0]) * dx + (py - a[1]) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const point = [a[0] + t * dx, a[1] + t * dy];
+    const distance = Math.hypot(px - point[0], py - point[1]);
+    if (best && distance >= best.distance - 1e-9) continue;
+    const len = Math.sqrt(len2) || 1;
+    let normal = [dy / len, -dx / len];
+    const mid = [(a[0] + b[0]) / 2 - centre[0], (a[1] + b[1]) / 2 - centre[1]];
+    if (normal[0] * mid[0] + normal[1] * mid[1] < 0) normal = [-normal[0], -normal[1]];
+    best = { point, normal, distance };
+  }
+  return best;
+}
+
+// Which of the four sides a direction out of a box mostly points along.
+export function sideOfVector(v) {
+  if (!v || (Math.abs(v[0]) < 1e-12 && Math.abs(v[1]) < 1e-12)) return "e";
+  if (Math.abs(v[0]) >= Math.abs(v[1])) return v[0] >= 0 ? "e" : "w";
+  return v[1] >= 0 ? "n" : "s";
+}
+
 // The shortest distance from a point to a polygon's outline.
 export function distanceToOutline(points, px, py) {
   let best = Infinity;
