@@ -2470,6 +2470,11 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       beginBlockEdit(id);
       return;
     }
+    // A single press only picks the block up, so no caret may be left in its
+    // words to say it is being typed in. Its rendered words take none
+    // (styles/98-block-inline.css); this is for an engine, or a reader's
+    // caret browsing, that puts one there all the same.
+    if (!captured && !(editingId === id && inlineBlockEditorId() === id)) clearCaretIn(node);
     // Let go of over another page: it is that page's now, on top of what is
     // there — and the lines tied to it on the page it left let go of it
     // (src/documents/pdf-connectors.js, registered as pageMoveHook). One step.
@@ -2823,6 +2828,14 @@ function isDoubleTap(event, id, slot) {
   // A double-tap consumes both presses, so a third does not count again.
   lastBlockPress[slot] = twice ? null : { id, at: now, x: event.clientX, y: event.clientY };
   return twice;
+}
+
+// A caret (a collapsed selection) sitting in a block's words, taken away. A
+// selection that spans words is left alone: that was made on purpose.
+function clearCaretIn(node) {
+  const selection = typeof getSelection === "function" ? getSelection() : null;
+  if (!selection?.rangeCount || !selection.isCollapsed) return;
+  if (node?.contains(selection.anchorNode)) selection.removeAllRanges();
 }
 
 // ── Fit to the contents, on request ────────────────────────────────────────

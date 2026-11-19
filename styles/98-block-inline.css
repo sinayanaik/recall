@@ -33,6 +33,22 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
+/* A Block that is not being typed in takes no caret. `.pdf-block` says
+   `user-select: none` (styles/53-handwriting.css), but its body is also
+   `.rendered`, whose `user-select: text` (styles/05-study.css) switched it back
+   on for the words — so one click, which only picks the Block up, left the
+   browser's caret blinking in its paragraph, at its end when the click was to
+   the right of the words: "we are not in the editing mode, then why is it
+   showing a typewriter?" A double-click, Enter or the strip's Edit opens it to
+   type in, and `.is-inline-editing` above gives the editor its selection back.
+   View only, where a Block is read and not picked up, keeps its words
+   selectable (styles/a1-view-only.css). */
+.pdf-block:not(.is-inline-editing):not(.is-static) .pdf-block-body,
+.pdf-block:not(.is-inline-editing):not(.is-static) .pdf-block-body * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .pdf-block-inline {
   flex: 1 1 auto;
   gap: 0;
