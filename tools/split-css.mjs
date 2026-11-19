@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a7-code-lines.css":
+    "Notes' and Cards' Code line spacing reaches the code: Prism's theme pinned " +
+    "every code block's <code> at line-height 1.5 and tab-size 4, so the " +
+    "setting on its <pre> never showed.",
   "a6-list-lead.css":
     "A line that leads into a bullet list sits as close to it as the bullets " +
     "sit to each other, in Notes, on cards and in Blocks, instead of a full " +

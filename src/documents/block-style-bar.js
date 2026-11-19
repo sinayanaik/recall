@@ -518,6 +518,13 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, p
     if (select) change({ [select.dataset.bstyleSelect]: select.value });
   });
 
+  // Leaving a box shows what it now holds: "12 pt" becomes "12", the unit
+  // already written beside it. After the focus has moved, since paint() leaves
+  // the box being typed in alone.
+  root.addEventListener("focusout", (event) => {
+    if (event.target.closest?.("[data-bstyle-number]")) setTimeout(paint, 0);
+  });
+
   // Written when it is folded rather than on every open, because the question is
   // "how does this reader want the panel", and the answer they gave last is the
   // one to keep.

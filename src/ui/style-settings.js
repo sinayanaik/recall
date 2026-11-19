@@ -11,7 +11,6 @@ import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { styleStorageKey } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { escapeRegExp } from "../core/text.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "../notes/caret.js?v=__BUILD__";
 import { isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { setNotesReadingMode } from "../notes/paged-view.js?v=__BUILD__";
@@ -42,15 +41,59 @@ export function normalizeStyleValue(key, value, customDefault) {
   }
 
   // Text controls: no clamping, no range checks — whatever was typed wins.
-  // The only fix-up is unit completion: a bare number in a px field means px.
+  // The only fix-up is unit completion: nobody should have to type the unit.
   if (!raw) return defaultValue;
-  if (!field.unit) return raw;
+  return completeStyleUnits(field, raw, defaultValue);
+}
 
-  const repeatedUnit = new RegExp(`^(-?\\d*\\.?\\d+)(${escapeRegExp(field.unit)})+$`, "i");
-  const repeatedUnitMatch = raw.match(repeatedUnit);
-  if (repeatedUnitMatch) return `${repeatedUnitMatch[1]}${field.unit}`;
+// The units a box understands, for tidying what was typed ("16 PX" → "16px").
+const STYLE_UNITS = "px|em|rem|%|pt|vh|vw|dvh|svh|lvh|ch|ex|vmin|vmax|cm|mm|in|pc|q";
+const STYLE_UNIT_RE = new RegExp(`^(-?\\d*\\.?\\d+)\\.?\\s*(${STYLE_UNITS})?(?:\\2)*$`, "i");
+const RELATIVE_UNITS = new Set(["em", "rem"]);
 
-  return /^-?\d*\.?\d+$/.test(raw) ? `${raw}${field.unit}` : raw;
+// The unit a field's own default is written in, if it is a single length:
+// "0.82rem" → "rem", "1px" → "px", "min(300px, 82%)" → "".
+function defaultUnitOf(field, defaultValue) {
+  const sample = String(field.auto || defaultValue || "").trim();
+  const match = sample.match(/^-?\d*\.?\d+([a-z%]+)$/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
+// What a bare number means in this box. Usually the box's unit (px). Where the
+// box's own default is relative — a Block's text "0.82rem", code "1em", the
+// section-line step "1.3em" — a small number is plainly meant the same way
+// ("0.9" is 0.9em, not a 0.9px speck) and a big one as pixels ("14" is 14px,
+// not fourteen times the text). Line spacing has no unit: "1.5" is 1.5× the
+// text, but "24" is 24px — nobody means lines 24 text-heights apart.
+function unitForBareNumber(field, number, defaultValue) {
+  if (field.probe === "line-height") return Math.abs(number) > 3 ? "px" : "";
+  const fromDefault = defaultUnitOf(field, defaultValue);
+  if (RELATIVE_UNITS.has(fromDefault) && Math.abs(number) < 3) return fromDefault;
+  return field.unit || "";
+}
+
+// Give each bare number in a value its unit — every one of "3 8" in a padding
+// box, not only a lone "16" — and tidy a typed unit: "16 PX", "16pxpx" and
+// "16." are all "16px". Anything with a function or a word in it (calc(…),
+// min(…), auto, inherit) is left exactly as written.
+export function completeStyleUnits(field, value, defaultValue) {
+  const raw = String(value ?? "").trim();
+  if (!raw || !field || field.type === "select") return raw;
+  // These keep their bare number: applyStyleSettings gives it its meaning
+  // (a percent, a multiplier, a weight).
+  if (field.probe === "number" || field.probe === "length-percentage" || field.probe === "font-weight") return raw;
+  if (/[(),]/.test(raw)) return raw;
+  // "16 px" is one token, not two.
+  const joined = raw.replace(new RegExp(`(\\d)\\.?\\s+(${STYLE_UNITS})(?![a-z])`, "gi"), "$1$2");
+  const tokens = joined.split(/\s+/);
+  const completed = tokens.map((token) => {
+    const match = token.match(STYLE_UNIT_RE);
+    if (!match) return token;
+    const [, number, typedUnit] = match;
+    if (typedUnit) return `${number}${typedUnit.toLowerCase()}`;
+    return `${number}${unitForBareNumber(field, Number(number), defaultValue)}`;
+  });
+  return completed.join(" ");
 }
 
 // Is `value` something CSS can actually use for this control?
@@ -80,9 +123,12 @@ export function isStyleFollowValue(field, value) {
 
 export function isStyleValueUsable(field, value) {
   if (!field || field.type === "select") return true;
-  const raw = String(value ?? "").trim();
-  if (!raw) return styleFieldFollows(field);
-  if (isStyleFollowValue(field, raw)) return true;
+  const typed = String(value ?? "").trim();
+  if (!typed) return styleFieldFollows(field);
+  if (isStyleFollowValue(field, typed)) return true;
+  // Judge what the box WILL hold, not the keystrokes so far: "16" in a px box
+  // is 16px, and used to be marked invalid until you left the box.
+  const raw = completeStyleUnits(field, typed, styleDefaults[field.key]);
   if (field.probe === "number") return /^-?\d*\.?\d+%?$/.test(raw) && Number.isFinite(parseFloat(raw));
   // The layout boxes: a bare number is a percent (of whatever unit
   // applyStyleSettings gives that box), anything else must be a CSS length.

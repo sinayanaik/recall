@@ -553,6 +553,27 @@ const PROBE = `async (api) => {
     if (again.appGap !== "10px") problems.push("a v5 profile's 10px appGap was rewritten to " + again.appGap);
     return problems.length ? problems.join(" · ") : true;
   })());
+
+  // ── Nobody types the unit ────────────────────────────────────────────────
+  push("a bare number gets the box's unit, in every kind of box, and is never marked invalid", (() => {
+    const want = [
+      ["notesFontSize", "17", "17px"], ["notesFontSize", "17 PX", "17px"], ["notesFontSize", "17pxpx", "17px"],
+      ["notesFontSize", "1.1em", "1.1em"], ["notesFontSize", "calc(1em + 2px)", "calc(1em + 2px)"],
+      ["docCodeFontSize", "1", "1em"], ["docCodeFontSize", "14", "14px"], ["canvasBlockFontSize", "0.9", "0.9rem"],
+      ["hlQuoteFontSize", "0.9", "0.9em"], ["hlQuoteFontSize", "14", "14px"],
+      ["tocRowPadding", "3 8", "3px 8px"], ["tocWidth", "300", "300px"], ["homeWidth", "900", "900px"],
+      ["notesLineHeight", "1.6", "1.6"], ["notesLineHeight", "24", "24px"],
+      ["notesOutlineIndent", "1.5", "1.5em"], ["notesOutlineIndent", "20", "20px"],
+      ["canvasBlockLetterSpacing", "0.02", "0.02em"], ["notesMaxWidthPercent", "90", "90"]
+    ];
+    const problems = [];
+    for (const [key, typed, expect] of want) {
+      const got = api.normalizeStyleValue(key, typed);
+      if (got !== expect) problems.push(key + ": " + JSON.stringify(typed) + " became " + JSON.stringify(got) + ", want " + JSON.stringify(expect));
+      if (!api.isStyleValueUsable(api.styleFieldByKey[key], typed)) problems.push(key + ": " + JSON.stringify(typed) + " is marked invalid");
+    }
+    return problems.length ? problems.join(" · ") : true;
+  })());
   return results;
 }`;
 

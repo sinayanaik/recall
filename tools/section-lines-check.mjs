@@ -155,6 +155,15 @@ const SETUP = `async (api) => {
     ruleBackground: rule ? getComputedStyle(rule).backgroundColor : "none",
     ruleHeight: rule ? rule.getBoundingClientRect().height : 0,
     leadGap: lead && list ? list.getBoundingClientRect().top - lead.getBoundingClientRect().bottom : null,
+    // Where each heading's fold arrow is: the line its section draws must run
+    // straight down out of the middle of it, at every heading level.
+    twisties: [...view.querySelectorAll(":scope > :is(h1,h2,h3,h4,h5,h6), :scope > .notes-chunk > :is(h1,h2,h3,h4,h5,h6)")]
+      .map((h) => ({ h, t: h.querySelector(":scope > .notes-fold-twisty") }))
+      .filter(({ t }) => t)
+      .map(({ h, t }) => {
+        const r = t.getBoundingClientRect();
+        return { text: (h.textContent || "").replace(/^[^A-Za-z]+/, "").trim().slice(0, 20), tag: h.tagName, depth: Number(h.dataset.outlineDepth) || 0, center: r.left + r.width / 2, width: r.width };
+      }),
     dpr: window.devicePixelRatio
   };
 }`;
@@ -356,6 +365,18 @@ try {
     check("a code block keeps its frame", /solid 1px/.test(setup.preOutline), setup.preOutline);
     check("a quote keeps its bar", /inset/.test(setup.quoteShadow), setup.quoteShadow);
     check("a rule keeps its line", setup.ruleHeight >= 1 && !/rgba\(0, 0, 0, 0\)/.test(setup.ruleBackground), JSON.stringify({ h: setup.ruleHeight, bg: setup.ruleBackground }));
+    // A heading at depth d opens line d, which runs at d steps plus the offset
+    // from the column's left edge; its arrow's middle must be on it.
+    const colLeftOf = left("The things") - depthOf("The things") * setup.step;
+    const sectionTwisties = setup.twisties.filter((t) => ["Methods", "Setup", "Run", "Results"].some((n) => t.text.startsWith(n)));
+    const misaligned = sectionTwisties
+      .map((t) => ({ ...t, line: colLeftOf + t.depth * setup.step + setup.offset + setup.width / 2 }))
+      .filter((t) => Math.abs(t.center - t.line) > 1);
+    check("each section's line runs out of the middle of its heading's fold arrow, at every level",
+      sectionTwisties.length === 4 && misaligned.length === 0,
+      JSON.stringify({ found: sectionTwisties.length, misaligned: misaligned.map((t) => ({ text: t.text, tag: t.tag, arrow: +t.center.toFixed(1), line: +t.line.toFixed(1) })) }));
+    const sizes = [...new Set(sectionTwisties.map((t) => Math.round(t.width)))];
+    check("the fold arrow is the same size at every heading level", sizes.length === 1, JSON.stringify(sectionTwisties.map((t) => [t.tag, t.width])));
     const gapEm = setup.leadGap / setup.fontSize;
     check("a lead-in line sits as close to its list as the bullets to each other", setup.leadGap !== null && Math.abs(gapEm - 0.35) < 0.08, `gap ${setup.leadGap}px = ${gapEm.toFixed(2)}em`);
     const a = out.after;

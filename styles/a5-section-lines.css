@@ -28,7 +28,8 @@
  * The reach up (--ol-bridge) covers the widest gap between two blocks, the
  * one above a heading. Where a line starts — the first block under a heading
  * — it reaches up into the bottom of that heading, under its fold arrow:
- * the line grows out of the arrow that folds it.
+ * the line grows out of the arrow that folds it, through the arrow's middle
+ * (--ol-twisty, below).
  *
  * A border-image is drawn INSTEAD of the box's own borders, so the blocks
  * that have one say it another way below (a code block's frame as an outline,
@@ -42,11 +43,21 @@
 @property --ol-offset { syntax: "<length>"; inherits: true; initial-value: 0px; }
 @property --ol-width { syntax: "<length>"; inherits: true; initial-value: 1px; }
 @property --ol-bridge { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@property --ol-twisty { syntax: "<length>"; inherits: true; initial-value: 0px; }
 
+/* The fold arrow's tile (styles/63-notes-fold-twisty.css) is --ol-twisty
+   square at EVERY heading level — in the Notes text size, not the heading's.
+   It used to be 1.3em of the heading, so its middle moved with the heading's
+   size and no single offset could put a line under it: an H1's arrow sat well
+   right of the line it opened. Now the line's own place, unless ◐ Notes →
+   Line position says otherwise, is the middle of that tile. */
 #notesView {
-  --ol-step: var(--notes-outline-step, 0.85em);
-  --ol-offset: var(--notes-outline-offset, 0.55em);
+  --ol-twisty: 1.3em;
+  /* One step is one arrow wide: a section's words start just clear of its
+     line, and a sub-heading's arrow starts where its parent's ends. */
+  --ol-step: var(--notes-outline-step, var(--ol-twisty));
   --ol-width: var(--notes-outline-width, 1px);
+  --ol-offset: var(--notes-outline-offset, calc(var(--ol-twisty) / 2 - var(--ol-width) / 2));
   --ol-bridge: 1.7em;
   --ol-x1: var(--ol-offset);
   --ol-x2: calc(var(--ol-step) + var(--ol-offset));
@@ -70,11 +81,11 @@
   --ol-ink: color-mix(in srgb, var(--accent) var(--notes-outline-strength, 34%), var(--card));
 }
 
-/* A phone has less width to give each step. */
+/* A phone has less width to give each step: a slightly smaller arrow, and the
+   step and line follow it. */
 @media (max-width: 720px) {
   #notesView {
-    --ol-step: var(--notes-outline-step, 0.7em);
-    --ol-offset: var(--notes-outline-offset, 0.45em);
+    --ol-twisty: 1.15em;
   }
 }
 
