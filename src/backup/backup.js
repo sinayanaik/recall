@@ -32,6 +32,8 @@ import { recordBackup } from "./history.js?v=__BUILD__";
 import { formatJobBytes, raceCancel, showJobConsole } from "./job-console.js?v=__BUILD__";
 import { collectBackupLibraryState } from "./library-state.js?v=__BUILD__";
 import { LiteZip, canInflate, yieldToPage } from "./zip-lite.js?v=__BUILD__";
+import { fetchImageBlob, proxiedImageUrl } from "../import/web-images.js?v=__BUILD__";
+import { VIEWER_INDEX, packOfflineViewer } from "./viewer-pack.js?v=__BUILD__";
 
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -317,7 +319,7 @@ export function decodeImageRefEntities(ref) {
 // offline outbox), "cache" or "network" — which is what the job console shows
 // against each image, because "downloading from storage" is the answer to "why
 // is this taking so long" for a library whose figures were never opened here.
-export async function readBackupAssetBlob(ref, onSource = null) {
+export async function readBackupAssetBlob(ref, onSource = null, { viaProxy = false } = {}) {
   if (ref.startsWith(LOCAL_IMAGE_SCHEME)) {
     try {
       const entry = await getOutboxImage(ref.slice(LOCAL_IMAGE_SCHEME.length));
@@ -367,7 +369,35 @@ export async function readBackupAssetBlob(ref, onSource = null) {
     // reached" message otherwise, which is enough to know something failed
     // but not enough to know what to do about it.
     console.warn(`Backup: image unreachable — ${ref}`, error?.message || error);
-    return null;
+  }
+  // A picture on someone else's site that refuses to be read from another page
+  // (no CORS header) is fetched through the same public image proxy a web-page
+  // import uses (src/import/web-images.js) — so the backup holds the picture
+  // itself, not a link that breaks the day the site moves it. Only for other
+  // sites: our own storage is never sent through a third party.
+  if (viaProxy && await isOtherSitePicture(ref)) {
+    try {
+      const blob = await fetchImageBlob(proxiedImageUrl(ref));
+      if (blob?.size) {
+        onSource?.("proxy");
+        return blob;
+      }
+    } catch (error) {
+      console.warn(`Backup: image unreachable through the proxy too — ${ref}`, error?.message || error);
+    }
+  }
+  return null;
+}
+
+// A picture on a site that is not ours: not a Storage object, not a picture
+// waiting on this device, and not something fetchableStorageUrl signs (a
+// cloud bucket of the reader's own).
+export async function isOtherSitePicture(ref) {
+  if (!/^https?:\/\//i.test(String(ref || "")) || isSupabaseStorageRef(ref)) return false;
+  try {
+    return (await fetchableStorageUrl(ref)) === ref;
+  } catch {
+    return false;
   }
 }
 
@@ -481,7 +511,7 @@ export function backupAssetName(ref, blob, index, usedNames) {
 //
 // `onItem`, when given, hears about every image as it lands: `{ ref, source,
 // bytes, missing }`. The job console turns that into its log.
-export async function packBackupAssets(zip, entries, onProgress, isCancelled = () => false, onItem = null) {
+export async function packBackupAssets(zip, entries, onProgress, isCancelled = () => false, onItem = null, { viaProxy = false } = {}) {
   const folderByRef = new Map();
   entries.forEach((entry) => {
     for (const ref of collectBackupImageRefs(entry.snapshot)) {
@@ -511,7 +541,7 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
   const blobs = await mapWithConcurrency(refs, 5, async (ref) => {
     if (isCancelled()) return null;
     let source = "";
-    const blob = await readBackupAssetBlob(ref, (where) => { source = where; });
+    const blob = await readBackupAssetBlob(ref, (where) => { source = where; }, { viaProxy });
     done += 1;
     onItem?.({ ref, source, bytes: blob ? blob.size : 0, missing: !blob, index: done, total: refs.length });
     onProgress?.(done, refs.length);
@@ -749,6 +779,7 @@ export const PACKAGE_STEPS = [
   ["decks", "Read files"],
   ["images", "Pack images"],
   ["papers", "Pack PDFs"],
+  ["viewer", "Offline viewer"],
   ["library", "Library & settings"],
   ["write", "Write the file"],
   ["verify", "Verify"],
@@ -765,6 +796,13 @@ export const PACKAGE_STEPS = [
 //   includeImages     pack every picture the decks show
 //   includeDocuments  pack every PDF and notebook
 //   includeSettings   carry this device's preferences (library only)
+//   includeViewer     write index.html + viewer/: the package opened offline
+//                     in any browser, no Recall needed (src/backup/viewer-pack.js)
+//   webImagesViaProxy fetch a picture another site refuses to hand over
+//                     through the public image proxy, so the package holds it
+//   asZip             name the file .zip rather than .recall (same bytes)
+//   renderer          how the viewer turns Markdown into HTML; null = the
+//                     app's own pipeline where there is a page to render on
 //   deliver           "download" (default) or "none" — return the blob only
 //
 // Returns { ok, blob, name, manifest } — ok false on an empty selection, a
@@ -781,6 +819,10 @@ export async function writeRecallPackage({
   progress = null,
   autoClosePanel = false,
   historyKind = "manual",
+  includeViewer = true,
+  webImagesViaProxy = true,
+  asZip = false,
+  renderer = null,
   deliver = "download"
 } = {}) {
   const isShare = kind === PACKAGE_KIND_SHARE;
@@ -838,6 +880,10 @@ export async function writeRecallPackage({
   const addText = async (file, text) => {
     zip.file(file, text, { compression: "DEFLATE" });
     await recordText(file, text);
+  };
+  const addBlob = async (file, blob) => {
+    zip.file(file, blob, { compression: "STORE" });
+    contents.push({ file, bytes: blob.size, sha256: await sha256(blob) });
   };
 
   progress?.step?.("decks", "Packing files…");
@@ -906,7 +952,7 @@ export async function writeRecallPackage({
   let packed = { assets: [], missing: [], missingHosted: [], missingExternal: [], missingQueued: [], indexBytes: 0, indexJson: "" };
   if (includeImages) {
     progress?.step?.("images", "Looking for images…");
-    const sourceLabel = { device: "from this device", cache: "from the offline cache", network: "downloaded from storage" };
+    const sourceLabel = { device: "from this device", cache: "from the offline cache", network: "downloaded", proxy: "downloaded through the image proxy" };
     packed = await packBackupAssets(zip, entries, (done, total) => {
       // The slow phase, and the one people most need to see moving: each image
       // is read from the offline cache or fetched back from storage.
@@ -922,9 +968,9 @@ export async function writeRecallPackage({
         progress?.warn?.(`Image ${index}/${total} could not be read: ${name}${why}`);
       } else {
         progress?.current?.(`Image ${index}/${total} · ${name} · ${formatJobBytes(bytes)} · ${sourceLabel[source] || ""}`);
-        if (source === "network" || total <= 200) progress?.log?.(`Image ${index}/${total} · ${name} · ${formatJobBytes(bytes)} · ${sourceLabel[source] || ""}`);
+        if (source === "network" || source === "proxy" || total <= 200) progress?.log?.(`Image ${index}/${total} · ${name} · ${formatJobBytes(bytes)} · ${sourceLabel[source] || ""}`);
       }
-    });
+    }, { viaProxy: webImagesViaProxy });
     if (progress?.cancelled()) return bail(`${isShare ? "Share" : "Backup"} cancelled.`);
     progress?.setStat("images", packed.assets.length);
     packed.assets.forEach((asset) => contents.push({ file: asset.file, bytes: asset.bytes, sha256: asset.sha256 || "" }));
@@ -971,6 +1017,55 @@ export async function writeRecallPackage({
     progress?.stepSkipped?.("papers", "left out");
   }
 
+  // The page that opens the package without Recall: index.html at the root,
+  // and viewer/ beside it. Last of the content passes, because it points every
+  // picture and PDF at the copy the two passes above packed.
+  let viewer = null;
+  if (includeViewer) {
+    progress?.step?.("viewer", "Writing the offline viewer (index.html)…");
+    let use = renderer;
+    if (!use) {
+      try {
+        const { createAppViewerRenderer } = await import("./viewer-render.js?v=__BUILD__");
+        use = createAppViewerRenderer();
+      } catch (error) {
+        console.warn("Offline viewer: the app's renderer is not available here; using plain text", error);
+      }
+    }
+    try {
+      viewer = await packOfflineViewer({
+        entries, packed, documents, addText, addBlob,
+        renderer: use,
+        title,
+        kind,
+        exportedAt: now.toISOString(),
+        build: IS_DEV_BUILD ? "" : BUILD_STAMP,
+        folders: [...folders],
+        isCancelled: () => Boolean(progress?.cancelled()),
+        onProgress: (done, total, name) => {
+          setStatus(`Writing the offline viewer ${done}/${total}…`);
+          progress?.count?.(done, total, `Offline viewer ${done}/${total}…`);
+          progress?.current?.(name);
+        }
+      });
+    } catch (error) {
+      // A viewer that cannot be written costs the reader a convenience, never
+      // the backup: the files are already in the zip.
+      console.error("Offline viewer failed", error);
+      progress?.warn?.(`The offline viewer could not be written: ${error?.message || error}. The backup itself is complete.`);
+      viewer = null;
+    }
+    if (progress?.cancelled()) return bail(`${isShare ? "Share" : "Backup"} cancelled.`);
+    if (viewer?.ok) {
+      progress?.log?.(`Offline viewer: open ${VIEWER_INDEX} after extracting — ${viewer.files} file${viewer.files === 1 ? "" : "s"}${viewer.math ? ", with math" : ""}.`);
+      progress?.stepDone?.("viewer", `${viewer.files} file${viewer.files === 1 ? "" : "s"}`);
+    } else {
+      progress?.stepDone?.("viewer", "not written");
+    }
+  } else {
+    progress?.stepSkipped?.("viewer", "left out");
+  }
+
   // Folders that hold no decks, which folds are open, and where you were in each
   // note. None of it is deck data, all of it is the difference between "my
   // library is back" and "my app is back" — see src/backup/library-state.js.
@@ -1011,7 +1106,7 @@ export async function writeRecallPackage({
     title
   });
   zip.file(BACKUP_MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`, { compression: "DEFLATE" });
-  zip.file("README.txt", packageReadme({ now, isShare, title, payloads, folders, packed, documents }), { compression: "DEFLATE" });
+  zip.file("README.txt", packageReadme({ now, isShare, title, payloads, folders, packed, documents, viewer: Boolean(viewer?.ok) }), { compression: "DEFLATE" });
 
   // ── Write ──
   progress?.step?.("write", "Writing the file…");
@@ -1020,7 +1115,7 @@ export async function writeRecallPackage({
   try {
     blob = await zip.generateAsync({
       type: "blob",
-      mimeType: PACKAGE_MIME,
+      mimeType: asZip ? "application/zip" : PACKAGE_MIME,
       isCancelled: () => Boolean(progress?.cancelled())
     }, (meta) => {
       progress?.update?.(`Writing the file… ${Math.floor(meta.percent)}%`, meta.percent / 100);
@@ -1053,7 +1148,10 @@ export async function writeRecallPackage({
   progress?.stepDone?.("verify", `${verification.files} files`);
 
   // ── Save ──
-  const name = `${fileBaseName || (isShare ? `recall-${packageFileSlug(title || payloads[0]?.payload?.deck?.title)}-${backupTimestamp(now)}` : `recall-backup-${backupTimestamp(now)}`)}${PACKAGE_EXT}`;
+  // .zip on request: the same bytes, named so a computer opens it with a
+  // double-click — which is what the index.html inside is for. Restore and
+  // Import take either.
+  const name = `${fileBaseName || (isShare ? `recall-${packageFileSlug(title || payloads[0]?.payload?.deck?.title)}-${backupTimestamp(now)}` : `recall-backup-${backupTimestamp(now)}`)}${asZip ? ".zip" : PACKAGE_EXT}`;
   progress?.step?.("save", "Saving…");
   if (deliver === "download") downloadBlob(blob, name);
   progress?.log?.(`Saved ${name} (${formatJobBytes(blob.size)}).`);
@@ -1200,7 +1298,7 @@ export async function verifyWrittenPackage(blob, manifest) {
   }
 }
 
-function packageReadme({ now, isShare, title, payloads, folders, packed, documents }) {
+function packageReadme({ now, isShare, title, payloads, folders, packed, documents, viewer = false }) {
   const paperNote = documents.documents.length
     ? `${documents.documents.length}${documents.missing.length ? ` (${documents.missing.length} could not be read)` : ""}`
     : (documents.missing.length ? `0 (${documents.missing.length} could not be read)` : "0");
@@ -1220,7 +1318,18 @@ function packageReadme({ now, isShare, title, payloads, folders, packed, documen
         + "update the files you already have from it."
       : "Restore it in Recall: My Files → More → Restore backup (or drop the file onto the app).",
     "",
+    ...(viewer ? [
+      "READ IT WITHOUT RECALL: extract (unzip) the whole file into a folder, then open",
+      "index.html in any browser. It shows every file's Cards, Notes, PDFs and Canvas,",
+      "with the pictures and PDFs from inside this backup — no internet, no account.",
+      "It is read-only: to change the files, restore or import the backup into Recall.",
+      ""
+    ] : []),
     "It is a zip. Rename it to .zip to look inside:",
+    ...(viewer ? [
+      "  index.html             the offline viewer — open it after extracting",
+      "  viewer/                its script, styles, and one page of data per file"
+    ] : []),
     "  manifest.json          index of every file, image and PDF, with sizes and hashes",
     "  decks/<folder>/*.json  one JSON per file, inside its own folder path",
     "  assets/<file>--<id>/   that file's images, as real files",
@@ -1257,7 +1366,12 @@ export async function exportLibraryBackupZip({
   // its panel gets out of the way on success instead of waiting to be dismissed.
   autoClosePanel = false,
   // "safety" is recorded but does not move the backup reminder — see recordBackup.
-  kind = "manual"
+  kind = "manual",
+  // The safety backup is taken in a hurry, to be restored from by Recall
+  // itself; it skips the page for reading it without Recall.
+  includeViewer = kind !== "safety",
+  webImagesViaProxy = true,
+  asZip = false
 } = {}) {
   const progress = showPanel ? showBackupProgress(panelTitle, { steps: PACKAGE_STEPS }) : null;
   try {
@@ -1267,6 +1381,9 @@ export async function exportLibraryBackupZip({
       includeImages,
       includeDocuments,
       includeSettings,
+      includeViewer,
+      webImagesViaProxy,
+      asZip,
       fileBaseName,
       progress,
       autoClosePanel,
@@ -1288,11 +1405,14 @@ export async function exportRecallPackage(selections, {
   includeProgress = false,
   includeImages = true,
   includeDocuments = true,
-  title = ""
+  includeViewer = true,
+  webImagesViaProxy = true,
+  asZip = false,
+  title = "",
+  panelTitle = ""
 } = {}) {
   if (!selections?.length) return false;
-  const panelTitle = `Packaging ${selections.length} file${selections.length === 1 ? "" : "s"} to share`;
-  const progress = showBackupProgress(panelTitle, { steps: PACKAGE_STEPS });
+  const progress = showBackupProgress(panelTitle || `Packaging ${selections.length} file${selections.length === 1 ? "" : "s"}`, { steps: PACKAGE_STEPS });
   try {
     const result = await writeRecallPackage({
       selections,
@@ -1301,6 +1421,9 @@ export async function exportRecallPackage(selections, {
       includeImages,
       includeDocuments,
       includeSettings: false,
+      includeViewer,
+      webImagesViaProxy,
+      asZip,
       title,
       progress
     });
@@ -1316,7 +1439,7 @@ export async function exportRecallPackage(selections, {
 }
 
 // The name the checks (and anything older) call a library backup by.
-export async function runLibraryBackup({ fileBaseName, includeImages, includeDocuments = true, includeSettings = true, progress, autoClosePanel = false, kind = "manual", selections = null, packageKind = PACKAGE_KIND_LIBRARY, includeProgress } = {}) {
+export async function runLibraryBackup({ fileBaseName, includeImages, includeDocuments = true, includeSettings = true, progress, autoClosePanel = false, kind = "manual", selections = null, packageKind = PACKAGE_KIND_LIBRARY, includeProgress, includeViewer = true, webImagesViaProxy = true, renderer = null } = {}) {
   const result = await writeRecallPackage({
     selections,
     kind: packageKind,
@@ -1324,6 +1447,9 @@ export async function runLibraryBackup({ fileBaseName, includeImages, includeDoc
     includeImages,
     includeDocuments,
     includeSettings,
+    includeViewer,
+    webImagesViaProxy,
+    renderer,
     fileBaseName,
     progress,
     autoClosePanel,

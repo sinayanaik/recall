@@ -1482,7 +1482,7 @@ try {
     lastDownload = null;
     await backup.runLibraryBackup({ includeImages: true, includeDocuments: true, progress: sink });
     const steps = sink.events.filter(([kind]) => kind === "step").map(([, key]) => key);
-    const want = ["scan", "decks", "images", "papers", "library", "write", "verify", "save"];
+    const want = ["scan", "decks", "images", "papers", "viewer", "library", "write", "verify", "save"];
     if (JSON.stringify(steps) !== JSON.stringify(want)) return `steps were ${steps.join(" → ")}`;
     const logs = sink.events.filter(([kind]) => kind === "log").map(([, text]) => text);
     if (!logs.some((text) => text.includes("Biology")) || !logs.some((text) => text.includes("Chemistry"))) return "a deck was read without a log line";
@@ -1789,6 +1789,215 @@ try {
     const token = /recall-img:([\w-]+)/.exec(record?.shape?.text || "")?.[1];
     if (!token || token === "tokSharedShape" || !(await outbox.getOutboxImage(token))) return `the picture did not arrive: ${record?.shape?.text}`;
     return true;
+  });
+
+  // ── P. The offline viewer, and pictures from other websites ─────────────
+  //
+  // Every package carries index.html and viewer/: the package opened in any
+  // browser with no Recall (src/backup/viewer-pack.js). Its pages are part of
+  // the archive like anything else — in the manifest's inventory with a size
+  // and a hash — and they must point every picture at the copy in the zip,
+  // draw the Canvas, and never be mistaken for a file on the way back in.
+  // tools/backup-viewer-check.mjs opens one in a real browser from disk; this
+  // is the writer's half.
+
+  const viewerPack = await load("src/backup/viewer-pack.js");
+  const keepWeb = await load("src/images/keep-web-images.js");
+  const webImages = await load("src/import/web-images.js");
+  const inkStrokes = await load("src/format/ink-strokes.js");
+  const viewerCall = (text, fn) => {
+    let out = null;
+    globalThis[fn] = (...args) => { out = args; };
+    try { new Function(text)(); } finally { delete globalThis[fn]; }
+    return out;
+  };
+
+  async function seedViewerLibrary() {
+    resetWorld();
+    await outbox.putOutboxImage({ token: "tokViewer", blob: tokenBlob(51), folder: null, savedAt: iso(T0) });
+    const stroke = [];
+    for (let i = 0; i < 12; i += 1) stroke.push(100 + i * 6, 700 + (i % 3) * 4, 0.5);
+    await seedDeck({
+      localId: "ld_v1", deckId: "cloud-v1", title: "Viewer one", category: "Science/Cells",
+      notes: "# Heading\n\nSome words {{hidden}} and a picture:\n\n![fig](recall-img:tokViewer)\n",
+      cards: [{ id: "v1", question: "What is shown?", answer: "A figure", status: "known" }],
+      meta: {
+        notebook: { name: "Canvas", pages: 1, paper: "ruled", notebook: true, sha256: "nb" },
+        pdfHighlights: [
+          { id: "ink1", kind: "ink", doc: "notebook", page: 1, ink: { v: 1, s: inkStrokes.encodeInkStrokes([{ w: 2, c: "ink", p: stroke }]) } },
+          { id: "sh1", kind: "shape", doc: "notebook", page: 1, shape: { type: "rect", p: [[200, 600], [300, 500]], stroke: "#2563eb", width: 2 } }
+        ],
+        pdfBlocks: [{ id: "blk1", doc: "notebook", page: 1, x: 60, y: 300, w: 180, h: 60, md: "**Block words**" }]
+      },
+      notebook: pdfBytes(9),
+      updatedAt: T0
+    });
+    await seedDeck({ localId: "ld_v2", deckId: "cloud-v2", title: "Viewer two", notes: "plain", cards: [], updatedAt: T0 });
+  }
+
+  await must("every package carries index.html and the viewer, in its own inventory", async () => {
+    await seedViewerLibrary();
+    const bytes = await takeBackup();
+    const zip = await openArchive(bytes);
+    const names = new Set(Object.keys(zip.files));
+    const want = ["index.html", "viewer/recall-viewer.js", "viewer/recall-viewer.css", "viewer/library.js", "viewer/files/0001.js", "viewer/files/0002.js"];
+    const absent = want.filter((name) => !names.has(name));
+    if (absent.length) return `missing: ${absent.join(", ")}`;
+    const manifest = JSON.parse(await readEntry(bytes, "manifest.json"));
+    const listed = new Map(manifest.contents.map((entry) => [entry.file, entry]));
+    const unlisted = want.filter((name) => !listed.has(name) || !/^[0-9a-f]{64}$/.test(listed.get(name).sha256 || ""));
+    if (unlisted.length) return `not in the inventory with a hash: ${unlisted.join(", ")}`;
+    const readme = await readEntry(bytes, "README.txt");
+    if (!/index\.html/.test(readme)) return "README.txt does not say how to open it";
+    const lib = viewerCall(await readEntry(bytes, "viewer/library.js"), viewerPack.VIEWER_LIBRARY_CALL)?.[0];
+    const titles = (lib?.files || []).map((file) => file.title).sort();
+    if (JSON.stringify(titles) !== JSON.stringify(["Viewer one", "Viewer two"])) return `library lists ${JSON.stringify(titles)}`;
+    if (!lib.folders.includes("Science/Cells")) return `folders ${JSON.stringify(lib.folders)}`;
+    return true;
+  });
+
+  await must("the viewer and the data files agree on the functions they call", async () => {
+    const script = (await load("src/backup/viewer-shell.js")).VIEWER_SCRIPT_JS;
+    return [viewerPack.VIEWER_LIBRARY_CALL, viewerPack.VIEWER_FILE_CALL].every((fn) => script.includes(`window.${fn} = function`))
+      || "recall-viewer.js does not define RecallViewerLibrary / RecallViewerFile";
+  });
+
+  await must("the viewer shows each picture from the zip, and draws the Canvas", async () => {
+    await seedViewerLibrary();
+    const bytes = await takeBackup();
+    const assets = JSON.parse(await readEntry(bytes, "assets/index.json"));
+    const packedPicture = assets.assets.find((asset) => asset.url === "recall-img:tokViewer")?.file;
+    if (!packedPicture) return "the picture was not packed";
+    const lib = viewerCall(await readEntry(bytes, "viewer/library.js"), viewerPack.VIEWER_LIBRARY_CALL)[0];
+    const id = lib.files.find((file) => file.title === "Viewer one").id;
+    const [, data] = viewerCall(await readEntry(bytes, `viewer/files/${id}.js`), viewerPack.VIEWER_FILE_CALL);
+    if (!data.notes.includes(`src="${packedPicture}"`)) return `notes picture not pointed at ${packedPicture}: ${data.notes.slice(0, 200)}`;
+    if (data.notes.includes("recall-img:")) return "a placeholder address reached the viewer";
+    if (data.cards.length !== 1 || data.cards[0].status !== "known") return `cards ${JSON.stringify(data.cards)}`;
+    const page = data.canvas?.pages?.[0];
+    if (!page) return "no Canvas page";
+    if (!/class="viewer-ink"/.test(page.svg) || !/class="viewer-paper"/.test(page.svg)) return "the pen or the paper was not drawn";
+    if (!page.boxes.some((box) => box.kind === "block" && /Block words/.test(box.html))) return "the Block is not on the page";
+    if (!data.canvas.file?.startsWith("documents/")) return `the Canvas's paper is not linked: ${data.canvas.file}`;
+    return true;
+  });
+
+  await must("a package made without the viewer has none of it", async () => {
+    await seedViewerLibrary();
+    const bytes = await takeBackup({ includeViewer: false });
+    const zip = await openArchive(bytes);
+    const stray = Object.keys(zip.files).filter((name) => name === "index.html" || name.startsWith("viewer/"));
+    return stray.length === 0 || `written anyway: ${stray.join(", ")}`;
+  });
+
+  await must("a viewer-bearing backup restores exactly its files", async () => {
+    await seedViewerLibrary();
+    const bytes = await takeBackup();
+    resetWorld();
+    const report = await restoreArchive(bytes);
+    const titles = localLibrary.readLocalDeckIndex().map((deck) => deck.title).sort();
+    if (JSON.stringify(titles) !== JSON.stringify(["Viewer one", "Viewer two"])) return `restored ${JSON.stringify(titles)}`;
+    return report.verification?.ok !== false || `verification: ${JSON.stringify(report.verification)}`;
+  });
+
+  // A picture on a site that refuses a cross-site download: the direct fetch
+  // fails as a CORS refusal does, and the proxy hands the bytes over.
+  const realFetch = globalThis.fetch;
+  const proxyFetch = async (url) => {
+    const text = String(url);
+    if (text.startsWith(webImages.IMAGE_PROXY_BASE)) {
+      return { ok: true, status: 200, blob: async () => new Blob([new Uint8Array([137, 80, 78, 71, 1, 2, 3])], { type: "image/png" }), headers: { get: () => "image/png" } };
+    }
+    throw new TypeError("Failed to fetch");
+  };
+
+  await must("a web picture a site refuses is fetched through the image proxy into the backup", async () => {
+    resetWorld();
+    await seedDeck({ localId: "ld_w", deckId: "cloud-w", title: "Web", notes: "![x](https://pictures.example.org/cat.png)", cards: [], updatedAt: T0 });
+    globalThis.fetch = proxyFetch;
+    try {
+      const bytes = await takeBackup();
+      const assets = JSON.parse(await readEntry(bytes, "assets/index.json"));
+      const packed = assets.assets.find((asset) => asset.url === "https://pictures.example.org/cat.png");
+      if (!packed) return `not packed: ${JSON.stringify(assets.missingExternal)}`;
+      const off = await takeBackup({ webImagesViaProxy: false });
+      const offAssets = JSON.parse((await readEntry(off, "assets/index.json")) || "{\"assets\":[],\"missingExternal\":[]}");
+      if (offAssets.assets.length || !offAssets.missingExternal.includes("https://pictures.example.org/cat.png")) return "the proxy was used when it was turned off";
+      return true;
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  await must("a picture of our own is never sent through the proxy", async () => {
+    const ours = "https://abcd.supabase.co/storage/v1/object/public/images/u/a.png";
+    return !(await backup.isOtherSitePicture(ours)) && !(await backup.isOtherSitePicture("recall-img:tok"))
+      && (await backup.isOtherSitePicture("https://pictures.example.org/cat.png"))
+      || "isOtherSitePicture misjudged a picture";
+  });
+
+  await must("saving web pictures rewrites every place a file shows them, so they sync", async () => {
+    const web = "https://pictures.example.org/a.png?w=1&h=2";
+    const stored = "https://abcd.supabase.co/storage/v1/object/public/images/web/a.webp";
+    const snapshot = {
+      notes: `![a](${web}) and <img src="${web.replace("&", "&amp;")}">`,
+      cards: [{ id: "c", question: `![q](${web})`, answer: "plain" }, { id: "d", question: "untouched", answer: "no" }],
+      meta: {
+        pdfBlocks: [{ id: "b", src: web, at: 1 }, { id: "b2", md: `![m](${web})`, at: 1 }, { id: "b3", md: "none", at: 1 }],
+        pdfHighlights: [{ id: "s", kind: "shape", shape: { type: "text", text: `![t](${web})` }, text: `![t](${web})`, at: 1 }]
+      }
+    };
+    const changed = keepWeb.rewriteWebPictures(snapshot, { [web]: stored }, { stampIso: iso(T0), nowMs: T0 });
+    if (!changed) return "nothing changed";
+    if (snapshot.notes.includes("example.org")) return `notes: ${snapshot.notes}`;
+    if (!snapshot.cards[0].dirty || snapshot.cards[1].dirty) return "the changed card must be dirty and only it";
+    const [b, b2, b3] = snapshot.meta.pdfBlocks;
+    if (b.src !== stored || !b2.md.includes(stored) || b.at !== T0 || b3.at !== 1) return `blocks ${JSON.stringify(snapshot.meta.pdfBlocks)}`;
+    const shape = snapshot.meta.pdfHighlights[0];
+    if (!shape.shape.text.includes(stored) || !shape.text.includes(stored) || shape.at !== T0) return `shape ${JSON.stringify(shape)}`;
+    return true;
+  });
+
+  await must("Save web pictures copies them into storage and points the stored file at the copies", async () => {
+    resetWorld();
+    await seedDeck({ localId: "ld_k", deckId: "cloud-k", title: "Keep", notes: "![x](https://pictures.example.org/dog.png)\n\n![y](https://pictures.example.org/gone.png)", cards: [{ id: "k", question: "![q](https://pictures.example.org/dog.png)" }], updatedAt: T0 });
+    const uploads = [];
+    webImages.setWebImageTransport({
+      online: () => true,
+      fetch: async (url) => {
+        if (String(url).includes("gone.png")) throw new TypeError("Failed to fetch");
+        return { ok: true, status: 200, blob: async () => new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }), headers: { get: () => "image/png" } };
+      },
+      upload: async (file, { folder } = {}) => {
+        uploads.push(folder);
+        return `https://abcd.supabase.co/storage/v1/object/public/images/${folder}/${uploads.length}.png`;
+      }
+    });
+    try {
+      const result = await keepWeb.keepWebImagesInFiles([{ localId: "ld_k", deckId: "cloud-k" }]);
+      if (result.pictures !== 2 || result.kept !== 1 || result.failed !== 1 || result.changedFiles !== 1) return `result ${JSON.stringify(result)}`;
+      deckStore.deckSnapshotCache.clear();
+      const snapshot = await deckStore.readDeckSnapshot("ld_k");
+      if (snapshot.notes.includes("dog.png") || !snapshot.notes.includes("gone.png")) return `notes ${snapshot.notes}`;
+      if (snapshot.cards[0].question.includes("example.org") || !snapshot.cards[0].dirty) return `card ${JSON.stringify(snapshot.cards[0])}`;
+      const entry = localLibrary.readLocalDeckIndex().find((deck) => deck.id === "ld_k");
+      if (entry.updatedAt === iso(T0)) return "the file's stamp did not move, so the change would not sync";
+      const again = await keepWeb.keepWebImagesInFiles([{ localId: "ld_k", deckId: "cloud-k" }]);
+      if (again.kept !== 0 || again.pictures !== 1) return `a second run re-copied: ${JSON.stringify(again)}`;
+      return /^web\//.test(uploads[0] || "") || `stored in ${uploads[0]}`;
+    } finally {
+      webImages.resetWebImageTransport();
+    }
+  });
+
+  await must("Save web pictures offline changes nothing and says why", async () => {
+    resetWorld();
+    await seedDeck({ localId: "ld_o", deckId: null, title: "Offline", notes: "![x](https://pictures.example.org/dog.png)", cards: [], updatedAt: T0 });
+    const result = await keepWeb.keepWebImagesInFiles([{ localId: "ld_o" }]);
+    deckStore.deckSnapshotCache.clear();
+    const snapshot = await deckStore.readDeckSnapshot("ld_o");
+    if (!snapshot.notes.includes("dog.png")) return "the file was changed";
+    return (result.reason === "offline" && /No connection/.test(keepWeb.keepWebImagesSummary(result))) || `result ${JSON.stringify(result)}`;
   });
 
   console.warn = realWarn;

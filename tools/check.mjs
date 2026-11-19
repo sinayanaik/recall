@@ -27,6 +27,8 @@
 //                   the documented setup path handed out the old schema
 //   nomenclature    does every word on screen say File, Cards, Notes, PDFs and
 //                   Canvas — never deck, notebook or flashcard? (NOMENCLATURE.md)
+//   help-coverage   does the Help guide tell of every feature a person needs
+//                   told about, and of none that has gone?
 //   vendor          are the vendored libraries on disk, unmodified, and
 //                   precached? (a hole here is a blank page offline, not a
 //                   missing feature — they are blocking tags before main.js)
@@ -338,6 +340,12 @@ const checks = [
   // storage keys and every backup ever written — so this reads only the text
   // that reaches the screen. See NOMENCLATURE.md.
   ["nomenclature  ", ["node", ["tools/nomenclature-check.mjs"], ROOT]],
+  // Does the Help guide tell of what the app does now, and not of what it no
+  // longer does? One row per feature (its module and a phrase the guide must
+  // hold) and one per retired phrase; NOMENCLATURE.md and README.md are held to
+  // the names they own. Nothing checked the manual before, and seven features
+  // in thirty commits had reached the code and not the guide.
+  ["help-coverage ", ["node", ["tools/help-coverage-check.mjs"], ROOT]],
   ["vendor        ", ["node", ["tools/vendor-sync.mjs", "--check"], ROOT]],
   ["precache      ", ["node", ["tools/precache-check.mjs"], ROOT]],
   // Needs no browser and no network — it loads the vendored marked directly and
@@ -719,6 +727,15 @@ const checks = [
     // pasted or undone, the pen, Shapes and Insert leave the row, and the row
     // still fits at 360px; a real two-finger pinch on a Block zooms the page.
     ["view-only     ", ["node", ["tools/view-only-check.mjs"], ROOT]],
+    // The offline viewer inside every backup, opened as a person opens it:
+    // written in the app with the app's own Markdown pipeline, zipped, unzipped
+    // on disk and index.html opened from a file:// address with the server
+    // stopped — the folders, search, Notes (KaTeX in its own font, highlighted
+    // code, a cloze, a highlight's note, a picture out of the zip), Cards and
+    // Study, a PDF and its highlights, the Canvas's paper, pen, shapes, Blocks
+    // and page numbers, side by side, the address keeping the place, a dark
+    // theme, and index.html on its own saying to extract the whole backup.
+    ["backup-viewer ", ["node", ["tools/backup-viewer-check.mjs"], ROOT]],
     // ⋯ → Canvas pages → Page setup… in the app: one page set to A5
     // landscape dot grid is laid out at that size while the next is A4, nothing
     // written moves, the setup follows its page through add, duplicate, move

@@ -99,13 +99,13 @@ export const EDGE_SCROLL_MAX_PX = 18;
 export function edgeScroller(fromPage, onScrolled) {
   let raf = 0;
   let last = null;
-  let armed = false;
+  let scrollArmed = false;
   const scroller = () => pdfPageElement(fromPage)?.closest(".document-scroll") || el.documentView || null;
   const inBand = (y, rect) => y < rect.top + EDGE_SCROLL_BAND_PX || y > rect.bottom - EDGE_SCROLL_BAND_PX;
   const tick = () => {
     raf = 0;
     const scroll = scroller();
-    if (!last || !scroll || !armed) return;
+    if (!last || !scroll || !scrollArmed) return;
     const rect = scroll.getBoundingClientRect();
     const y = last.clientY;
     let speed = 0;
@@ -126,8 +126,8 @@ export function edgeScroller(fromPage, onScrolled) {
     update(event) {
       last = event;
       const scroll = scroller();
-      if (!armed && scroll && !inBand(event.clientY, scroll.getBoundingClientRect())) armed = true;
-      if (armed && !raf) raf = requestAnimationFrame(tick);
+      if (!scrollArmed && scroll && !inBand(event.clientY, scroll.getBoundingClientRect())) scrollArmed = true;
+      if (scrollArmed && !raf) raf = requestAnimationFrame(tick);
     },
     stop() {
       last = null;

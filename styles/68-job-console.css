@@ -202,7 +202,45 @@
  * a box and its sentence, on one line. */
 
 .share-options-shell {
-  width: min(520px, 100%);
+  width: min(560px, 100%);
+  max-height: min(92vh, 880px);
+  overflow: auto;
+}
+
+/* Who the copy is for, and the web-picture choices that hang off "Include the
+   pictures". */
+.share-options-purpose {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.share-options-purpose legend {
+  padding: 0 4px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.share-options-check input[type="radio"] {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 1px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.share-options-sub {
+  padding-left: 28px;
+}
+
+.share-options-check:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .share-options-field,
