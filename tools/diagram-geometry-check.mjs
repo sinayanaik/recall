@@ -301,6 +301,96 @@ try {
     return !dragged.via || "an end dragged by hand kept the old corners";
   });
 
+  // ── Ends pinned to a point of the edge (`at`) ──────────────────────────
+  const framed = (id, x, y, w, h, kind = "rect", rot = 0, pad = 0) => {
+    const rect = [x, y, x + w, y + h];
+    let poly = O.outlinePolygon(kind, rect);
+    if (rot) poly = poly.map((p) => S.rotatePoint(p, [x + w / 2, y + h / 2], rot));
+    const xs = poly.map((p) => p[0]);
+    const ys = poly.map((p) => p[1]);
+    return { id, kind: "block", rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], poly, z: 0, frame: { rect, rot }, pad };
+  };
+  const pinned = (a, atA, b, atB, extra = {}) => ({
+    type: "arrow", p: [[0, 0], [1, 1]],
+    ends: [{ id: a, side: "e", ...(atA ? { at: atA } : {}) }, { id: b, side: "w", ...(atB ? { at: atB } : {}) }], ...extra
+  });
+
+  must("an end's pin is kept, clamped and rounded; an end without one is as it was", () => {
+    const out = S.normalizeShape(pinned("A", [1.5, 0.123456], "B", null));
+    if (String(out.ends[0].at) !== "1,0.1235") return `at ${out.ends[0].at}`;
+    if ("at" in out.ends[1]) return "an unpinned end gained a pin";
+    const bad = S.normalizeShape(pinned("A", ["x", 1], "B", [0.5]));
+    return (!("at" in bad.ends[0]) && !("at" in bad.ends[1])) || JSON.stringify(bad.ends);
+  });
+
+  must("a pinned end sits on the edge, at the point it was pinned to", () => {
+    const nodes = nodesOf(framed("A", 0, 0, 100, 40), framed("B", 300, 0, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: pinned("A", [1, 0.25], "B", [0, 0.9]) }], nodes).get("x");
+    return (nearPoint(out.p[0], [100, 10]) && nearPoint(out.p[1], [300, 36])) || JSON.stringify(out.p);
+  });
+
+  must("...and stays at that spot of the box when the box is moved and resized", () => {
+    const nodes = nodesOf(framed("A", 50, 100, 200, 80), framed("B", 400, 0, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: pinned("A", [1, 0.25], "B", null) }], nodes).get("x");
+    return nearPoint(out.p[0], [250, 120]) || JSON.stringify(out.p[0]);
+  });
+
+  must("...turns with a turned box", () => {
+    const nodes = nodesOf(framed("A", 0, 0, 100, 40, "rect", 90), framed("B", 300, 0, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: pinned("A", [1, 0.5], "B", null) }], nodes).get("x");
+    // The middle of the right side, turned a quarter (anticlockwise, y up): on top.
+    return nearPoint(out.p[0], [50, 70]) || JSON.stringify(out.p[0]);
+  });
+
+  must("...lands on a diamond's slope, and leaves by the side the slope faces", () => {
+    const nodes = nodesOf(framed("A", 0, 0, 100, 100, "diamond"), framed("B", 300, 0, 100, 100));
+    const out = R.layoutConnectors([{ id: "x", shape: pinned("A", [0.75, 0.8], "B", null, { route: "elbow" }) }], nodes).get("x");
+    const d = O.distanceToOutline(nodes.get("A").poly, out.p[0][0], out.p[0][1]);
+    if (d > 0.01) return `${d} off the outline`;
+    return ["n", "e"].includes(out.exits[0]) || `exits ${out.exits}`;
+  });
+
+  must("an elbow from a pin on the top edge leaves upward", () => {
+    const nodes = nodesOf(framed("A", 0, 0, 100, 40), framed("B", 300, 200, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: pinned("A", [0.3, 1], "B", null, { route: "elbow" }) }], nodes).get("x");
+    const path = S.connectorPath(out);
+    return (out.exits[0] === "n" && near(path[1][0], path[0][0]) && path[1][1] > path[0][1]) || JSON.stringify(path);
+  });
+
+  must("pinned ends on one side are not shared out", () => {
+    const nodes = nodesOf(framed("D", 0, 0, 100, 60), framed("E", 300, 100, 80, 30), framed("F", 300, -100, 80, 30));
+    const out = R.layoutConnectors([
+      { id: "a", shape: pinned("D", [1, 0.5], "E", null) },
+      { id: "b", shape: pinned("D", [1, 0.5], "F", null) }
+    ], nodes);
+    return (nearPoint(out.get("a").p[0], [100, 30]) && nearPoint(out.get("b").p[0], [100, 30])) || `${out.get("a").p[0]} ${out.get("b").p[0]}`;
+  });
+
+  must("an end stops on the edge as drawn: a head's tip, and a centred border, touch it", () => {
+    // A block's border is inside its outline; an arrowhead's round tip reaches
+    // half a line past where it is drawn to.
+    const nodes = nodesOf(framed("A", 0, 0, 100, 40), framed("B", 300, 0, 100, 40, "rect", 0, 1));
+    const out = R.layoutConnectors([{ id: "x", shape: pinned("A", [1, 0.5], "B", [0, 0.5], { width: 2, heads: ["none", "filled"] }) }], nodes).get("x");
+    // The start, headless, on A's edge; the end, 1 (B's half border) + 1 (half the line) short of B.
+    return (nearPoint(out.p[0], [100, 20]) && nearPoint(out.p[1], [298, 20])) || JSON.stringify(out.p);
+  });
+
+  must("a pin and the point it names agree, both ways, on a turned box", () => {
+    const n = framed("A", 10, 20, 120, 60, "rect", 30);
+    const at = [0.8, 0.1];
+    const back = R.pinOf(n, R.pinPoint(n, at));
+    return (near(back[0], at[0], 1e-3) && near(back[1], at[1], 1e-3)) || String(back);
+  });
+
+  must("the nearest point of an outline, and which way the edge there faces", () => {
+    const box = O.outlinePolygon("rect", [0, 0, 100, 40]);
+    const hit = O.polygonNearestPoint(box, 104, 30);
+    if (!nearPoint(hit.point, [100, 30]) || !near(hit.distance, 4)) return JSON.stringify(hit);
+    if (O.sideOfVector(hit.normal) !== "e") return `faces ${O.sideOfVector(hit.normal)}`;
+    const inside = O.polygonNearestPoint(box, 50, 37);
+    return (nearPoint(inside.point, [50, 40]) && O.sideOfVector(inside.normal) === "n") || JSON.stringify(inside);
+  });
+
   must("an old line normalises exactly as it was", () => {
     const old = { type: "arrow", p: [[0, 0], [100, 50]], stroke: "#000000", width: 2 };
     const out = S.normalizeShape(old);

@@ -2656,6 +2656,15 @@ export function setBlockPageMoveHook(fn) {
   pageMoveHook = typeof fn === "function" ? fn : () => {};
 }
 
+// Asked first, by every press on a block: is it someone else's? A picked-up
+// connector's end sits ON a block's edge, and a press on its handle is the
+// connector's, not the block's (src/documents/pdf-connectors.js).
+let pressYield = () => false;
+
+export function setBlockPressYield(fn) {
+  pressYield = typeof fn === "function" ? fn : () => false;
+}
+
 export function setBlockGestureFrameHook(fn) {
   gestureFrameHook = typeof fn === "function" ? fn : () => {};
 }
@@ -2770,6 +2779,7 @@ export function handleBlockPointerDown(event) {
   // opens and a finger on it scrolls the page like a finger anywhere else.
   if (documentViewOnly()) return false;
   const node = event.target.closest?.(`.${PDF_BLOCK_CLASS}`);
+  if (node && !editingId && pressYield(event)) return false;
   if (!node) {
     // A press anywhere else finishes an edit in progress, which is how every
     // other editor in this app commits — and puts down whatever was picked up,

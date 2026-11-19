@@ -433,6 +433,55 @@ try {
     await settle(120);
     out.label = record(made.id).shape.text;
     out.labelDrawn = Boolean(document.querySelector('.pdf-shape-text[data-highlight-id="' + made.id + '"]'));
+    // B5b. The line's end, dragged along B's left edge, is pinned to that spot —
+    // and stays at that spot of B when B moves.
+    api.selectBlock(null);
+    api.selectShape(made.id);
+    await settle(60);
+    {
+      // In sight, to be pressed — and put back after, for the checks below.
+      const scrolled = [];
+      for (let n = view; n; n = n.parentElement) scrolled.push([n, n.scrollTop, n.scrollLeft]);
+      blockNode(b.id).scrollIntoView({ block: "center", inline: "center" });
+      await settle(80);
+      const vp = api.pdfPageViewport(1);
+      const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+      const toClient = (x, y) => { const [sx, sy] = vp.convertToViewportPoint(x, y); const box = pageEl.getBoundingClientRect(); return [box.left + sx, box.top + sy]; };
+      const end = record(made.id).shape.p[1];
+      const from = toClient(end[0], end[1]);
+      const bb = find(b.id);
+      const to = toClient(bb.x + 1, bb.y + bb.h * 0.2);
+      // Pressed where it is drawn — half over B — and carried by the view, which
+      // holds the pointer once a shape's handle is pressed.
+      const pid = 83;
+      mouse(document.elementFromPoint(from[0], from[1]), "pointerdown", from[0], from[1], { pointerId: pid });
+      for (let i = 1; i <= 6; i += 1) {
+        mouse(view, "pointermove", from[0] + ((to[0] - from[0]) * i) / 6, from[1] + ((to[1] - from[1]) * i) / 6, { pointerId: pid });
+        await raf();
+        // The connection points are shown while the end is over B.
+        if (i === 6) out.pointsShown = document.querySelectorAll(".pdf-connect-target-point").length;
+      }
+      mouse(view, "pointerup", to[0], to[1], { pointerId: pid });
+      out.blockStayed = find(b.id).x === bb.x && api.selectedBlockId() !== b.id;
+      await settle(120);
+      const pinnedEnd = record(made.id).shape.ends?.[1];
+      const p1 = record(made.id).shape.p[1];
+      out.pin = { at: pinnedEnd?.at || null, id: pinnedEnd?.id === b.id, x: p1[0] - bb.x, y: (p1[1] - bb.y) / bb.h };
+      const place = (patch) => {
+        api.writeDocumentBlocks(api.documentBlocks().map((x) => (x.id === b.id ? { ...x, ...patch } : x)));
+        api.relinkConnectors();
+      };
+      place({ x: bb.x + 30, y: bb.y + 40, h: bb.h * 2 });
+      await settle(150);
+      const nb = find(b.id);
+      const p1b = record(made.id).shape.p[1];
+      out.pinMoved = { x: p1b[0] - nb.x, y: (p1b[1] - nb.y) / nb.h, moved: nb.x !== bb.x };
+      // ...and back where it was, for the checks after.
+      place({ x: bb.x, y: bb.y, h: bb.h });
+      api.selectShape(null);
+      scrolled.forEach(([n, top, left]) => { n.scrollTop = top; n.scrollLeft = left; });
+      await settle(120);
+    }
     // B6. Delete B: the line stays, tied; undo brings B back onto it.
     api.deleteBlock(b.id);
     await settle(80);
@@ -464,7 +513,7 @@ try {
     await settle(120);
     const drawn = api.documentShapes().at(-1);
     out.drawnTied = drawn?.shape?.ends?.[1]?.id === a.id && !drawn?.shape?.ends?.[0];
-    out.drawnEndOnTop = drawn ? Math.abs(drawn.shape.p[1][1] - (a.y + a.h + 2)) < 1 : false;
+    out.drawnEndOnTop = drawn ? drawn.shape.p[1][1] - (a.y + a.h) >= 0 && drawn.shape.p[1][1] - (a.y + a.h) < 1.5 : false;
     api.chooseInkTool("pen");
     // B8. Settled: a page with tied lines on it writes nothing while it sits
     // still — the stored ends agree with their ties, so bringing them up to date
@@ -484,7 +533,10 @@ try {
     links.shapesAdded === 1 && links.connector?.ends?.[0]?.side === "e" && links.connector?.ends?.[1] && !links.connector.ends[1].side.match(/^[nsw]$/),
     JSON.stringify(links.connector?.ends));
   check("...its ends on the two blocks' facing edges",
-    links.connector && Math.abs(links.connector.p[0][0] - (links.aEast + 2)) < 1 && Math.abs(links.connector.p[1][0] - (links.bWest - 2)) < 1,
+    // On the edges as drawn: the headless start on A's, the head's tip — half a
+    // line past where it is drawn to — on B's (src/render/connector-route.js).
+    links.connector && Math.abs(links.connector.p[0][0] - links.aEast) < 0.01
+      && links.bWest - links.connector.p[1][0] > 0 && links.bWest - links.connector.p[1][0] < 1.5,
     JSON.stringify(links.connector?.p));
   check("B2. the line follows a block WHILE it is dragged", links.midDrag);
   check("...and its record follows it after", links.follows.endY < links.follows.bTop && links.follows.endY > links.follows.bBottom,
@@ -497,6 +549,12 @@ try {
     links.elbow.route === "elbow" && links.elbow.square && links.elbow.points >= 2 && links.bendHandle, JSON.stringify(links.elbow));
   check("B5. words typed on a line are kept and drawn", links.labelOpened && links.label === "yes" && links.labelDrawn,
     `(${links.label})`);
+  check("B5b. a line's end dragged along a block's edge is pinned to that spot",
+    links.pin.id && links.pin.at && links.pin.at[0] === 0 && Math.abs(links.pin.at[1] - 0.2) < 0.05
+      && links.pin.x < 0 && links.pin.x > -1.5 && Math.abs(links.pin.y - 0.2) < 0.05
+      && links.blockStayed && links.pointsShown >= 8, JSON.stringify([links.pin, links.blockStayed, links.pointsShown]));
+  check("...and stays at that spot of the block when it is moved and resized",
+    links.pinMoved.moved && links.pinMoved.x < 0 && links.pinMoved.x > -1.5 && Math.abs(links.pinMoved.y - 0.2) < 0.05, JSON.stringify(links.pinMoved));
   check("B6. Delete leaves a block's lines, still tied — and undo puts the block back onto them",
     links.afterDelete.line && links.afterDelete.stillTied && links.bBack, JSON.stringify(links.afterDelete));
   check("...Ctrl+Delete takes the block AND its lines, and one ↶ brings both back",

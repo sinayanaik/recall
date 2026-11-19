@@ -66,6 +66,7 @@ import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { edgeScroller, mapPointBetweenPages, pageUnderPointer, pointOnPage } from "./page-handoff.js?v=__BUILD__";
 import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
+import { setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
 
 export const PDF_SHAPE_LAYER_CLASS = "pdf-shape-layer";
 export const PDF_SHAPE_CLASS = "pdf-shape";
@@ -770,11 +771,17 @@ export function paintDocumentShapes(pageNumber, { preview = null, previews = nul
     boxes.push(...built.boxes);
   });
   boxes.forEach((box) => put(box));
+  // The picked-up shape's frame and handles go in the layer over the blocks
+  // (src/documents/pdf-diagram-layer.js), not in this one under them: a
+  // connector's end sits ON a block's edge, and its handle half under the block
+  // was half hidden — and a press on it picked up the block instead.
   const selected = selectedShapeRecord();
+  const handles = [];
   if (selected && Number(selected.page) === Number(pageNumber) && !editingShapeId) {
     const shape = resolve(selected, normalizeShape(previewOf(selected) || selected.shape));
-    buildHandles(layer, viewport, { ...selected, shape }, put);
+    buildHandles(layer, viewport, { ...selected, shape }, (node) => handles.push(node));
   }
+  setDiagramPart(Number(pageNumber), "shape-handles", handles);
   shapePaintedHook(pageNumber, layer);
   shapeOverlayHook(Number(pageNumber));
   // Never mid-drag: the box being dragged is a preview, and measuring every
@@ -1020,7 +1027,8 @@ function bindShapeEnds(drag, shape, event, indices, moving) {
   const ends = [0, 1].map((i) => shape.ends?.[i] || null);
   indices.forEach((i) => {
     const hit = shapeBinding.bindAt({ page: drag.page, index: i, point: shape.p[i], event, exclude: drag.target?.id || null, show: i === moving });
-    ends[i] = hit ? { id: hit.id, side: hit.side } : null;
+    // `at`: pinned to that point of the edge (src/documents/pdf-connectors.js).
+    ends[i] = hit ? { id: hit.id, side: hit.side, ...(hit.at ? { at: hit.at } : {}) } : null;
   });
   if (ends[0] && ends[1] && ends[0].id === ends[1].id) {
     ends[0] = null;

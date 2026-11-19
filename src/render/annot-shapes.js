@@ -154,8 +154,13 @@ const SHAPE_POINT_COUNTS = {
 // the page — a block, or another shape's box — so it follows that thing when it
 // moves (src/documents/pdf-connectors.js). What is stored is:
 //
-//   ends    [start, end], each null (a free end) or { id, side }, where `side`
-//           is "auto" (whichever side faces the other end) or n | e | s | w
+//   ends    [start, end], each null (a free end) or { id, side, at? }, where
+//           `side` is "auto" (whichever side faces the other end) or
+//           n | e | s | w, and `at`, when present, PINS the end to one point
+//           of the outline: [fx, fy], fractions of the box's unturned rect
+//           from its bottom-left — so it stays at that spot when the box is
+//           moved, resized or turned, as draw.io's fixed connection points
+//           do. `side` is then the side that point is on.
 //   route   "elbow" (square corners) or "curve"; absent is a straight line
 //   exits   [start, end], each null or n | e | s | w: which way each end LEAVES
 //           what it is tied to, as last worked out — so an elbow or a curve can
@@ -189,7 +194,22 @@ function normalizeConnectorEnd(end) {
   if (!end || typeof end !== "object") return null;
   const id = typeof end.id === "string" ? end.id.trim().slice(0, 64) : "";
   if (!id) return null;
-  return { id, side: CONNECTOR_SIDES.includes(end.side) ? end.side : "auto" };
+  const out = { id, side: CONNECTOR_SIDES.includes(end.side) ? end.side : "auto" };
+  const at = normalizeConnectorAt(end.at);
+  if (at) out.at = at;
+  return out;
+}
+
+// Where on a box an end is pinned: [fx, fy], fractions of the box's unturned
+// rect from its bottom-left (PDF space, y up) — draw.io's exitX / exitY. Null
+// for anything that is not two finite numbers.
+export function normalizeConnectorAt(at) {
+  if (!Array.isArray(at) || at.length < 2) return null;
+  const fx = Number(at[0]);
+  const fy = Number(at[1]);
+  if (!Number.isFinite(fx) || !Number.isFinite(fy)) return null;
+  const clamp = (n) => Math.round(Math.min(1, Math.max(0, n)) * 10000) / 10000;
+  return [clamp(fx), clamp(fy)];
 }
 
 // The connector fields of a line or an arrow, normalised — only the ones that
