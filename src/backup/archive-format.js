@@ -447,7 +447,10 @@ export const BACKED_UP_SETTINGS_PREFIXES = {
 };
 
 export const NOT_BACKED_UP_SETTINGS_PREFIXES = {
-  // Nothing today; same rule as the tables above.
+  "recall-viewer:": "Not the app's at all: the offline viewer inside a backup (index.html, "
+    + "src/backup/viewer-shell.js) remembers its theme, zoom and contents switch under this "
+    + "prefix, in the storage of a page opened from disk. Named here because the scan reads "
+    + "every string in src/."
 };
 
 function isBackedUpSettingsKey(key) {

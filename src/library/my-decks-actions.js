@@ -3,7 +3,7 @@
 
 import { closeWebDeckExportMenus, loadWebDeck, markWebDeckExportMenuOpen, touchLocalDeckAccess } from "../cloud/web-decks.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { shareDecksAsPackage } from "../backup/share-dialog.js?v=__BUILD__";
+import { backUpDecks } from "../backup/share-dialog.js?v=__BUILD__";
 import { exportMyDeck } from "../export/decks.js?v=__BUILD__";
 import { openSelectionAsOneDeck } from "./folder-deck.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
@@ -60,18 +60,31 @@ export function createDeckExportControl(sel, deckTitle, { compact = false } = {}
     });
     menu.appendChild(item);
   });
-  // The whole deck — papers, pictures, highlights and all — as one file for
-  // somebody else to import. See src/backup/share-dialog.js.
+  // The whole deck — papers, pictures, highlights and all — as one file: a
+  // backup for yourself, or a copy for somebody else to import, with an
+  // index.html that opens it offline. See src/backup/share-dialog.js.
   const share = document.createElement("button");
   share.type = "button";
-  share.textContent = "Share (.recall — everything)";
+  share.textContent = "Back up or share (.recall — everything)";
   share.addEventListener("click", (event) => {
     event.stopPropagation();
     menu.hidden = true;
     button.setAttribute("aria-expanded", "false");
-    shareDecksAsPackage([sel], [deckTitle]);
+    backUpDecks([sel], [deckTitle]);
   });
-  menu.prepend(share);
+  // Every picture the file shows from another website, copied into storage —
+  // see src/images/keep-web-images.js.
+  const keepWeb = document.createElement("button");
+  keepWeb.type = "button";
+  keepWeb.textContent = "Save web pictures into this file";
+  keepWeb.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    const { keepWebImagesWithFeedback } = await import("../images/keep-web-images.js?v=__BUILD__");
+    keepWebImagesWithFeedback([sel]);
+  });
+  menu.prepend(share, keepWeb);
 
   button.addEventListener("click", (event) => {
     event.stopPropagation();

@@ -4,10 +4,9 @@
 // mixed-build failure this repo has already shipped twice. deploy.yml and
 // tools/module-symbols.mjs both refuse a relative import without it.
 
-import { exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
 import { runBrokenImageScan } from "./backup/broken-images.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
-import { shareDecksAsPackage } from "./backup/share-dialog.js?v=__BUILD__";
+import { backUpDecks, backUpLibraryWithOptions } from "./backup/share-dialog.js?v=__BUILD__";
 import { appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, resetLocalLibrary, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
 import { clearAllCardDropTargets, closeAllCardsPanel, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
 import { adjustCornellRowHeight, allCardsAnswersVisible, allCardsCompact, bumpAllCardsRenderId, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, renderAllCards, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
@@ -2488,16 +2487,30 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
       if (shouldOpen) markWebDeckExportMenuOpen(bulkExportMenu);
       bulkExportBtn.setAttribute("aria-expanded", String(shouldOpen));
     });
-    // Share the selection as one .recall package — see src/backup/share-dialog.js.
+    // Back up or share the selection — files and whole folders — as one
+    // .recall package. See src/backup/share-dialog.js.
+    const selectedTitles = (selections) => {
+      const index = readLocalDeckIndex();
+      return selections.map((sel) => index.find((entry) => (sel.localId && entry.id === sel.localId) || (sel.deckId && String(entry.deckId) === String(sel.deckId)))?.title || "");
+    };
     document.getElementById("myDecksBulkShareBtn")?.addEventListener("click", (e) => {
       e.stopPropagation();
       bulkExportMenu.hidden = true;
       bulkExportBtn.setAttribute("aria-expanded", "false");
       const selections = selectedMyDecks();
       if (!selections.length) return;
-      const index = readLocalDeckIndex();
-      const titles = selections.map((sel) => index.find((entry) => (sel.localId && entry.id === sel.localId) || (sel.deckId && String(entry.deckId) === String(sel.deckId)))?.title || "");
-      shareDecksAsPackage(selections, titles);
+      backUpDecks(selections, selectedTitles(selections));
+    });
+    // Copy every web picture in the selection into storage — see
+    // src/images/keep-web-images.js.
+    document.getElementById("myDecksBulkKeepWebBtn")?.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      bulkExportMenu.hidden = true;
+      bulkExportBtn.setAttribute("aria-expanded", "false");
+      const selections = selectedMyDecks();
+      if (!selections.length) return;
+      const { keepWebImagesWithFeedback } = await import("./images/keep-web-images.js?v=__BUILD__");
+      keepWebImagesWithFeedback(selections);
     });
     bulkExportMenu.querySelectorAll("[data-bulk-export]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
@@ -2518,7 +2531,7 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
     event.stopPropagation();
     closeMyDecksMoreMenu();
     if (button.dataset.exportAll === "backup") {
-      exportLibraryBackupZip();
+      backUpLibraryWithOptions();
     } else {
       exportAllMyDecks(button.dataset.exportAll);
     }

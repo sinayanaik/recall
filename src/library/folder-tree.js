@@ -511,8 +511,28 @@ export function folderActions(path) {
     ["New subfolder", () => createFolder(path)],
     ["Rename", () => renameFolder(path)],
     ["Move to…", () => moveFolderViaMenu(path)],
+    ["Back up this folder…", () => backUpFolder(path)],
+    ["Save web pictures into these files", () => keepFolderWebPictures(path)],
     ["Delete", () => deleteFolder(path)],
   ];
+}
+
+// The folder and everything under it, as one .recall file with its offline
+// viewer — src/backup/share-dialog.js. Loaded when asked for, like the rest of
+// the backup code.
+async function backUpFolder(path) {
+  const entries = decksUnderFolder(path);
+  if (!entries.length) { showToast("This folder has no files to back up", "info"); return; }
+  const { backUpDecks } = await import("../backup/share-dialog.js?v=__BUILD__");
+  const name = folderSegments(path).pop() || path;
+  backUpDecks(entries.map((entry) => entry.sel), entries.map((entry) => entry.title), { scope: "folder", folder: name });
+}
+
+async function keepFolderWebPictures(path) {
+  const entries = decksUnderFolder(path);
+  if (!entries.length) { showToast("This folder has no files", "info"); return; }
+  const { keepWebImagesWithFeedback } = await import("../images/keep-web-images.js?v=__BUILD__");
+  keepWebImagesWithFeedback(entries.map((entry) => entry.sel));
 }
 
 // The same ⋯ control the deck tiles use, for a folder. Deliberately the same
