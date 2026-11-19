@@ -18,7 +18,44 @@
  * DOM and there is nothing for a range to pick up. The button keeps an
  * aria-label, because ::before content is not reliably an accessible name.
  * Both halves are asserted in tools/selection-check.mjs.
+ *
+ * The label is also kept quiet here. It used to be a pill — a border, a tinted
+ * fill, weight 900 and wide tracking, with a 24px band held open above the code
+ * for it — and on every code block in a note that read as louder than the code.
+ * Now it is small, plain, faint text in the corner that comes up to full
+ * strength when the block is hovered or the button has focus, so it still reads
+ * as something to press. A guessed language (no ```lang on the fence) was told
+ * apart by a dashed border; with no border it is set in italic instead, and the
+ * tooltip still says "detected".
  */
 .rendered pre .code-copy-btn::before {
   content: attr(data-label);
+}
+
+.rendered pre .code-copy-btn {
+  top: 4px;
+  right: 6px;
+  border-color: transparent;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 4px;
+  opacity: 0.55;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.rendered pre:hover .code-copy-btn,
+.rendered pre .code-copy-btn:focus-visible,
+.rendered pre .code-copy-btn.is-copied {
+  opacity: 1;
+}
+
+.rendered pre[data-language-inferred="1"] .code-copy-btn {
+  font-style: italic;
+}
+
+.rendered pre.has-code-language code[class*="language-"] {
+  padding-top: 18px;
 }

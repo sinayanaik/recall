@@ -61,16 +61,16 @@
 }
 
 .pdf-block-body.rendered pre.has-code-language code[class*="language-"] {
-  padding-top: calc(24px * var(--pdf-block-scale, 1));
+  padding-top: calc(18px * var(--pdf-block-scale, 1));
 }
 
 .pdf-block-body.rendered pre .code-copy-btn {
-  top: calc(6px * var(--pdf-block-scale, 1));
-  right: calc(8px * var(--pdf-block-scale, 1));
+  top: calc(4px * var(--pdf-block-scale, 1));
+  right: calc(6px * var(--pdf-block-scale, 1));
   padding:
-    calc(4px * var(--pdf-block-scale, 1))
-    calc(8px * var(--pdf-block-scale, 1));
-  font-size: calc(0.6rem * var(--pdf-block-scale, 1));
+    calc(2px * var(--pdf-block-scale, 1))
+    calc(4px * var(--pdf-block-scale, 1));
+  font-size: calc(0.55rem * var(--pdf-block-scale, 1));
 }
 
 /* ── 2. No scrollbar takes room inside a Block ─────────────────────────────
