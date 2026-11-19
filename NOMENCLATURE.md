@@ -122,6 +122,17 @@ on a page are its **accents made readable on the paper** — the same hue, light
 or darker (`src/format/paper-palette.js`); say "the theme's colour", not "the
 accent".
 
+A Block that follows its words grows with its longest line only as far as the
+**widest a Block grows** — ◐ Canvas → Blocks, a share of the page's width (62%
+unless set; `canvasBlockMaxWidth`, held by `src/documents/block-measure.js`) —
+and wraps there; code may run to the page's edge. Pasted words keep to it too.
+
+**Section lines** are the thin lines down the left of each heading's section in
+the Notes, whose text is set one **step** in per section — ◐ Notes → Section
+lines (`notesOutline*` keys; `src/notes/section-lines.js`, drawn by
+`styles/a5-section-lines.css`). Clicking a line folds its section. Say "section
+lines", not "outline", "thread lines" or "indent guides".
+
 ## Where each name lives
 
 **The code still says `deck`, `notebook` and `handwriting`, on purpose.** Those

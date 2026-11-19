@@ -1,0 +1,233 @@
+/* ── Section lines in Notes ──────────────────────────────────────────────────
+ *
+ * Each heading's section set one small step in, with a thin line down its
+ * left — the way replies hang under the comment they answer. The depth of
+ * every top-level block is written by src/notes/section-lines.js as
+ * `data-outline-depth` (absent at depth 0); everything about how it looks is
+ * here, and ◐ Notes → Section lines sizes it (src/ui/style-schema.js).
+ *
+ * ── Why border-image, of all things ──────────────────────────────────────
+ *
+ * The obvious line — an absolutely placed ::before — cannot be drawn here.
+ * Every block of a note carries `content-visibility: auto`
+ * (styles/12-notes.css), which turns on PAINT CONTAINMENT, and that clips
+ * whatever a block's contents draw outside its own box: a line that reached
+ * up into the margin above each paragraph was cut off there, and came out as a
+ * dash per paragraph instead of a line. Turning containment off would cost
+ * every note its off-screen skipping. And headings already spend both their
+ * pseudo-elements, on the number and the underline.
+ *
+ * A box's OWN decoration is not its contents, and is not clipped: its
+ * border-image may reach outside it (border-image-outset). So each block draws
+ * its lines as a border-image — the whole image as the "fill", no border
+ * widths, reaching out left over the strip it was stepped in by and up over
+ * the gap above it. The lines a block shares with the block above overlap
+ * that block's own, which is why their colour is mixed OPAQUE against the
+ * notes' paper: two coats of it look like one.
+ *
+ * The reach up (--ol-bridge) covers the widest gap between two blocks, the
+ * one above a heading. Where a line starts — the first block under a heading
+ * — it reaches up into the bottom of that heading, under its fold arrow:
+ * the line grows out of the arrow that folds it.
+ *
+ * A border-image is drawn INSTEAD of the box's own borders, so the blocks
+ * that have one say it another way below (a code block's frame as an outline,
+ * a quote's bar as an inset shadow, a rule as a background).
+ */
+
+/* Lengths resolved ONCE, in the Notes text size on #notesView, and inherited
+   as pixels: a heading's em is bigger than a paragraph's, and the lines beside
+   both must fall in the same place. */
+@property --ol-step { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@property --ol-offset { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@property --ol-width { syntax: "<length>"; inherits: true; initial-value: 1px; }
+@property --ol-bridge { syntax: "<length>"; inherits: true; initial-value: 0px; }
+
+#notesView {
+  --ol-step: var(--notes-outline-step, 0.85em);
+  --ol-offset: var(--notes-outline-offset, 0.55em);
+  --ol-width: var(--notes-outline-width, 1px);
+  --ol-bridge: 1.7em;
+  --ol-x1: var(--ol-offset);
+  --ol-x2: calc(var(--ol-step) + var(--ol-offset));
+  --ol-x3: calc(var(--ol-step) * 2 + var(--ol-offset));
+  --ol-x4: calc(var(--ol-step) * 3 + var(--ol-offset));
+  --ol-x5: calc(var(--ol-step) * 4 + var(--ol-offset));
+  --ol-x6: calc(var(--ol-step) * 5 + var(--ol-offset));
+  --ol-ink: color-mix(in srgb, var(--text) var(--notes-outline-strength, 20%), var(--card));
+  --ol-hot-ink: color-mix(in srgb, var(--accent) 80%, var(--card));
+  /* One colour per line, so the one under the mouse can be darkened alone
+     (src/notes/section-lines-gutter.js sets it on that section's blocks). */
+  --ol-c1: var(--ol-ink);
+  --ol-c2: var(--ol-ink);
+  --ol-c3: var(--ol-ink);
+  --ol-c4: var(--ol-ink);
+  --ol-c5: var(--ol-ink);
+  --ol-c6: var(--ol-ink);
+}
+
+:root[data-notes-outline-ink="accent"] #notesView {
+  --ol-ink: color-mix(in srgb, var(--accent) var(--notes-outline-strength, 34%), var(--card));
+}
+
+/* A phone has less width to give each step. */
+@media (max-width: 720px) {
+  #notesView {
+    --ol-step: var(--notes-outline-step, 0.7em);
+    --ol-offset: var(--notes-outline-offset, 0.45em);
+  }
+}
+
+/* ── The step and the lines ─────────────────────────────────────────────── */
+
+:root.notes-outline #notesView:not(.is-paged) > [data-outline-depth],
+:root.notes-outline #notesView:not(.is-paged) > .notes-chunk > [data-outline-depth] {
+  --ol-indent: calc(var(--ol-step) * var(--ol-d, 0));
+  /* The column stays where ◐ Notes → Column width centres it
+     (styles/12-notes.css: `.notes-rendered > *`); the block starts that many
+     steps into it and is as much narrower. */
+  margin-left: calc((100% - min(var(--notes-max-width, 100%), 100%)) / 2 + var(--ol-indent));
+  margin-right: auto;
+  max-width: calc(min(var(--notes-max-width, 100%), 100%) - var(--ol-indent));
+  border-image: var(--ol-lines) 0 fill / 0 / var(--ol-bridge) 0 0 var(--ol-indent);
+}
+
+/* In a long note's chunks (styles/19-notes-chunks.css) each chunk is its own
+   containment box, and a block's line cannot reach out of the chunk it is in.
+   Margins do not collapse across a chunk's edge either, so the gap there was
+   the last block's bottom margin AND the next one's top: without the first,
+   the gap is the next block's own, which its line reaches across. */
+:root.notes-outline #notesView:not(.is-paged) > .notes-chunk > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── Blocks with borders of their own ─────────────────────────────────────── */
+
+/* A code block's and a diagram's 1px frame, drawn over where the border was. */
+:root.notes-outline #notesView:not(.is-paged) > pre[data-outline-depth],
+:root.notes-outline #notesView:not(.is-paged) > .notes-chunk > pre[data-outline-depth] {
+  outline: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  outline-offset: -1px;
+}
+
+:root.notes-outline #notesView:not(.is-paged) > .diagram-shell[data-outline-depth],
+:root.notes-outline #notesView:not(.is-paged) > .notes-chunk > .diagram-shell[data-outline-depth] {
+  outline: 1px solid var(--line);
+  outline-offset: -1px;
+}
+
+/* A quote's bar: the 4px border becomes the same 4px inside its padding. */
+:root.notes-outline #notesView:not(.is-paged) > blockquote[data-outline-depth],
+:root.notes-outline #notesView:not(.is-paged) > .notes-chunk > blockquote[data-outline-depth] {
+  border-left-width: 0;
+  padding-left: calc(1em + 4px);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+/* A rule had only the browser's own inset border. border-WIDTH, not the
+   `border` shorthand: that resets border-image too, and the rule would lose
+   its lines. */
+:root.notes-outline #notesView:not(.is-paged) > hr[data-outline-depth],
+:root.notes-outline #notesView:not(.is-paged) > .notes-chunk > hr[data-outline-depth] {
+  height: 1px;
+  border-width: 0;
+  background: color-mix(in srgb, var(--text) 28%, var(--card));
+}
+
+/* The pointer over a line it can fold (src/notes/section-lines-gutter.js). */
+#notesView.is-outline-hot {
+  cursor: pointer;
+}
+
+/* On paper, the note as it was. */
+@media print {
+  :root.notes-outline #notesView > [data-outline-depth],
+  :root.notes-outline #notesView > .notes-chunk > [data-outline-depth] {
+    margin-left: auto;
+    max-width: var(--notes-max-width, 100%);
+    border-image: none;
+  }
+}
+
+/* ── The lines of each depth ──────────────────────────────────────────────
+   One hard-edged stripe per section the block is inside, at k steps plus the
+   offset; the image is as wide as the block and the strip, so a stripe's
+   position is a plain length from the column's left edge. */
+
+#notesView [data-outline-depth="1"] {
+  --ol-d: 1;
+  --ol-lines: linear-gradient(to right,
+    transparent var(--ol-x1),
+    var(--ol-c1) var(--ol-x1) calc(var(--ol-x1) + var(--ol-width)),
+    transparent calc(var(--ol-x1) + var(--ol-width)));
+}
+
+#notesView [data-outline-depth="2"] {
+  --ol-d: 2;
+  --ol-lines: linear-gradient(to right,
+    transparent var(--ol-x1),
+    var(--ol-c1) var(--ol-x1) calc(var(--ol-x1) + var(--ol-width)),
+    transparent calc(var(--ol-x1) + var(--ol-width)) var(--ol-x2),
+    var(--ol-c2) var(--ol-x2) calc(var(--ol-x2) + var(--ol-width)),
+    transparent calc(var(--ol-x2) + var(--ol-width)));
+}
+
+#notesView [data-outline-depth="3"] {
+  --ol-d: 3;
+  --ol-lines: linear-gradient(to right,
+    transparent var(--ol-x1),
+    var(--ol-c1) var(--ol-x1) calc(var(--ol-x1) + var(--ol-width)),
+    transparent calc(var(--ol-x1) + var(--ol-width)) var(--ol-x2),
+    var(--ol-c2) var(--ol-x2) calc(var(--ol-x2) + var(--ol-width)),
+    transparent calc(var(--ol-x2) + var(--ol-width)) var(--ol-x3),
+    var(--ol-c3) var(--ol-x3) calc(var(--ol-x3) + var(--ol-width)),
+    transparent calc(var(--ol-x3) + var(--ol-width)));
+}
+
+#notesView [data-outline-depth="4"] {
+  --ol-d: 4;
+  --ol-lines: linear-gradient(to right,
+    transparent var(--ol-x1),
+    var(--ol-c1) var(--ol-x1) calc(var(--ol-x1) + var(--ol-width)),
+    transparent calc(var(--ol-x1) + var(--ol-width)) var(--ol-x2),
+    var(--ol-c2) var(--ol-x2) calc(var(--ol-x2) + var(--ol-width)),
+    transparent calc(var(--ol-x2) + var(--ol-width)) var(--ol-x3),
+    var(--ol-c3) var(--ol-x3) calc(var(--ol-x3) + var(--ol-width)),
+    transparent calc(var(--ol-x3) + var(--ol-width)) var(--ol-x4),
+    var(--ol-c4) var(--ol-x4) calc(var(--ol-x4) + var(--ol-width)),
+    transparent calc(var(--ol-x4) + var(--ol-width)));
+}
+
+#notesView [data-outline-depth="5"] {
+  --ol-d: 5;
+  --ol-lines: linear-gradient(to right,
+    transparent var(--ol-x1),
+    var(--ol-c1) var(--ol-x1) calc(var(--ol-x1) + var(--ol-width)),
+    transparent calc(var(--ol-x1) + var(--ol-width)) var(--ol-x2),
+    var(--ol-c2) var(--ol-x2) calc(var(--ol-x2) + var(--ol-width)),
+    transparent calc(var(--ol-x2) + var(--ol-width)) var(--ol-x3),
+    var(--ol-c3) var(--ol-x3) calc(var(--ol-x3) + var(--ol-width)),
+    transparent calc(var(--ol-x3) + var(--ol-width)) var(--ol-x4),
+    var(--ol-c4) var(--ol-x4) calc(var(--ol-x4) + var(--ol-width)),
+    transparent calc(var(--ol-x4) + var(--ol-width)) var(--ol-x5),
+    var(--ol-c5) var(--ol-x5) calc(var(--ol-x5) + var(--ol-width)),
+    transparent calc(var(--ol-x5) + var(--ol-width)));
+}
+
+#notesView [data-outline-depth="6"] {
+  --ol-d: 6;
+  --ol-lines: linear-gradient(to right,
+    transparent var(--ol-x1),
+    var(--ol-c1) var(--ol-x1) calc(var(--ol-x1) + var(--ol-width)),
+    transparent calc(var(--ol-x1) + var(--ol-width)) var(--ol-x2),
+    var(--ol-c2) var(--ol-x2) calc(var(--ol-x2) + var(--ol-width)),
+    transparent calc(var(--ol-x2) + var(--ol-width)) var(--ol-x3),
+    var(--ol-c3) var(--ol-x3) calc(var(--ol-x3) + var(--ol-width)),
+    transparent calc(var(--ol-x3) + var(--ol-width)) var(--ol-x4),
+    var(--ol-c4) var(--ol-x4) calc(var(--ol-x4) + var(--ol-width)),
+    transparent calc(var(--ol-x4) + var(--ol-width)) var(--ol-x5),
+    var(--ol-c5) var(--ol-x5) calc(var(--ol-x5) + var(--ol-width)),
+    transparent calc(var(--ol-x5) + var(--ol-width)) var(--ol-x6),
+    var(--ol-c6) var(--ol-x6) calc(var(--ol-x6) + var(--ol-width)),
+    transparent calc(var(--ol-x6) + var(--ol-width)));
+}

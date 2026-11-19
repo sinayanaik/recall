@@ -65,6 +65,14 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a6-list-lead.css":
+    "A line that leads into a bullet list sits as close to it as the bullets " +
+    "sit to each other, in Notes, on cards and in Blocks, instead of a full " +
+    "paragraph's gap.",
+  "a5-section-lines.css":
+    "Section lines in Notes: each heading's section indented one small step " +
+    "with a thin line down it, drawn as each block's own border-image so the " +
+    "per-block containment never clips it (src/notes/section-lines.js).",
   "a4-block-scale.css":
     "A Block looks the same on every screen: everything inside it (a code " +
     "panel's badge and padding, a quote's bar, a table's cells) is points × the " +

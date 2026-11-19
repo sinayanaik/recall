@@ -85,6 +85,17 @@ const sharedDefaults = {
   myFilesPadding: "12px",
   // App — dialogs
   dialogCornerRadius: "14px",
+  // Notes — section lines (src/notes/section-lines.js). On unless switched
+  // off; the lengths are "auto", the stylesheet's own (styles/a5-section-lines.css).
+  notesOutline: "on",
+  notesOutlineTop: "auto",
+  notesOutlineColor: "quiet",
+  notesOutlineIndent: "auto",
+  notesOutlineLineWidth: "auto",
+  notesOutlineOffset: "auto",
+  notesOutlineStrength: "auto",
+  // Canvas — the widest a Block grows to by itself (src/documents/block-measure.js).
+  canvasBlockMaxWidth: "auto",
   // Canvas — the type of everything on a Canvas page. Every one of these is a
   // "follow" state by default (inherit / auto / the theme's ladder / the
   // paper), which writes nothing, so a Canvas nobody has styled reads exactly
@@ -511,6 +522,35 @@ export const styleControlGroups = [
     ]
   },
   {
+    // A thin line down each heading's section, which is set one step in —
+    // src/notes/section-lines.js and styles/a5-section-lines.css. "Show" and
+    // "Top level" drive a class on <html> and the depth pass, and "Colour" an
+    // attribute, so all three are written by hand in applyStyleSettings.
+    title: "Section lines",
+    scope: "notes",
+    fields: [
+      {
+        key: "notesOutline", label: "Show", type: "select", options: ["on", "off"],
+        optionLabels: { on: "On — a line down each section", off: "Off" },
+        hint: "Sets the text under each heading one small step in, with a thin line down its left side, so you can see how deep you are in the note. Click a line to fold its section."
+      },
+      {
+        key: "notesOutlineTop", label: "Top level", type: "select", options: ["auto", "h1", "h2", "h3", "h4"],
+        optionLabels: { auto: "Auto — a lone title stays out", h1: "H1", h2: "H2", h3: "H3", h4: "H4" },
+        hint: "The heading level the lines start from; bigger headings are titles, with no line. Auto leaves out a note's title when it is its only heading of that size."
+      },
+      { key: "notesOutlineIndent", label: "Step", type: "text", unit: "px", probe: "width", auto: "0.85em", hint: "How far each level of section is set in. Lines and steps are measured in the Notes text size, so em works too." },
+      { key: "notesOutlineLineWidth", label: "Line thickness", type: "text", unit: "px", probe: "border-top-width", auto: "1px", hint: "Thickness of each line." },
+      { key: "notesOutlineOffset", label: "Line position", type: "text", unit: "px", probe: "width", auto: "0.55em", hint: "Where in its step a line runs, from the left: under the fold arrow of the heading it belongs to." },
+      {
+        key: "notesOutlineColor", label: "Colour", type: "select", options: ["quiet", "accent"],
+        optionLabels: { quiet: "Quiet — the text's colour", accent: "Accent" },
+        hint: "What colour the lines are drawn in."
+      },
+      { key: "notesOutlineStrength", label: "Strength %", type: "text", probe: "number", auto: "20", hint: "How strongly the lines show against the page: 20 is faint, 50 is half way to the colour itself." }
+    ]
+  },
+  {
     title: "Page",
     scope: "notes",
     fields: [
@@ -636,7 +676,10 @@ export const styleControlGroups = [
       lineField("canvasBlockLineHeight", "Line spacing", "Line spacing inside Blocks."),
       { key: "canvasBlockFontWeight", label: "Weight", type: "text", probe: "font-weight", auto: "400", hint: "Text thickness in Blocks: 1 to 1000, or normal/bold. Headings keep their own." },
       { key: "canvasBlockLetterSpacing", label: "Letter spacing", type: "text", unit: "em", probe: "letter-spacing", auto: "0", hint: "Space between letters, in em of the text: 0.02 is a touch wider, -0.01 a touch tighter." },
-      { key: "canvasTableFontScale", label: "Table text size", type: "text", probe: "number", auto: "1", hint: "Tables in Blocks, as a multiple of the words around them — 1 is the same size, 0.85 a little smaller." }
+      { key: "canvasTableFontScale", label: "Table text size", type: "text", probe: "number", auto: "1", hint: "Tables in Blocks, as a multiple of the words around them — 1 is the same size, 0.85 a little smaller." },
+      // Not a variable: src/documents/block-measure.js holds it for the width
+      // a Block grows to (pdf-blocks.js), set by hand in applyStyleSettings.
+      { key: "canvasBlockMaxWidth", label: "Widest a Block grows", type: "text", probe: "number", auto: "62", hint: "How wide a Block grows with its words — pasted text included — as a percent of the page, before it wraps. Code may run to the page's edge. Arrange → Fit to words brings a wider Block back to it." }
     ]
   },
   {
@@ -830,6 +873,11 @@ export const styleCssVariables = {
   notesHeadingH6Scale: "--notes-heading-h6-scale",
   notesFrameRadius: "--notes-frame-radius",
   notesFrameBorder: "--notes-frame-border",
+  // Section lines. notesOutlineStrength is a bare number that becomes "${n}%",
+  // hand-written in applyStyleSettings like hlQuoteInkPercent.
+  notesOutlineIndent: "--notes-outline-step",
+  notesOutlineLineWidth: "--notes-outline-width",
+  notesOutlineOffset: "--notes-outline-offset",
   docBlockFontSize: "--doc-block-font-size",
   docBlockLineHeight: "--doc-block-line-height",
   docCodeFontSize: "--doc-code-font-size",

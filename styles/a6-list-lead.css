@@ -1,0 +1,31 @@
+/* ── A line that leads into a list keeps hold of it ──────────────────────────
+ *
+ * "Things to check:" and the bullets under it are one thought, but they read
+ * as two: a paragraph keeps the browser's own 1em bottom margin (nothing in
+ * styles/ sets one for `p`) and `.rendered ul/ol` adds 0.65em on top
+ * (styles/06-rendered.css), so the two collapsed to a full 1em — almost three
+ * times the 0.35em between one bullet and the next (`li + li`).
+ *
+ * Now a list straight after a paragraph sits as close to it as its bullets sit
+ * to each other, everywhere markdown is drawn: Notes, card faces, Quick Notes,
+ * Blocks on a Canvas or a PDF, and a paragraph inside a list item that leads
+ * into a list of its own. The END of a list keeps its air — the next
+ * paragraph is a new thought.
+ */
+:is(.rendered, .fit-content) p:has(+ :is(ul, ol)) {
+  margin-bottom: 0;
+}
+
+:is(.rendered, .fit-content) p + :is(ul, ol) {
+  margin-top: 0.35em;
+}
+
+/* Shapes text sets every block's margin at (0,3,1) (styles/88-annotations.css),
+   which the rules above lose to, so it is said again at its own strength. */
+.pdf-shape-text .pdf-shape-text-body.rendered p:has(+ :is(ul, ol)) {
+  margin-bottom: 0;
+}
+
+.pdf-shape-text .pdf-shape-text-body.rendered p + :is(ul, ol) {
+  margin-top: 0.35em;
+}

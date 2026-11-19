@@ -16,6 +16,9 @@ import { scheduleNotesCaretCheck } from "../notes/caret.js?v=__BUILD__";
 import { isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { setNotesReadingMode } from "../notes/paged-view.js?v=__BUILD__";
 import { setHeadingNumbersOn } from "../notes/heading-numbers.js?v=__BUILD__";
+import { setNotesSectionLines } from "../notes/section-lines.js?v=__BUILD__";
+import { applyNotesFoldState } from "../render/block-cache.js?v=__BUILD__";
+import { setCanvasBlockMeasure } from "../documents/block-measure.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
 import { defaultStyleProfiles, legacySpacingDefaults, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey, styleScopeById, styleScopeKeys, styleScopes, styleV6Seeds } from "./style-schema.js?v=__BUILD__";
@@ -819,6 +822,22 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // Also a class, not a value: the stylesheet draws the numbers only while it
   // is on <html>, so the switch needs no re-render. See heading-numbers.js.
   setHeadingNumbersOn(settings.headingNumbers !== "off");
+  // Section lines: a class on <html> and the depth of every block, which the
+  // note's own fold pass writes (src/notes/section-lines.js) — so a change to
+  // either is one more pass over the note on screen, not a re-render.
+  if (setNotesSectionLines({ on: settings.notesOutline !== "off", top: settings.notesOutlineTop }) && el.notesView) {
+    applyNotesFoldState(el.notesView);
+  }
+  if (settings.notesOutlineColor === "accent") root.dataset.notesOutlineInk = "accent";
+  else delete root.dataset.notesOutlineInk;
+  // A bare number in storage, a percentage on the page, as --hl-quote-ink;
+  // "auto" removes it so the stylesheet's own strength (per colour) applies.
+  const outlineStrength = numericStyleValue(usable("notesOutlineStrength"));
+  if (outlineStrength == null) root.style.removeProperty("--notes-outline-strength");
+  else root.style.setProperty("--notes-outline-strength", `${Math.max(0, Math.min(100, outlineStrength))}%`);
+  // Not a value on the page at all: the width a Canvas Block grows to, which
+  // the Block code reads (src/documents/block-measure.js). "auto" is its default.
+  setCanvasBlockMeasure(usable("canvasBlockMaxWidth"));
   // The only percent that isn't run through numericStyleValue above, so it's the
   // only one where a non-numeric entry would reach CSS as "abc%".
   root.style.setProperty("--question-fill", `${numericStyleValue(settings.questionFillPercent) ?? numericStyleValue(profileDefaults.questionFillPercent) ?? 58}%`);
