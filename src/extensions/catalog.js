@@ -20,7 +20,7 @@ export const EXTENSIONS = [
     "name": "Recall Web Clipper",
     "version": "2.4.1",
     "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
-    "bytes": 4580689,
+    "bytes": 4580853,
     "files": [
       {
         "path": "README.md",
@@ -64,7 +64,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "content/recall-render.js",
-        "size": 35031
+        "size": 35195
       },
       {
         "path": "icons/icon-128.png",

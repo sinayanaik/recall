@@ -717,6 +717,10 @@
     if (table.parentElement?.classList.contains("markdown-table-wrap")) return table.parentElement;
     const wrapper = document.createElement("div");
     wrapper.className = "markdown-table-wrap";
+    if (table.dataset.outlineDepth !== undefined) {
+      wrapper.dataset.outlineDepth = table.dataset.outlineDepth;
+      delete table.dataset.outlineDepth;
+    }
     table.parentNode.insertBefore(wrapper, table);
     wrapper.appendChild(table);
     return wrapper;

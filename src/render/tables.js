@@ -94,6 +94,15 @@ export function wrapMarkdownTable(table) {
   if (table.parentElement?.classList.contains("markdown-table-wrap")) return table.parentElement;
   const wrapper = document.createElement("div");
   wrapper.className = "markdown-table-wrap";
+  // A table at the top of the notes is a block of its own, set in its
+  // section's step (data-outline-depth, src/notes/section-lines.js). The step is
+  // the TOP-LEVEL node's, and once wrapped that is the wrapper — so it moves
+  // across with the table, or the wrapped table is drawn one step to the left
+  // until the next full pass writes it again.
+  if (table.dataset.outlineDepth !== undefined) {
+    wrapper.dataset.outlineDepth = table.dataset.outlineDepth;
+    delete table.dataset.outlineDepth;
+  }
   table.parentNode.insertBefore(wrapper, table);
   wrapper.appendChild(table);
   return wrapper;

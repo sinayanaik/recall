@@ -256,8 +256,9 @@ function wire() {
   bindInkRailActivation(el.documentInsertMenu, (button, event) => {
     const action = button.dataset.hwAction;
     const keyboard = event?.type === "click" && event.detail === 0;
-    if (action === "add-page") addPage();
-    else if (action === "add-block") addBlock({ keyboard });
+    // (A Canvas page is added from ＋□, ⋯ → Canvas pages and the ＋ Page pill —
+    // not from this menu, which never had an add-page row after f179cd2.)
+    if (action === "add-block") addBlock({ keyboard });
     else if (action === "add-shape") addShapeBlock(button.dataset.blockShape, { keyboard });
     else if (action === "paste-picture") pastePictureFromClipboard();
     else if (action === "paste-blocks") pasteBlocks();
