@@ -38,13 +38,16 @@
 // it is a renumbering: see remapDocumentHighlightPages.
 
 import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, BLANK_PAPER_VERSION, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
-import { canvasPageBoxes, canvasSnapGridFor, canvasWideSheetSetup, nearestLegacyPaper, normalizeSheetSetup, remapPageSetups, sameSheet, sheetDrawKey, sheetLegacyKind, sheetPatternDefaults, sheetSetupForPage } from "./canvas-setup.js?v=__BUILD__";
+import { canvasMeasureBox, canvasPageBox, canvasPageBoxes, canvasSnapGridFor, canvasWideSheetSetup, nearestLegacyPaper, normalizeSheetSetup, remapPageSetups, sameSheet, sheetDrawKey, sheetFit, sheetLegacyKind, sheetPatternDefaults, sheetSetupForPage, validPageBox } from "./canvas-setup.js?v=__BUILD__";
+import { canvasDragLimits, neededPageBox, pageContentRects, samePageBox } from "./canvas-extent.js?v=__BUILD__";
+import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
+import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey } from "./doc-slot.js?v=__BUILD__";
 import { hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
 import { documentBlocks, freshDocumentBlockId, remapDocumentBlockPages, writeDocumentBlocks } from "./pdf-blocks.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlights, freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
 import { deleteLocalDocument, documentEntryMatches, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
-import { openDocumentView } from "./pdf-view.js?v=__BUILD__";
+import { openDocumentView, swapOpenCanvasBytes } from "./pdf-view.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
 import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
@@ -68,11 +71,20 @@ export const NOTEBOOK_MAX_PAGES = 300;
 // (body.canvas-pages-busy, styles/53-handwriting.css).
 let pageChangeRunning = false;
 
+// The fit of a page to what is on it in progress, if one is (see "Pages that
+// grow" below): a page change waits for it rather than being refused. Unlike a
+// page change it renumbers nothing, so the pages stay pressable throughout —
+// the pen is never held up by a page growing under it.
+let extentFitRunning = null;
+
 export function notebookPagesBusy() {
   return pageChangeRunning;
 }
 
 async function runCanvasPageChange(change) {
+  // A page fitting to what is on it finishes first: it renumbers nothing, and
+  // the change after it reads the file it wrote.
+  if (extentFitRunning) await extentFitRunning.catch(() => {});
   if (pageChangeRunning) {
     showToast("Still making the last page change — one moment", "info");
     return false;
@@ -133,7 +145,10 @@ function notebookSheetState(meta = state.meta) {
   const pageSetups = notebook?.pageSetups && typeof notebook.pageSetups === "object" && Object.keys(notebook.pageSetups).length
     ? notebook.pageSetups
     : null;
-  return { setup, pageSetups };
+  const pageBoxes = notebook?.pageBoxes && typeof notebook.pageBoxes === "object" && Object.keys(notebook.pageBoxes).length
+    ? notebook.pageBoxes
+    : null;
+  return { setup, pageSetups, pageBoxes };
 }
 
 // The setup page `n` is drawn with, complete — its own, the Canvas's, or the
@@ -156,6 +171,30 @@ export function notebookPageBoxes(meta = state.meta) {
   return canvasPageBoxes(meta?.notebook);
 }
 
+// Where page `n` reaches now: grown past its size, Boundless, or as set up.
+export function notebookPageBox(n, meta = state.meta) {
+  return canvasPageBox(meta?.notebook, Number(n) || 1);
+}
+
+// The box page `n` is measured by — its size as set up, whatever it has grown
+// to (canvas-setup.js, canvasMeasureBox): the widest a Block grows and the
+// width a dropped picture lands at stay the page's own.
+export function notebookPageMeasureBox(n, meta = state.meta) {
+  return canvasMeasureBox(meta?.notebook, Number(n) || 1);
+}
+
+// "fixed", "grow" or "boundless" for page `n`.
+export function notebookPageFit(n, meta = state.meta) {
+  if (!hasNotebook(meta)) return "fixed";
+  return sheetFit(notebookPageSetup(Number(n) || 1, meta));
+}
+
+// How far a drag may carry something on page `n` (canvas-extent.js): the page
+// itself, unless the page grows or is Boundless.
+export function notebookDragLimits(n, box) {
+  return canvasDragLimits(notebookPageFit(n), box);
+}
+
 // The squares a box dragged on page `page` settles onto, or null.
 export function canvasSnapGrid(page, meta = state.meta) {
   if (!hasNotebook(meta)) return null;
@@ -165,13 +204,141 @@ export function canvasSnapGrid(page, meta = state.meta) {
 // The page setups straight onto the record, with no new bytes — for the
 // changes that move a setup between pages without changing what any page
 // looks like.
-function writeNotebookSheetState(setup, pageSetups) {
+function writeNotebookSheetState(setup, pageSetups, pageBoxes = undefined) {
   const notebook = { ...state.meta.notebook };
   if (setup) notebook.setup = setup;
   else delete notebook.setup;
   if (pageSetups && Object.keys(pageSetups).length) notebook.pageSetups = pageSetups;
   else delete notebook.pageSetups;
+  if (pageBoxes !== undefined) {
+    if (pageBoxes && Object.keys(pageBoxes).length) notebook.pageBoxes = pageBoxes;
+    else delete notebook.pageBoxes;
+  }
   state.meta = { ...state.meta, notebook };
+}
+
+// ── Pages that grow, and Boundless pages ───────────────────────────────────
+//
+// A page set up to grow as needed, or Boundless, reaches as far as what is on
+// it (src/documents/canvas-extent.js). Where it reaches is kept on the record
+// as `pageBoxes` ({ "<page>": [x0, y0, x1, y1] }, only for a page that reaches
+// past the size it is set up at), because the bytes are drawn from it: a
+// device that has the record and not the file draws the same file again.
+//
+// `boxSha` is the hash of the bytes last drawn with those boxes. A build from
+// before pages grew knows nothing of `pageBoxes` and, re-making the file from
+// the record, draws every page at its set size under the same record; the
+// hash it stamps then differs from `boxSha`, which is how this build knows to
+// draw them again (ensureNotebookDocument).
+
+// The Canvas's marks and Blocks, page by page — the Canvas's own, whichever
+// part is in focus.
+function canvasRecordsByPage() {
+  const byPage = new Map();
+  const add = (key, record) => {
+    const page = Number(record?.page) || 0;
+    if (!page) return;
+    if (!byPage.has(page)) byPage.set(page, { marks: [], blocks: [] });
+    byPage.get(page)[key].push(record);
+  };
+  recordsForSurface(state.meta?.pdfHighlights, DOC_SLOT_NOTEBOOK, null).forEach((record) => add("marks", record));
+  recordsForSurface(state.meta?.pdfBlocks, DOC_SLOT_NOTEBOOK, null).forEach((block) => add("blocks", block));
+  return byPage;
+}
+
+// Every page's box as what is on it asks, for a record as it stands (or with
+// the setups about to be written): only the pages reaching past their size.
+// Null when none do.
+function neededNotebookPageBoxes(record = state.meta?.notebook) {
+  const pages = Number(record?.pages) || 0;
+  if (!pages) return null;
+  const byPage = canvasRecordsByPage();
+  const held = record?.pageBoxes && typeof record.pageBoxes === "object" ? record.pageBoxes : {};
+  const out = {};
+  for (let n = 1; n <= pages; n += 1) {
+    const setup = sheetSetupForPage(record, n);
+    if (sheetFit(setup) === "fixed") continue;
+    const on = byPage.get(n) || { marks: [], blocks: [] };
+    const box = neededPageBox(setup, pageContentRects(on.marks, on.blocks), validPageBox(held[String(n)]));
+    if (!samePageBox(box, canvasMeasureBox(record, n))) out[String(n)] = box;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function samePageBoxes(a, b) {
+  const x = a && typeof a === "object" ? a : {};
+  const y = b && typeof b === "object" ? b : {};
+  const keys = new Set([...Object.keys(x), ...Object.keys(y)]);
+  for (const key of keys) {
+    if (!samePageBox(x[key] || null, y[key] || null)) return false;
+  }
+  return true;
+}
+
+// Whether any page of the Canvas grows or is Boundless — the cheap question
+// every edit asks before it asks for more.
+function canvasHasGrowingPages(record = state.meta?.notebook) {
+  if (!record) return false;
+  const fits = (raw) => raw && typeof raw === "object" && (raw.fit === "grow" || raw.fit === "boundless");
+  if (fits(record.setup)) return true;
+  return Boolean(record.pageSetups && typeof record.pageSetups === "object" && Object.values(record.pageSetups).some(fits));
+}
+
+// Each page brought to the box what is on it asks: one new file for every
+// page that changed, shown in place (swapOpenCanvasBytes) — the pages that did
+// not change are not touched. Resolves true when a page moved its edges.
+async function applyCanvasPageExtents() {
+  if (!hasNotebook()) return false;
+  const record = state.meta.notebook;
+  const next = neededNotebookPageBoxes(record);
+  const held = notebookSheetState().pageBoxes;
+  if (samePageBoxes(next, held)) return false;
+  return writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), pageBoxes: next, show: "in-place", uploadLater: true });
+}
+
+// ── ...asked for after every edit, once the hand is off the page ─────────
+//
+// A stroke, a Block dropped, typed into or deleted, a shape drawn, an undo:
+// each asks, and the asking waits until nothing is being drawn, dragged or
+// typed — the page is redrawn under the reader only between gestures. `soon`
+// is the end of a gesture (a drop): no reason to wait longer than a frame.
+const EXTENT_FIT_DELAY_MS = 450;
+let extentFitTimer = 0;
+let liveGestureCheck = () => false;
+
+// What counts as the hand still on the page beyond the pen: a Block being
+// dragged, resized or typed into. Handed in by src/main.js, which reaches
+// src/documents/pdf-blocks.js (that module imports this one).
+export function setCanvasGestureCheck(fn) {
+  liveGestureCheck = typeof fn === "function" ? fn : () => false;
+}
+
+export function scheduleCanvasExtentFit({ soon = false } = {}) {
+  if (!canvasHasGrowingPages()) return;
+  clearTimeout(extentFitTimer);
+  extentFitTimer = setTimeout(runCanvasExtentFit, soon ? 60 : EXTENT_FIT_DELAY_MS);
+}
+
+function runCanvasExtentFit() {
+  extentFitTimer = 0;
+  if (!canvasHasGrowingPages()) return;
+  let busy = Boolean(extentFitRunning);
+  try {
+    busy = busy || inkPenIsDown() || pageChangeRunning || Boolean(liveGestureCheck());
+  } catch (_) {
+    busy = false;
+  }
+  if (busy) {
+    // Quietly: a fit is not something the reader asked for, so it is simply
+    // asked again in a moment.
+    extentFitTimer = setTimeout(runCanvasExtentFit, EXTENT_FIT_DELAY_MS);
+    return;
+  }
+  extentFitRunning = applyCanvasPageExtents()
+    .catch((error) => console.warn("Could not fit the Canvas's pages to what is on them", error))
+    .finally(() => {
+      extentFitRunning = null;
+    });
 }
 
 // What every page looks like, in order — two records with the same answer
@@ -179,7 +346,7 @@ function writeNotebookSheetState(setup, pageSetups) {
 function notebookDrawnPages(record) {
   const count = Number(record?.pages) || 0;
   const keys = [];
-  for (let n = 1; n <= count; n += 1) keys.push(sheetDrawKey(sheetSetupForPage(record, n)));
+  for (let n = 1; n <= count; n += 1) keys.push(`${sheetDrawKey(sheetSetupForPage(record, n))}@${canvasPageBox(record, n).join(",")}`);
   return keys.join("|");
 }
 
@@ -215,6 +382,9 @@ async function applyNotebookPageSetup(setup, { page = null, all = false } = {}) 
     if (!Object.keys(nextPageSetups).length) nextPageSetups = null;
   }
   const after = { ...state.meta.notebook, paper, setup: nextSetup, pageSetups: nextPageSetups };
+  // Each page that now grows, or is Boundless, reaches as far as what is on
+  // it; a page set back to a size of its own reaches no further than it.
+  after.pageBoxes = neededNotebookPageBoxes(after);
   if (notebookDrawnPages(after) === notebookDrawnPages(state.meta.notebook)) {
     // Nothing on screen changes. The record may still be tidier — a page's own
     // setup that now matches the Canvas — and that is saved without new bytes.
@@ -225,7 +395,7 @@ async function applyNotebookPageSetup(setup, { page = null, all = false } = {}) 
     }
     return false;
   }
-  return writeNotebookPdf({ pages, paper, setup: nextSetup, pageSetups: nextPageSetups });
+  return writeNotebookPdf({ pages, paper, setup: nextSetup, pageSetups: nextPageSetups, pageBoxes: after.pageBoxes });
 }
 
 // Where this deck's notebook bytes are filed on the device. One row per
@@ -240,14 +410,27 @@ function notebookStoreKey() {
 // device copy is written BEFORE the upload, because it is the copy the reader is
 // about to draw on and the one that survives being offline. An upload that fails
 // leaves a perfectly usable notebook that syncs later.
-async function writeNotebookPdf({ pages, paper, setup = undefined, pageSetups = undefined, reopen = true }) {
+//
+// `show` is what the reader sees of it: "reopen" puts the new file on screen
+// the way opening it does (a page added, moved or torn out moves every page
+// after it); "in-place" swaps the bytes under the pages already there and
+// redraws only the pages whose size changed (a page growing to what is on it,
+// src/documents/pdf-view.js swapOpenCanvasBytes); "none" leaves the screen to
+// the caller. `uploadLater` holds the upload back until the pages stop
+// growing for a moment, so a hand writing down a page that grows every few
+// lines does not send the whole file up each time.
+async function writeNotebookPdf({ pages, paper, setup = undefined, pageSetups = undefined, pageBoxes = undefined, reopen = true, show = reopen ? "reopen" : "none", uploadLater = false }) {
   // The page setups the record holds now, unless the caller is changing them —
   // so adding, duplicating or tearing out a page keeps every page's own setup.
   const held = notebookSheetState();
   const sheetSetup = setup === undefined ? held.setup : (setup || null);
   const sheetPageSetups = pageSetups === undefined ? held.pageSetups : (pageSetups && Object.keys(pageSetups).length ? pageSetups : null);
-  const file = blankPdfFile({ pages, paper, setup: sheetSetup, pageSetups: sheetPageSetups, name: state.deckTitle || "handwritten-notes" });
+  const sheetPageBoxes = pageBoxes === undefined ? held.pageBoxes : (pageBoxes && Object.keys(pageBoxes).length ? pageBoxes : null);
+  const file = blankPdfFile({ pages, paper, setup: sheetSetup, pageSetups: sheetPageSetups, pageBoxes: sheetPageBoxes, name: state.deckTitle || "handwritten-notes" });
   const hash = await sha256(file);
+  // Where every page reached on screen before, for the in-place swap: it
+  // redraws only the pages whose box is not what it was.
+  const boxesBefore = notebookPageBoxes();
   // ── meta first, then the save, then the bytes ────────────────────────────
   //
   // Not an arbitrary order — it is the only one that works, and it is the one
@@ -302,7 +485,11 @@ async function writeNotebookPdf({ pages, paper, setup = undefined, pageSetups = 
   };
   // The setups the bytes were drawn from, in the same write as the bytes' hash:
   // a device that has the record and not the file draws it again from these.
-  writeNotebookSheetState(sheetSetup, sheetPageSetups);
+  writeNotebookSheetState(sheetSetup, sheetPageSetups, sheetPageBoxes);
+  // ...and which bytes were drawn knowing where the pages reach (see the note
+  // on pages that grow, above).
+  if (sheetPageBoxes) state.meta.notebook.boxSha = hash;
+  else delete state.meta.notebook.boxSha;
   if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
     showToast("Could not save this file on your device", "error");
     return false;
@@ -321,9 +508,65 @@ async function writeNotebookPdf({ pages, paper, setup = undefined, pageSetups = 
   // window of seconds on a real connection — long enough to look broken, and
   // long enough for the reader to press ＋ Page again into it. The device copy
   // is already what the record names, so the reopen reads it from here.
-  if (reopen) await openDocumentView({ force: true, slot: DOC_SLOT_NOTEBOOK });
-  uploadNotebookBytes({ file, hash, previous, deckLocalId: state.localDeckId });
+  if (show === "in-place") {
+    // In place when the Canvas is the paper on the stage; otherwise the next
+    // look at it opens the new file, as any page change does.
+    const swapped = await swapOpenCanvasBytes({ blob: file, sha256: hash, before: boxesBefore });
+    if (swapped === "reopen") await openDocumentView({ force: true, slot: DOC_SLOT_NOTEBOOK });
+  } else if (show === "reopen") {
+    await openDocumentView({ force: true, slot: DOC_SLOT_NOTEBOOK });
+  }
+  if (uploadLater) holdNotebookUpload({ file, hash, previous, deckLocalId: state.localDeckId });
+  else {
+    const pending = takeHeldNotebookUpload();
+    uploadNotebookBytes({ file, hash, previous: carriedPrevious(previous, pending), deckLocalId: state.localDeckId });
+  }
   return true;
+}
+
+// ── An upload held back while a page grows ─────────────────────────────────
+//
+// Only the latest file goes up. The copy it replaces in the cloud is the one
+// the FIRST held upload was replacing — the files between were never uploaded
+// — so that one is carried forward, or it would be left in the bucket for good.
+const HELD_UPLOAD_MS = 4000;
+let heldUpload = null;
+let heldUploadTimer = 0;
+
+const hasLocator = (where) => Boolean(where && (where.driveId || where.path || where.s3Key));
+
+function carriedPrevious(previous, pending) {
+  if (hasLocator(previous) || !pending || !hasLocator(pending.previous)) return previous;
+  return pending.previous;
+}
+
+function takeHeldNotebookUpload() {
+  clearTimeout(heldUploadTimer);
+  heldUploadTimer = 0;
+  const pending = heldUpload;
+  heldUpload = null;
+  return pending;
+}
+
+function holdNotebookUpload(upload) {
+  const pending = takeHeldNotebookUpload();
+  const same = pending && pending.deckLocalId === upload.deckLocalId;
+  heldUpload = { ...upload, previous: same ? carriedPrevious(upload.previous, pending) : upload.previous };
+  // A held upload for another file goes up now, as it would have.
+  if (pending && !same) uploadNotebookBytes(pending);
+  heldUploadTimer = setTimeout(flushHeldNotebookUpload, HELD_UPLOAD_MS);
+}
+
+export function flushHeldNotebookUpload() {
+  const pending = takeHeldNotebookUpload();
+  if (pending) uploadNotebookBytes(pending);
+}
+
+if (typeof document !== "undefined") {
+  // Leaving the app is the last chance to send it before the next sync would.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushHeldNotebookUpload();
+  });
 }
 
 // The upload, behind the reader rather than in front of them. Nothing waits
@@ -426,6 +669,14 @@ export async function ensureNotebookDocument({ paper = null, setup = null } = {}
     if (Number(state.meta.notebook.paperV || 1) < BLANK_PAPER_VERSION) {
       return (await writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), reopen: false })) && "wrote";
     }
+    // Pages that reach past their size, in bytes drawn by a build that did not
+    // know they do (see the note on pages that grow): drawn again, reaching.
+    if (notebookSheetState().pageBoxes && state.meta.notebook.boxSha !== state.meta.notebook.sha256) {
+      return (await writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), reopen: false })) && "wrote";
+    }
+    // ...and a page whose box no longer fits what is on it — written to by a
+    // device whose build let it grow no further — is fitted once it is open.
+    scheduleCanvasExtentFit();
     return "kept";
   }
   // ── There is no refusal here any more ────────────────────────────────────
@@ -603,6 +854,9 @@ function remapNotebookPages(move) {
   // keeps its setup wherever it goes, and a page torn out takes it with it.
   const sheets = notebookSheetState();
   if (sheets.pageSetups) writeNotebookSheetState(sheets.setup, remapPageSetups(sheets.pageSetups, move));
+  // ...and where each page reaches, by the same rule: a page that has grown
+  // keeps its size wherever it goes.
+  if (sheets.pageBoxes) writeNotebookSheetState(notebookSheetState().setup, notebookSheetState().pageSetups, remapPageSetups(sheets.pageBoxes, move));
   try {
     canvasPagesRemapped?.(move);
   } catch (error) {
@@ -666,6 +920,12 @@ async function copyNotebookPage(pageNumber) {
     return on > n ? on + 1 : on;
   });
   copyNotebookPageSetup(n, n + 1);
+  // The copy reaches as far as the page it copies: the same things are on it.
+  const grown = notebookSheetState().pageBoxes?.[String(n)];
+  if (grown) {
+    const sheets = notebookSheetState();
+    writeNotebookSheetState(sheets.setup, sheets.pageSetups, { ...sheets.pageBoxes, [String(n + 1)]: grown });
+  }
   const ids = new Map();
   const groups = new Map();
   const copyGroupId = (group) => {
@@ -717,7 +977,8 @@ async function swapNotebookPage(pageNumber, delta) {
   const n = Number(pageNumber);
   const to = n + Math.sign(Number(delta) || 0);
   if (!(n >= 1 && n <= pages) || !(to >= 1 && to <= pages) || to === n) return false;
-  const differ = !sameSheet(notebookPageSetup(n), notebookPageSetup(to));
+  const differ = !sameSheet(notebookPageSetup(n), notebookPageSetup(to))
+    || !samePageBox(notebookPageBox(n), notebookPageBox(to));
   const before = JSON.stringify(notebookSheetState().pageSetups || null);
   remapNotebookPages((record) => {
     const on = Number(record?.page) || 0;
@@ -781,7 +1042,7 @@ async function applyNotebookPaper(kind) {
   // paper colour, with the paper's own lines.
   const onto = (raw) => {
     const was = normalizeSheetSetup(raw);
-    const next = normalizeSheetSetup({ ...sheetPatternDefaults(paper), w: was.w, h: was.h, paper: was.paper });
+    const next = normalizeSheetSetup({ ...sheetPatternDefaults(paper), w: was.w, h: was.h, paper: was.paper, fit: was.fit });
     return sheetLegacyKind(next) ? null : next;
   };
   const setup = onto(canvasWideSheetSetup(state.meta.notebook));

@@ -686,8 +686,8 @@ try {
     check("the Canvas opened", false, canvas.error);
   } else {
     check("the Canvas fixture has handwriting on it", canvas.inkMarks >= 1, `${canvas.inkMarks} ink mark(s)`);
-    check("Canvas ⇓: one export, the PDF",
-      canvas.menuRows.length === 1 && canvas.menuRows[0] === "doc:pages-pdf", JSON.stringify(canvas.menuRows));
+    check("Canvas ⇓: two exports, the PDF and the web page",
+      canvas.menuRows.length === 2 && canvas.menuRows[0] === "doc:pages-pdf" && canvas.menuRows[1] === "doc:canvas-html", JSON.stringify(canvas.menuRows));
     check("Canvas PDF: it is called a Canvas in the file name",
       / - canvas$/.test(canvas.fileName), canvas.fileName);
     check("Canvas highlights: handwriting with no note on it is not exported as dozens of pictures",

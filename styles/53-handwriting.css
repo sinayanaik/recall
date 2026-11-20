@@ -1002,3 +1002,9 @@ body.canvas-pages-busy :is(#documentStage, #documentStageAlt)[data-doc-slot="not
 body.canvas-page-numbers-off :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page::after {
   content: none;
 }
+
+/* A Boundless page has no foot to number: it reaches as far as what is on it
+   (src/documents/canvas-extent.js), and its PDF is cut to that, unnumbered. */
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page.is-boundless::after {
+  content: none;
+}

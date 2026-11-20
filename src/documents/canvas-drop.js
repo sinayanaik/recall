@@ -41,8 +41,7 @@ import { canvasBlockMeasurePercent, canvasDropWidthPercent } from "./block-measu
 import { clampTopLeft, flowItemExtent, FLOW_PAIR_GAP } from "./canvas-flow.js?v=__BUILD__";
 import { blockPageBounds, blocksForPaper } from "./pdf-blocks.js?v=__BUILD__";
 import { snapMove } from "../render/snap-guides.js?v=__BUILD__";
-import { notebookPageSetup } from "./notebook.js?v=__BUILD__";
-import { sheetBox } from "./canvas-setup.js?v=__BUILD__";
+import { notebookPageBox } from "./notebook.js?v=__BUILD__";
 import { documentHighlightAtPoint } from "./pdf-highlights.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 import { initNotesGrip, notesElementItem, notesGripTarget } from "./notes-grip.js?v=__BUILD__";
@@ -73,7 +72,9 @@ function canvasIsBeside() {
 // paper to ask.
 function canvasPageFrame(pageEl) {
   const page = Number(pageEl.dataset.pageNumber) || 1;
-  const box = sheetBox(notebookPageSetup(page));
+  // Where the page reaches — grown, or Boundless — since that is the box on
+  // screen (notebookPageBox).
+  const box = notebookPageBox(page);
   const rect = pageEl.getBoundingClientRect();
   if (!rect.width || !rect.height) return null;
   return { page, box, rect, scale: rect.width / (box[2] - box[0]) };

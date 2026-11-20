@@ -231,6 +231,15 @@ export function freshDocumentHighlightId() {
 // and every printed notes page in the document, and is far too much to do per
 // keystroke-pause or once per page as it paints. Both of the callers that
 // decline it arrange for exactly one notify of their own afterwards.
+// Told after every write of the marks, notified or not — what a page that
+// grows to what is on it asks after (src/documents/notebook.js,
+// scheduleCanvasExtentFit). Registered by src/main.js.
+let highlightsWrittenHook = () => {};
+
+export function setDocumentHighlightsWrittenHook(fn) {
+  highlightsWrittenHook = typeof fn === "function" ? fn : () => {};
+}
+
 function commitDocumentHighlights(next, { notify = true } = {}) {
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
   const whole = wholeHighlightArray(next);
@@ -246,6 +255,11 @@ function commitDocumentHighlights(next, { notify = true } = {}) {
   else delete state.meta.deletedHighlightIds;
   scheduleDeckAutosave();
   if (notify) notifyHighlightsChanged();
+  try {
+    highlightsWrittenHook();
+  } catch (error) {
+    console.warn("A hook on the marks being written failed", error);
+  }
 }
 
 // What to CALL a highlight in a list — the Highlights panel, an export, the

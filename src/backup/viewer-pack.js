@@ -35,7 +35,7 @@
 // stands in, so a backup never fails because of its viewer.
 
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { sheetBox, sheetOps, sheetSetupForPage, sheetSvg } from "../documents/canvas-setup.js?v=__BUILD__";
+import { canvasPageBox, sheetFit, sheetOps, sheetSetupForPage, sheetSvg } from "../documents/canvas-setup.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK } from "../documents/doc-slot.js?v=__BUILD__";
 import { PDF_PRIMARY_ID, deckPdfs, recordsForSurface } from "../documents/pdf-multi.js?v=__BUILD__";
 import { normalizeBlockStyle, BLOCK_FILL_HEX } from "../documents/block-style.js?v=__BUILD__";
@@ -166,16 +166,20 @@ function svgInner(svg) {
 // Everything on page `n` of the Canvas: the paper, the pen, the shapes and the
 // connectors as one SVG, and the Blocks and typed words as boxes to lay over it.
 // Coordinates are the page's own points, from its top-left corner.
-export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [] } = {}) {
+//
+// The page is where it reaches — grown past its size, or Boundless
+// (src/documents/canvas-extent.js) — and `box`, when given, is the part of it
+// to draw: a Boundless page cut to what is on it, for the web page export.
+export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [], box = null } = {}) {
   const setup = sheetSetupForPage(record, n);
-  const [x0, , x1, y1] = sheetBox(setup);
-  const [, y0] = sheetBox(setup);
+  const reach = canvasPageBox(record, n);
+  const [x0, y0, x1, y1] = Array.isArray(box) && box.length === 4 ? box.map(Number) : reach;
   const w = x1 - x0;
   const h = y1 - y0;
   const paperHex = rgbHex(sheetOps(setup).paper);
   const toPoint = ([x, y]) => [x - x0, y1 - y];
   const parts = [`<svg class="viewer-page-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgNum(w)} ${svgNum(h)}" preserveAspectRatio="none">`];
-  parts.push(`<g class="viewer-paper">${svgInner(sheetSvg(setup))}</g>`);
+  parts.push(`<g class="viewer-paper">${svgInner(sheetSvg(setup, { box: reach, crop: [x0, y0, x1, y1] }))}</g>`);
 
   const recolor = paperRecolor(paperHex);
   const boxes = [];
@@ -252,7 +256,71 @@ export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [
   });
 
   parts.push("</svg>");
-  return { w, h, svg: parts.join(""), boxes, paper: paperHex };
+  return { w, h, svg: parts.join(""), boxes, paper: paperHex, boundless: sheetFit(setup) === "boundless" };
+}
+
+// ── A Canvas page as HTML, for the web page export ───────────────────────
+//
+// The page drawn above (with each box's markdown already rendered to `html`
+// and each picture's `src` the picture itself), as one <section> that lays
+// itself out with no script: every length is in points of the page through
+// `--u`, one point of the page on screen, which the export's stylesheet
+// (src/export/canvas-html.js) makes the page's own width over its width in
+// points with container units. Opened in a browser, in a phone's file preview
+// or printed, the page is its own size or the screen's, and everything on it
+// where it was.
+const MARKUP_SAFE_CSS = /^[#\w(),.%\s-]{1,64}$/;
+
+function markupAttr(text) {
+  return String(text ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+function markupCss(value, fallback = "") {
+  const text = String(value ?? "").trim();
+  return text && MARKUP_SAFE_CSS.test(text) ? text : fallback;
+}
+
+export function canvasPageMarkup(page, { number = "", label = "" } = {}) {
+  const w = Number(page?.w) || 595;
+  const h = Number(page?.h) || 842;
+  const pct = (v, of) => `${svgNum(((Number(v) || 0) / of) * 100)}%`;
+  const pt = (v) => `calc(var(--u) * ${svgNum(Number(v) || 0)})`;
+  const out = [`<section class="cx-page" aria-label="${markupAttr(label)}" style="--w:${svgNum(w)};aspect-ratio:${svgNum(w)} / ${svgNum(h)};background:${markupCss(page?.paper, "#ffffff")}">`, String(page?.svg || "")];
+  (page?.boxes || []).forEach((box) => {
+    const rot = box.rot ? `transform:rotate(${svgNum(-Number(box.rot))}deg);` : "";
+    const place = `left:${pct(box.x, w)};top:${pct(box.y, h)};width:${pct(box.w, w)};height:${pct(box.h, h)};${rot}`;
+    const align = ["left", "center", "right", "justify"].includes(box.align) ? box.align : "left";
+    if (box.kind === "words") {
+      const color = markupCss(box.color);
+      out.push(`<div class="cx-words" style="${place}font-size:${pt(box.size || 12)};text-align:${align};${box.bold ? "font-weight:700;" : ""}${color ? `color:${color};` : ""}"><div class="rendered">${box.html || ""}</div></div>`);
+      return;
+    }
+    const z = `z-index:${2 + (Number(box.z) || 0)};`;
+    if (box.kind === "picture") {
+      out.push(`<div class="cx-box is-picture" style="${place}${z}">${box.src
+        ? `<img src="${markupAttr(box.src)}" alt="${markupAttr(box.alt || "")}" decoding="async">`
+        : "<span class=\"cx-missing\">[a picture that could not be found]</span>"}</div>`);
+      return;
+    }
+    // A side with no padding of its own has the app's default.
+    const pad = [6, 8, 6, 8].map((fallback, i) => {
+      const v = box.pad && box.pad[i];
+      return pt(v === null || v === undefined || v === "" ? fallback : v);
+    }).join(" ");
+    const frame = box.outline ? " is-shaped" : box.frame === "none" ? "" : box.frame === "outline" ? " is-outline" : " is-card";
+    const fill = markupCss(box.fill);
+    const valign = box.valign === "middle" || box.valign === "center" ? "center" : box.valign === "bottom" ? "flex-end" : "flex-start";
+    const style = `${place}${z}${fill && !box.outline ? `background:${fill};` : ""}padding:${pad};font-size:${pt(box.size || 11)};text-align:${align};justify-content:${valign};`;
+    let outline = "";
+    if (box.outline) {
+      const paint = fill && fill !== "transparent" ? fill : "none";
+      outline = `<svg viewBox="0 0 ${svgNum(box.w)} ${svgNum(box.h)}" preserveAspectRatio="none" aria-hidden="true"><path d="${markupAttr(box.outline.edge)}" fill="${paint}" stroke="#4b5563" stroke-width="1" vector-effect="non-scaling-stroke"/>${box.outline.marks ? `<path d="${markupAttr(box.outline.marks)}" fill="none" stroke="#4b5563" stroke-width="1" vector-effect="non-scaling-stroke"/>` : ""}</svg>`;
+    }
+    out.push(`<div class="cx-box${frame}" style="${style}">${outline}<div class="rendered">${box.html || ""}</div></div>`);
+  });
+  if (number && !page?.boundless) out.push(`<div class="cx-number">${escapeHtml(number)}</div>`);
+  out.push("</section>");
+  return out.join("");
 }
 
 function shapePathSvg(prim, toPoint) {

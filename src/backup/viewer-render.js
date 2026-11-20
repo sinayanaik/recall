@@ -38,7 +38,7 @@ function viewerRaceTimeout(promise, ms) {
   ]);
 }
 
-async function renderBatch(items) {
+async function renderBatch(items, { livePictures = false } = {}) {
   const root = el.printRoot;
   const holder = document.createElement("div");
   holder.className = "viewer-render-batch";
@@ -53,7 +53,10 @@ async function renderBatch(items) {
     // A live picture of a spot of a PDF or the Canvas (`pdfref:`) is drawn from
     // the file that is OPEN, not the file being written — rendered here it
     // would show the wrong file's page. The viewer says what it was instead.
-    node.querySelectorAll('img[src^="pdfref:"]').forEach((img) => {
+    // ...unless the file being written IS the open one (the Canvas's web page
+    // export): then the render draws each as a still of that spot, the way
+    // every export does (mountPdfRegionPicture).
+    if (!livePictures) node.querySelectorAll('img[src^="pdfref:"]').forEach((img) => {
       const [, page, , pdfId] = String(img.getAttribute("src")).split(":");
       const label = document.createElement("span");
       label.className = "viewer-missing-picture";
@@ -119,7 +122,10 @@ async function settleCodeHighlighting(holder) {
 
 // The renderer viewer-pack.js calls, or null where there is no page to render
 // on (the Node check).
-export function createAppViewerRenderer() {
+//
+// `livePictures`: a picture of a spot of a PDF or the Canvas is drawn from the
+// file that is open, as a still — only right when that is the file written.
+export function createAppViewerRenderer({ livePictures = false } = {}) {
   if (typeof document === "undefined" || !el?.printRoot || typeof markdownToSafeHtml !== "function") return null;
   if (typeof globalThis.marked === "undefined" || typeof globalThis.DOMPurify === "undefined") return null;
   let diagramsReady = null;
@@ -139,7 +145,7 @@ export function createAppViewerRenderer() {
       try {
         for (let start = 0; start < list.length; start += VIEWER_RENDER_BATCH) {
           const batch = list.slice(start, start + VIEWER_RENDER_BATCH);
-          const html = await renderBatch(batch);
+          const html = await renderBatch(batch, { livePictures });
           batch.forEach((item, i) => result.set(item.key, html[i] || ""));
           await yieldToPage();
         }

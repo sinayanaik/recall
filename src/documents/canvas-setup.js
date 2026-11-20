@@ -108,6 +108,14 @@ export const SHEET_MARGIN_COLORS = [
   { id: "grey", label: "Grey", hex: "#b8b8b8" }
 ];
 export const SHEET_DASHES = ["solid", "dashed", "dotted"];
+
+// How a page's size behaves (src/documents/canvas-extent.js):
+//   fixed      the size it is set up at, as every page has always been
+//   grow       that size at least, and longer or wider when what is on it
+//              reaches its right or bottom edge ("Grows as needed")
+//   boundless  no size: what is on it, and room round it, in every direction
+//              ("Boundless"). Its own w × h is only where it starts.
+export const SHEET_FITS = ["fixed", "grow", "boundless"];
 export const SHEET_DASH_LABEL = { solid: "Solid", dashed: "Dashed", dotted: "Dotted" };
 
 const sheetMmPt = (mm) => sheetRound(mm * SHEET_PT_PER_MM);
@@ -270,14 +278,19 @@ export function nearestLegacyPaper(pattern) {
 // does not know still draws as the nearest thing this one can.
 export function normalizeSheetSetup(raw, fallbackPattern = "grid") {
   const src = raw && typeof raw === "object" ? raw : {};
-  const pattern = SHEET_PATTERNS.includes(src.pattern) ? src.pattern : (SHEET_PATTERNS.includes(fallbackPattern) ? fallbackPattern : "grid");
+  const fit = SHEET_FITS.includes(src.fit) ? src.fit : "fixed";
+  let pattern = SHEET_PATTERNS.includes(src.pattern) ? src.pattern : (SHEET_PATTERNS.includes(fallbackPattern) ? fallbackPattern : "grid");
+  // A page with no edges has no foot for a summary box nor a top for a title
+  // band: Cornell paper on it is ruled paper.
+  if (fit === "boundless" && pattern === "cornell") pattern = "ruled";
   const d = sheetPatternDefaults(pattern);
   const w = sheetNumber(src.w, d.w, SHEET_SIZE_MIN, SHEET_SIZE_MAX);
   const h = sheetNumber(src.h, d.h, SHEET_SIZE_MIN, SHEET_SIZE_MAX);
   const minPitch = pattern === "dots"
     ? Math.max(SHEET_SPACING_MIN.dots, Math.sqrt((w * h) / SHEET_MAX_DOTS))
     : SHEET_SPACING_MIN[pattern];
-  const marginsIn = src.margins && typeof src.margins === "object" ? src.margins : {};
+  // ...and no margins: the lines run to wherever the page reaches.
+  const marginsIn = fit === "boundless" ? SHEET_ZERO_MARGINS : (src.margins && typeof src.margins === "object" ? src.margins : {});
   const margins = {
     top: sheetNumber(marginsIn.top, d.margins.top, 0, Math.max(0, (h / 2) - 10)),
     right: sheetNumber(marginsIn.right, d.margins.right, 0, Math.max(0, (w / 2) - 10)),
@@ -307,7 +320,8 @@ export function normalizeSheetSetup(raw, fallbackPattern = "grid") {
       color: sheetHex(lineIn.color, d.marginLine.color)
     },
     cue: sheetNumber(src.cue, d.cue, 0, Math.max(0, areaW - 20)),
-    summary: sheetNumber(src.summary, d.summary, 0, Math.max(0, areaH - 20))
+    summary: sheetNumber(src.summary, d.summary, 0, Math.max(0, areaH - 20)),
+    fit
   };
 }
 
@@ -328,6 +342,9 @@ export function sheetDrawKey(setup) {
   } else if (s.pattern === "cornell") {
     parts.push(s.pitch, s.line, s.opacity, s.width, s.dash, s.majorOpacity, m.top, m.right, m.bottom, m.left, s.cue, s.summary);
   }
+  // Last, and only when it is not the size it is set up at, so every page
+  // drawn before pages could grow keeps the key — and the stream — it had.
+  if (s.fit !== "fixed") parts.push(s.fit);
   return JSON.stringify(parts);
 }
 
@@ -340,7 +357,7 @@ export function sameSheet(a, b) {
 // all of them is the very file it always was.
 export function sheetLegacyKind(setup) {
   const s = normalizeSheetSetup(setup);
-  if (!SHEET_LEGACY_KINDS.includes(s.pattern)) return null;
+  if (!SHEET_LEGACY_KINDS.includes(s.pattern) || s.fit !== "fixed") return null;
   return sameSheet(s, legacySheetSetup(s.pattern)) ? s.pattern : null;
 }
 
@@ -371,8 +388,41 @@ export function canvasWideSheetSetup(record) {
 export function canvasPageBoxes(record) {
   const count = Math.max(0, Math.round(Number(record?.pages) || 0));
   const boxes = [];
-  for (let n = 1; n <= count; n += 1) boxes.push(sheetBox(sheetSetupForPage(record, n)));
+  for (let n = 1; n <= count; n += 1) boxes.push(canvasPageBox(record, n));
   return boxes;
+}
+
+// The setup's own fit: "fixed", "grow" or "boundless".
+export function sheetFit(setup) {
+  return SHEET_FITS.includes(setup?.fit) ? setup.fit : "fixed";
+}
+
+// A stored box, if it is one: four finite numbers, a real width and height.
+export function validPageBox(box) {
+  if (!Array.isArray(box) || box.length !== 4) return null;
+  const n = box.map(Number);
+  if (!n.every(Number.isFinite) || !(n[2] - n[0] >= 1) || !(n[3] - n[1] >= 1)) return null;
+  return n.map(sheetRound);
+}
+
+// Where page `n` reaches: the box it has grown to (`pageBoxes`, written by
+// src/documents/notebook.js from what is on it), or the size it is set up at.
+// Only a page that grows or is Boundless has a box of its own — a stored box
+// beside a fixed page (a setup changed back on another device) is not read.
+export function canvasPageBox(record, n) {
+  const setup = sheetSetupForPage(record, n);
+  const own = setup.fit !== "fixed" && record?.pageBoxes && typeof record.pageBoxes === "object"
+    ? validPageBox(record.pageBoxes[String(n)])
+    : null;
+  return own || sheetBox(setup);
+}
+
+// The box page `n`'s size is MEASURED by — the widest a Block grows, the width
+// a dropped picture lands at, the width the Canvas is fitted to the screen by:
+// the size it is set up at, never the size it has grown to, so a page that
+// grows does not widen its Blocks or zoom the Canvas out.
+export function canvasMeasureBox(record, n) {
+  return sheetBox(sheetSetupForPage(record, n));
 }
 
 // The page setups after the pages moved: `move` is the rule the Canvas's
@@ -407,7 +457,8 @@ export function sheetSetupSummary(setup) {
   const name = size ? size.label : `${sheetMmText(s.w)} × ${sheetMmText(s.h)} mm`;
   const turn = s.w > s.h ? "landscape" : (s.w === s.h ? "" : "portrait");
   const paper = s.pattern === "blank" ? "Blank" : `${SHEET_PATTERN_LABEL[s.pattern]} ${sheetMmText(s.pitch)} mm`;
-  return `${name}${turn ? ` ${turn}` : ""} · ${paper}`;
+  if (s.fit === "boundless") return `Boundless · ${paper}`;
+  return `${name}${turn ? ` ${turn}` : ""}${s.fit === "grow" ? ", grows" : ""} · ${paper}`;
 }
 
 // ── Drawing ────────────────────────────────────────────────────────────────
@@ -440,9 +491,15 @@ function sheetDashArray(dash, width) {
 // groups of segments that share a colour, a width, a dash and a cap. The PDF
 // stream and the dialog's preview are both written from this, so the preview
 // is the page.
-export function sheetOps(setup) {
+//
+// `box` is where the page reaches when that is not the size it is set up at —
+// a page grown longer or wider, or a Boundless page (src/documents/
+// canvas-extent.js). The lines are the same lattice from (0, 0) whatever the
+// box, and the margins are kept from its outer edges, so a page that grows
+// keeps every line under the words already on it.
+export function sheetOps(setup, boxIn = null) {
   const s = normalizeSheetSetup(setup);
-  const box = sheetBox(s);
+  const box = validPageBox(boxIn) || sheetBox(s);
   const [x0, y0, x1, y1] = box;
   const m = s.margins;
   const area = [x0 + m.left, y0 + m.bottom, x1 - m.right, y1 - m.top];
@@ -471,12 +528,28 @@ export function sheetOps(setup) {
   } else if (s.pattern === "dots") {
     // A dot is a round-capped segment a hundredth of a point long: a
     // zero-length one is dropped by the canvas pdf.js draws on.
-    const dots = { color: sheetMix(s.line, s.paper, s.opacity), width: s.dot, dash: null, cap: 1, segs: [] };
-    groups.push(dots);
     const ys = sheetLattice(s.pitch, area[1], area[3]);
-    sheetLattice(s.pitch, area[0], area[2]).forEach(({ at: x }) => {
-      ys.forEach(({ at: y }) => dots.segs.push([x, y, sheetRound(x + 0.01), y]));
-    });
+    const xs = sheetLattice(s.pitch, area[0], area[2]);
+    if (s.fit !== "fixed") {
+      // A page that grows can be a poster, and a dot each is a megabyte of
+      // them. So each row is ONE line whose dashes are the dots: a dash a
+      // hundredth of a point long every `pitch`, round-capped — the dotted
+      // line style's own trick — starting on the lattice. Rows, not dots: the
+      // file grows with the page's length, not its area.
+      const rows = { color: sheetMix(s.line, s.paper, s.opacity), width: s.dot, dash: [0.01, sheetRound(s.pitch - 0.01)], cap: 1, segs: [] };
+      groups.push(rows);
+      if (xs.length) {
+        const first = xs[0].at;
+        const last = xs[xs.length - 1].at;
+        ys.forEach(({ at: y }) => rows.segs.push([first, y, sheetRound(last + 0.01), y]));
+      }
+    } else {
+      const dots = { color: sheetMix(s.line, s.paper, s.opacity), width: s.dot, dash: null, cap: 1, segs: [] };
+      groups.push(dots);
+      xs.forEach(({ at: x }) => {
+        ys.forEach(({ at: y }) => dots.segs.push([x, y, sheetRound(x + 0.01), y]));
+      });
+    }
   } else if (s.pattern === "cornell") {
     // The header band above the top margin, the summary box at the foot, the
     // cue column down the left, and rules across all of it on the lattice.
@@ -506,8 +579,8 @@ function sheetPdfColor(rgb) {
 
 // The page as a PDF content stream: ASCII operators and numbers only, so the
 // one-byte-per-character file blank-pdf.js builds stays true.
-export function sheetPdfStream(setup) {
-  const { box, paper, groups } = sheetOps(setup);
+export function sheetPdfStream(setup, pageBox = null) {
+  const { box, paper, groups } = sheetOps(setup, pageBox);
   const n = sheetPdfNumber;
   const [x0, y0, x1, y1] = box;
   const out = [`${sheetPdfColor(paper)} rg`, `${n(x0)} ${n(y0)} ${n(x1 - x0)} ${n(y1 - y0)} re`, "f"];
@@ -525,8 +598,8 @@ export function sheetPdfStream(setup) {
 // user space to show instead of all of it; `minStroke` is the thinnest line
 // worth drawing, in user units, so a whole page shrunk to a thumbnail still
 // shows its lines rather than a blank.
-export function sheetSvg(setup, { crop = null, minStroke = 0 } = {}) {
-  const { box, paper, groups } = sheetOps(setup);
+export function sheetSvg(setup, { crop = null, minStroke = 0, box: pageBox = null } = {}) {
+  const { box, paper, groups } = sheetOps(setup, pageBox);
   const [x0, y0, x1, y1] = crop || box;
   const w = x1 - x0;
   const h = y1 - y0;

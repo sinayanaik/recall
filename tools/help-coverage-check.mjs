@@ -59,6 +59,9 @@ const FEATURES = [
   ["View only", "src/documents/view-only.js", ["View only"]],
   ["Bare numbers in the style boxes", "src/ui/style-settings.js", ["a bare number is enough"]],
   ["The Canvas PDF's words are words", "src/documents/pdf-export.js", ["select, copy and search"]],
+  ["Canvas pages that grow as needed", "src/documents/canvas-extent.js", ["Grows as needed", "longer or wider", "shrink back"]],
+  ["Boundless Canvas pages", "src/documents/canvas-extent.js", ["Boundless", "cut to exactly what is on it"]],
+  ["The Canvas as one web page", "src/export/canvas-html.js", ["Web page (.html)", "moving pictures (GIFs) play"]],
   ["Back up one file, a folder, ticked files or the library", "src/backup/share-dialog.js", ["whole library", "one file", "one folder", "Back up this folder"]],
   ["The offline viewer in every backup", "src/backup/viewer-pack.js", ["index.html", "offline viewer", "read-only"]],
   [".zip or .recall", "src/backup/backup.js", ["Save as .zip"]],
@@ -75,7 +78,7 @@ const RETIRED = [
 
 // [file text, file name, phrases it must hold]
 const OWNED = [
-  [nomenclature, "NOMENCLATURE.md", ["Offline viewer", "Web pictures", "middle-pan.js", "viewer-pack.js", "keep-web-images.js", "Paste blocks"]],
+  [nomenclature, "NOMENCLATURE.md", ["Offline viewer", "Web pictures", "middle-pan.js", "viewer-pack.js", "keep-web-images.js", "Paste blocks", "Boundless", "Grows as needed", "canvas-extent.js", "canvas-html.js"]],
   [readme, "README.md", ["index.html", "viewer/files/0001.js", "wsrv.nl", "keep-web-images.js", "backup-viewer", "help-coverage"]]
 ];
 

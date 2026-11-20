@@ -57,6 +57,8 @@ import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar
 import { BLOCK_PAD_DEFAULT_PT, BLOCK_SHAPE_DEFAULT, blockFillVar, blockHeadInkVar, blockInkVar, blockLineVar, compactBlockStyle, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
 import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { normalizeShapeRotation, rotatePoint } from "../render/annot-shapes.js?v=__BUILD__";
+import { blockBounds, pageDragLimits } from "./canvas-extent.js?v=__BUILD__";
+import { canvasMeasureBox, sheetFit, sheetSetupForPage } from "./canvas-setup.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { BALANCED_MIN_LINE_EM, CANVAS_BLOCK_WIDTH_BALANCED, balancedWidthPx, canvasBlockMeasurePercent, canvasBlockWidthMode } from "./block-measure.js?v=__BUILD__";
 import { documentStages } from "./doc-scrollers.js?v=__BUILD__";
@@ -251,14 +253,17 @@ function syncBlockActionsPopover() {
 // The page box a block covers — upright, or the upright box round it once it
 // is turned — in the page's own units.
 export function blockPageBounds(block) {
-  const rect = [block.x, block.y, block.x + block.w, block.y + block.h];
-  const rot = normalizeShapeRotation(block.rot);
-  if (!rot) return rect;
-  const centre = [block.x + block.w / 2, block.y + block.h / 2];
-  const corners = [[rect[0], rect[1]], [rect[2], rect[1]], [rect[2], rect[3]], [rect[0], rect[3]]].map((p) => rotatePoint(p, centre, rot));
-  const xs = corners.map((p) => p[0]);
-  const ys = corners.map((p) => p[1]);
-  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  return blockBounds(block);
+}
+
+// How far a Block on `page` may be dragged or resized: the page, unless it is
+// a Canvas page that grows as needed or is Boundless — then past the edges it
+// grows by, and the page grows to it once it is let go (src/documents/
+// canvas-extent.js, src/documents/notebook.js).
+function blockDragBox(page, viewport) {
+  const box = viewport.viewBox;
+  if (activeDocSlot() !== DOC_SLOT_NOTEBOOK) return box;
+  return pageDragLimits(state.meta?.notebook, page, box);
 }
 
 // The strip's Card: a card whose answer is a live picture of the block where it
@@ -373,6 +378,14 @@ function normalizeBlocks(list) {
 // Block pushed right up against the edge can still be typed in.
 function blockWidthCap(block, viewport = pdfPageViewport(block.page)) {
   if (!viewport) return Math.max(PDF_BLOCK_MIN_WIDTH, Number(block.w) || PDF_BLOCK_DEFAULT_WIDTH);
+  // On a Canvas page that grows, or a Boundless one, the page's edge is wherever
+  // what is on it has pushed it — so a Block growing to it would push it again.
+  // The page as it is set up is the measure instead, wherever the Block is.
+  const record = state.meta?.notebook;
+  if (record && activeDocSlot() === DOC_SLOT_NOTEBOOK && sheetFit(sheetSetupForPage(record, Number(block.page) || 1)) !== "fixed") {
+    const [sx0, , sx1] = canvasMeasureBox(record, Number(block.page) || 1);
+    return Math.max(PDF_BLOCK_MIN_WIDTH, Math.floor(Math.abs(sx1 - sx0) - (2 * BLOCK_RIGHT_GUTTER)));
+  }
   const right = Math.max(viewport.viewBox[0], viewport.viewBox[2]);
   return Math.max(PDF_BLOCK_MIN_WIDTH, Math.floor(right - BLOCK_RIGHT_GUTTER - (Number(block.x) || 0)));
 }
@@ -393,10 +406,28 @@ function blockWidthCap(block, viewport = pdfPageViewport(block.page)) {
 // The setting itself lives in ./block-measure.js.
 //
 // The measure in points for a page of this viewport, or Infinity off a Canvas.
-export function canvasBlockMeasure(viewport, slot = activeDocSlot()) {
+export function canvasBlockMeasure(viewport, slot = activeDocSlot(), page = null) {
   if (!viewport || slot !== DOC_SLOT_NOTEBOOK) return Infinity;
-  const [vx0, , vx1] = viewport.viewBox;
+  const [vx0, , vx1] = canvasSheetBox(viewport, page);
   return Math.max(PDF_BLOCK_MIN_WIDTH, Math.floor(Math.abs(vx1 - vx0) * canvasBlockMeasurePercent() / 100));
+}
+
+// The page a viewport is of — a Canvas page's own size as set up, not the size
+// it has grown to (canvas-setup.js, canvasMeasureBox), so the widest a Block
+// grows is a share of the page the reader set up, whatever it reaches now.
+function canvasSheetBox(viewport, page = null) {
+  const record = state.meta?.notebook;
+  const n = Number(page) || pageOfViewport(viewport);
+  if (!record || !n) return viewport.viewBox;
+  return canvasMeasureBox(record, n);
+}
+
+function pageOfViewport(viewport) {
+  const count = Number(state.meta?.notebook?.pages) || 0;
+  for (let n = 1; n <= count; n += 1) {
+    if (pdfPageViewport(n) === viewport) return n;
+  }
+  return 0;
 }
 
 // The widest a Block that follows its words may grow by itself: the page's
@@ -405,7 +436,7 @@ export function canvasBlockMeasure(viewport, slot = activeDocSlot()) {
 function blockGrowCap(block, viewport, { strict = false, code = false } = {}) {
   const edge = blockWidthCap(block, viewport);
   if (code) return edge;
-  const measure = canvasBlockMeasure(viewport);
+  const measure = canvasBlockMeasure(viewport, activeDocSlot(), block.page);
   if (!Number.isFinite(measure)) return edge;
   return Math.min(edge, strict ? measure : Math.max(measure, Number(block.w) || 0));
 }
@@ -2393,8 +2424,9 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
   let live = { ...block };
   let frame = 0;
   gestureLive = true;
-  // The page's own edges, in points, for the resize clamp below.
-  const [pageX0, pageY0, pageX1, pageY1] = viewport.viewBox;
+  // The page's own edges, in points, for the resize clamp below — or past
+  // them, on a Canvas page that grows.
+  const [pageX0, pageY0, pageX1, pageY1] = blockDragBox(block.page, viewport);
   const scale = viewport.scale || 1;
   // ── Onto another page ───────────────────────────────────────────────────
   //
@@ -2508,7 +2540,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       const here = grabPoint ? pointOnPage(targetPage, moveEvent.clientX, moveEvent.clientY) : null;
       const x = here ? block.x + here[0] - grabPoint[0] : block.x + dx;
       const y = here ? block.y + here[1] - grabPoint[1] : block.y + dy;
-      live = { ...block, ...clampBlockToPage(targetViewport, block, x, y) };
+      live = { ...block, ...clampBlockToPage(targetViewport, block, x, y, targetPage) };
       edgeScroll?.update(moveEvent);
     } else {
       // Which edges this handle moves. The bottom of the frame on screen is
@@ -2807,8 +2839,8 @@ export function liveBlockGesture() {
 // or the first page's top and the last page's foot, is it held.
 export const PDF_BLOCK_KEEP_ON_PAGE = 16;
 
-function clampBlockToPage(viewport, block, x, y) {
-  const [vx0, vy0, vx1, vy1] = viewport.viewBox;
+function clampBlockToPage(viewport, block, x, y, page = block.page) {
+  const [vx0, vy0, vx1, vy1] = blockDragBox(page, viewport);
   const keep = Math.min(PDF_BLOCK_KEEP_ON_PAGE, block.w, block.h);
   const clamp = (value, low, high) => (low > high ? value : Math.min(high, Math.max(low, value)));
   return {

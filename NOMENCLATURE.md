@@ -60,7 +60,29 @@ own) and `meta.notebook.pageSetups` (`{ "<page>": setup }`), lengths in PDF
 points; both absent is a Canvas never set up, drawn from `meta.notebook.paper`
 exactly as before. A page of any size keeps its top-left corner at user point
 (0, 842) and its lines on a lattice from (0, 0), so nothing written on a page
-moves when it is resized. Code: `src/documents/canvas-setup.js` (the numbers,
+moves when it is resized.
+
+A page's size can also follow what is on it (`setup.fit`, absent for a page of
+a set size). **Grows as needed** (`"grow"`, a switch under the size) makes a
+page longer or wider by just enough — an inch past what is on it, in inch
+steps — when what is written, typed or dragged reaches its right edge or its
+foot, never smaller than its size, and back again when that is gone; its
+top-left corner never moves. **Boundless** (`"boundless"`, beside Portrait and
+Landscape) is a page with no size: what is on it with room round it on every
+side, its setup's size only where it starts; it has no page number, no margins
+and no Cornell paper, and its PDF page (and its web page) is cut to what is on
+it. Say "Boundless", not "infinite canvas", "sizeless" or "whiteboard"; say
+"grows as needed", not "auto-extend". Where each page reaches is
+`meta.notebook.pageBoxes` (`{ "<page>": [x0, y0, x1, y1] }`, only for a page
+past its set size), worked out from what is on it, so an undo takes the room
+back and two devices draw the same file; `meta.notebook.boxSha` is the hash of
+the bytes drawn knowing those boxes. A page that grows is redrawn in place —
+only that page, the reader held still (`swapOpenCanvasBytes` in
+`src/documents/pdf-view.js`) — and the Canvas is fitted to the screen by each
+page's set width, so growing never zooms it out. Code: `src/documents/
+canvas-extent.js` (the numbers, pure), `fitCanvasPageExtents` /
+`scheduleCanvasExtentFit` in `notebook.js`; a page too big for one picture is
+exported in tiles (`canvasExportTiles` in `src/documents/pdf-export.js`). Code: `src/documents/canvas-setup.js` (the numbers,
 pure), `src/documents/canvas-setup-dialog.js` (the dialog),
 `setNotebookPageSetup` in `src/documents/notebook.js`, `buildBlankPdf` in
 `src/documents/blank-pdf.js`. Picked-up Blocks are **copied** (or cut) from
@@ -199,6 +221,15 @@ measuring, placing), `canvas-flow.js` (where they go, pure), `canvas-sizing.js`
 (sizes taken off, pure), `canvas-feed-dialog.js` (the picker),
 `canvas-drop.js` (the drag and its preview); `styles/a8-canvas-feed.css`. Say
 "to the Canvas", not "export to canvas" or "send"; "drop preview", not "ghost".
+
+The Canvas is exported (⇓ beside the tabs) as a **PDF** of its pages, or as a
+**web page** — ⇓ → **Web page (.html)**: one `.html` file with every picture
+inside it as its own bytes, that opens offline in any browser on any device,
+with vector paper and ink, the Blocks' words as words, and moving pictures (a
+GIF, an animated WebP) moving, which a PDF cannot do. Say "web page", not "HTML
+export" or "web export". Nothing is stored; the file is written and downloaded
+(`src/export/canvas-html.js`, `buildCanvasHtml`; drawn by `canvasPageDrawing`
+and `canvasPageMarkup` in `src/backup/viewer-pack.js`).
 
 **Section lines** are the thin lines down the left of each heading's section in
 the Notes, whose text is set one **step** in per section — ◐ Notes → Section

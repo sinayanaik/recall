@@ -44,6 +44,8 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
+import { pageDragLimits } from "./canvas-extent.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
@@ -880,15 +882,15 @@ function fitShapeTextBoxes(pageNumber) {
     // Only a box whose markdown has FINISHED: a plain one that grows with its
     // words keeps the size it was typed at (exactly as before markdown), and a
     // pending one is showing a placeholder that is about to be replaced.
-    const state = shapeTextBodyState(id);
+    const bodyState = shapeTextBodyState(id);
     const record = documentHighlightById(id);
     const shape = normalizeShape(record?.shape);
     if (!shape || (shape.type !== "text" && shape.type !== "callout")) return;
     // Plain words in a box that WRAPS (a callout always does) are measured
     // too: such a box is as tall as its lines (shapeFittedToBox), and a border
     // that ends short of them, or far below them, is plainly wrong.
-    const plainOk = state === "plain" && (shapeTextRefitIds.has(id) || !shape.fit);
-    if (state !== "rendered" && state !== "failed" && !plainOk) return;
+    const plainOk = bodyState === "plain" && (shapeTextRefitIds.has(id) || !shape.fit);
+    if (bodyState !== "rendered" && bodyState !== "failed" && !plainOk) return;
     shapeTextRefitIds.delete(id);
     const next = shapeFittedToBox(shape, untransformedClientRect(box, pageEl), pageBox, viewport);
     if (next) writes.push({ id, shape: next });
@@ -1433,7 +1435,10 @@ function clampShapeMove(shape, pageNumber, dx, dy) {
   const viewport = pdfPageViewport(pageNumber);
   const bounds = shapeBounds(normalizeShape(shape));
   if (!viewport || !bounds) return [dx, dy];
-  const [vx0, vy0, vx1, vy1] = viewport.viewBox;
+  // Past the edges a Canvas page grows by, when it grows (canvas-extent.js).
+  const [vx0, vy0, vx1, vy1] = activeDocSlot() === DOC_SLOT_NOTEBOOK
+    ? pageDragLimits(state.meta?.notebook, pageNumber, viewport.viewBox)
+    : viewport.viewBox;
   const keep = SHAPE_KEEP_ON_PAGE;
   const clamp = (value, low, high) => (low > high ? value : Math.min(high, Math.max(low, value)));
   return [

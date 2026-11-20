@@ -27,6 +27,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
+import { pageDragLimits } from "./canvas-extent.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 import { inkSelectionCount, inkTool, isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
@@ -442,7 +443,10 @@ function onMoveMove(event) {
   if (snapped) ({ dx, dy } = snapped);
   // Never off the page: the group's box keeps KEEP_ON_PAGE points on it.
   if (viewport) {
-    const [vx0, vy0, vx1, vy1] = viewport.viewBox;
+    // ...or past the edges a Canvas page grows by, when it grows.
+    const [vx0, vy0, vx1, vy1] = activeDocSlot() === DOC_SLOT_NOTEBOOK
+      ? pageDragLimits(state.meta?.notebook, drag.target, viewport.viewBox)
+      : viewport.viewBox;
     const clamp = (value, low, high) => (low > high ? value : Math.min(high, Math.max(low, value)));
     dx = clamp(dx, vx0 + KEEP_ON_PAGE - drag.box[2], vx1 - KEEP_ON_PAGE - drag.box[0]);
     dy = clamp(dy, vy0 + KEEP_ON_PAGE - drag.box[3], vy1 - KEEP_ON_PAGE - drag.box[1]);

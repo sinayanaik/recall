@@ -58,11 +58,16 @@ export function lowestEdge(rects) {
 // `{ page, parts: [{ x, y }, { x, y }] }` for a card; `newPages` is how many
 // pages have to be added at the end first. Something taller than a whole page
 // goes at the top of a page of its own and runs past its foot.
+//
+// A last page that grows as needed, or is Boundless (`reach`: how far down from
+// its top it may go, in points), is never full: everything stacks down it and
+// the page grows to it (src/documents/canvas-extent.js).
 export function flowOntoCanvas({ pages, lowest = null, items }) {
   const last = pages[pages.length - 1];
   if (!last) return { places: [], newPages: 0 };
   let page = Number(last.page);
   let content = flowContentBox(last.box, last.margins);
+  if (Number(last.reach) > 0) content = { ...content, bottom: last.box[3] - Number(last.reach) + FLOW_FOOT };
   let top = lowest === null ? content.top : Math.min(content.top, lowest - FLOW_AFTER_EXISTING);
   let fresh = lowest === null;
   let newPages = 0;

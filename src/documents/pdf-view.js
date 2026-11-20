@@ -45,7 +45,7 @@ import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdf
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { documentAutoScrolling, inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface, setDualDocumentContext } from "./doc-slot.js?v=__BUILD__";
-import { canvasPageBoxes } from "./canvas-setup.js?v=__BUILD__";
+import { canvasMeasureBox, canvasPageBoxes, sheetFit, sheetSetupForPage } from "./canvas-setup.js?v=__BUILD__";
 import { alternateDocumentStage, forEachDocumentScroller, liveDocumentHandler, primaryDocumentStage, scrollerOfStage } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { PAPER_DARK_FILTER, PAPER_TONE_THEME, normalizePaperToneId, paintPaperTone, paperKey, paperKeyParts, resolvePaperTone } from "../format/paper-tones.js?v=__BUILD__";
@@ -771,6 +771,15 @@ function resumeDocumentViewer(record, { quiet = false } = {}) {
   if (record.paperStale) {
     record.paperStale = false;
     applyPaperTone(paperToneForSlot(record.slot), { remember: false, slot: record.slot, chrome: !quiet });
+  }
+  // A Canvas page grew while it was beside: the new file goes in now it is
+  // live (swapOpenCanvasBytes).
+  if (record.pendingSwap) {
+    const swap = record.pendingSwap;
+    record.pendingSwap = null;
+    if (openPdf && normalizeDocSlot(openPdf.slot) === DOC_SLOT_NOTEBOOK && swap.sha256 !== openPdf.sha256) {
+      swapCanvasBytesNow(swap).catch((error) => console.warn("Could not swap the Canvas's pages in place", error));
+    }
   }
 }
 
@@ -2296,12 +2305,39 @@ export function documentFittedWidth() {
 // bytes were drawn from says it. So a Canvas lays every page out at its real
 // size before it renders, and fits the widest page across — a landscape page
 // among portrait ones is then on screen whole, with the others centred.
-let canvasBoxCache = { record: null, boxes: [] };
+//
+// ── ...and fitted by the size each is set up at, not the size it grew to ──
+//
+// A page that grows as needed, or a Boundless page (src/documents/
+// canvas-extent.js), can reach far past its setup's width. Fitted by where it
+// reaches, every page of the Canvas would zoom out each time one grew — the
+// very disturbance growing must not cause — so the fit is the setup's width
+// (`measure`), and a page wider than that is panned across like any page
+// zoomed past fit.
+let canvasBoxCache = { record: null, boxes: [], measure: [] };
+
+function canvasBoxCacheFor() {
+  const record = state.meta?.notebook || null;
+  if (canvasBoxCache.record !== record) {
+    const boxes = record ? canvasPageBoxes(record) : [];
+    canvasBoxCache = { record, boxes, measure: boxes.map((box, i) => canvasMeasureBox(record, i + 1)) };
+  }
+  return canvasBoxCache;
+}
 
 function canvasBoxes() {
-  const record = state.meta?.notebook || null;
-  if (canvasBoxCache.record !== record) canvasBoxCache = { record, boxes: record ? canvasPageBoxes(record) : [] };
-  return canvasBoxCache.boxes;
+  return canvasBoxCacheFor().boxes;
+}
+
+function canvasMeasureBoxes() {
+  return canvasBoxCacheFor().measure;
+}
+
+// Whether Canvas page `n` is Boundless — it has no page number and no edge of
+// its own (styles/53-handwriting.css, .is-boundless).
+function canvasPageIsBoundless(pageNumber) {
+  const record = state.meta?.notebook;
+  return Boolean(record) && sheetFit(sheetSetupForPage(record, pageNumber)) === "boundless";
 }
 
 function pageBaseSize(pageNumber, open = openPdf) {
@@ -2314,10 +2350,18 @@ function pageBaseSize(pageNumber, open = openPdf) {
 
 function widestBaseWidth(open = openPdf) {
   if (open?.slot === DOC_SLOT_NOTEBOOK) {
-    const boxes = canvasBoxes().slice(0, open.pageCount || undefined);
+    const boxes = canvasMeasureBoxes().slice(0, open.pageCount || undefined);
     if (boxes.length) return Math.max(...boxes.map((box) => box[2] - box[0]));
   }
   return open?.baseWidth || 0;
+}
+
+// The widest any Canvas page reaches, grown or Boundless — what a zoom-out may
+// go far enough to see whole (documentMinScale).
+function widestReachedWidth(open = openPdf) {
+  if (open?.slot !== DOC_SLOT_NOTEBOOK) return 0;
+  const boxes = canvasBoxes().slice(0, open.pageCount || undefined);
+  return boxes.length ? Math.max(...boxes.map((box) => box[2] - box[0])) : 0;
 }
 
 export function fitWidthScale() {
@@ -2340,6 +2384,181 @@ export function fitWidthScale() {
   return scale;
 }
 
+// ── A Canvas page grows, in place ─────────────────────────────────────────
+//
+// A page that grows as needed, or a Boundless page, is redrawn as a new file
+// each time it changes size (src/documents/notebook.js, writeNotebookPdf) —
+// and reopening the Canvas for that tore every page down, said "Opening the
+// document…" and drew them all again, under a reader who had only written one
+// more line. So the new file is swapped in UNDER the pages already there:
+// parsed, made the document every later draw reads, and only the pages whose
+// box changed are laid out again and redrawn. Each keeps its old pixels, at
+// their old size and place, until the new ones land; the rest are not touched.
+//
+// Content does not move on screen. A page that grows right or down keeps its
+// top-left corner, so nothing on it shifts at all; a Boundless page that grows
+// left or up shifts what is on it by exactly the room added, and the point at
+// the middle of the view is put back where it was.
+//
+// Resolves true when it is done (or when the Canvas is not on screen, and the
+// next look at it reads the new file), "reopen" when it cannot be done in
+// place and the caller should open the file the ordinary way.
+export async function swapOpenCanvasBytes({ blob, sha256, before = [] } = {}) {
+  if (!blob) return false;
+  if (!openPdf || normalizeDocSlot(openPdf.slot) !== DOC_SLOT_NOTEBOOK) {
+    // Side by side, suspended beside the paper in focus: swapped the moment it
+    // is next live (resumeDocumentViewer).
+    if (besideViewer && !besideViewer.empty && normalizeDocSlot(besideViewer.slot) === DOC_SLOT_NOTEBOOK) {
+      besideViewer.pendingSwap = { blob, sha256, before };
+      noteBesideDocumentStale();
+    }
+    return true;
+  }
+  if (documentSurfaceHidden()) {
+    // Not on screen: the next look at it is an ordinary open of the new file.
+    return true;
+  }
+  return swapCanvasBytesNow({ blob, sha256, before });
+}
+
+async function swapCanvasBytesNow({ blob, sha256, before }) {
+  const open = openPdf;
+  const token = pdfOpenToken;
+  let doc;
+  try {
+    doc = await openPdfDocument(new Uint8Array(await blob.arrayBuffer()));
+  } catch (error) {
+    console.warn("Could not swap the Canvas's pages in place", error);
+    return "reopen";
+  }
+  if (openPdf !== open || token !== pdfOpenToken) {
+    doc.destroy().catch(() => {});
+    // Whatever replaced the Canvas on the stage read the record as it is now.
+    return true;
+  }
+  if (doc.numPages !== open.pageCount) {
+    doc.destroy().catch(() => {});
+    return "reopen";
+  }
+  // Never under a pen: a stroke in progress is drawn over the layers about to
+  // be rebuilt, and a programmatic scroll would cancel it. The new file waits
+  // for the pen to lift — the page it grows is drawn a moment later.
+  for (let waited = 0; inkPenIsDown() && waited < 60000; waited += 100) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (openPdf !== open || token !== pdfOpenToken) {
+      doc.destroy().catch(() => {});
+      return true;
+    }
+  }
+  const after = canvasBoxes();
+  const changed = [];
+  for (let n = 1; n <= open.pageCount; n += 1) {
+    const was = before[n - 1];
+    const now = after[n - 1];
+    if (!was || !now || was.some((v, i) => Math.abs(v - now[i]) >= 0.01)) changed.push(n);
+  }
+  // Where the reader is looking, as a point on a page, before anything moves.
+  const anchor = canvasViewAnchor();
+  const oldDoc = open.doc;
+  const oldRender = open.renderDoc;
+  open.doc = doc;
+  open.renderBlob = blob;
+  open.sha256 = sha256 || "";
+  // The renderer's copy is opened again from the new bytes the first time a
+  // page has to be drawn (ensureRenderDoc); null stays null — pages are drawn
+  // on the main thread.
+  if (oldRender !== null) open.renderDoc = undefined;
+  // Kept pictures are filed under the bytes' hash, so a grown page is never
+  // shown as the picture of the page it was.
+  if (open.pictureSha) open.pictureSha = sha256 || "";
+  const scale = open.scale;
+  for (const n of changed) {
+    const entry = open.pages.get(n);
+    if (!entry) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const page = await doc.getPage(n);
+    if (openPdf !== open || token !== pdfOpenToken) return true;
+    const viewport = page.getViewport({ scale });
+    const was = before[n - 1] || after[n - 1];
+    const now = after[n - 1];
+    // The old pixels stay, unstretched, where they are on the page — right of
+    // and below the room a Boundless page gained on its left and top.
+    const pixels = entry.el.querySelector(".pdf-canvas:not(.is-stale)") || entry.el.querySelector(".pdf-picture");
+    const oldWidth = entry.viewport ? entry.viewport.width : (was[2] - was[0]) * scale;
+    const oldHeight = entry.viewport ? entry.viewport.height : (was[3] - was[1]) * scale;
+    entry.generation = (entry.generation || 0) + 1;
+    cancelPageRender(entry);
+    open.rendered.delete(n);
+    dropPageLayers(entry);
+    dropDetail(entry);
+    entry.el.querySelectorAll(".pdf-canvas.is-stale").forEach((stale) => {
+      if (stale !== pixels) {
+        releaseCanvasBitmap(stale);
+        stale.remove();
+      }
+    });
+    if (pixels) {
+      pixels.classList.add("is-stale");
+      pixels.style.position = "absolute";
+      pixels.style.left = `${Math.round((was[0] - now[0]) * scale)}px`;
+      pixels.style.top = `${Math.round((now[3] - was[3]) * scale)}px`;
+      pixels.style.width = `${Math.round(oldWidth)}px`;
+      pixels.style.height = `${Math.round(oldHeight)}px`;
+    }
+    entry.viewport = viewport;
+    entry.renderScale = 0;
+    entry.el.classList.toggle("is-boundless", canvasPageIsBoundless(n));
+  }
+  relayoutDocument({
+    afterLayout: () => restoreCanvasViewAnchor(anchor)
+  });
+  // What is ON a page that grew goes back at once, through its new viewport —
+  // its Blocks, its ink, its shapes — rather than a beat later with the paper.
+  changed.forEach((n) => {
+    if (open.pages.get(n)?.viewport && isPageNearViewport(n)) annotatePage(n);
+  });
+  // The old document is let go once nothing drawn from it can still be asked
+  // for: a page that did not change may be in the middle of a draw from it.
+  setTimeout(() => {
+    oldDoc?.destroy?.().catch?.(() => {});
+    if (oldRender && typeof oldRender.then === "function") oldRender.then((id) => { if (id != null) closeRenderDocument(id); }, () => {});
+  }, 15000);
+  recordReaderMove("canvas:grew-in-place", { pages: changed });
+  return true;
+}
+
+// The point of a page at the middle of the view, in the page's own points.
+function canvasViewAnchor() {
+  const view = el.documentView;
+  if (!view || !openPdf || inkPenIsDown()) return null;
+  const rect = view.getBoundingClientRect();
+  const cx = rect.left + (view.clientWidth / 2);
+  const cy = rect.top + (view.clientHeight / 2);
+  let best = null;
+  openPdf.pages.forEach((entry, pageNumber) => {
+    if (best || !entry.viewport) return;
+    const box = entry.el.getBoundingClientRect();
+    if (!box.height || cy < box.top || cy > box.bottom) return;
+    best = { pageNumber, point: entry.viewport.convertToPdfPoint(cx - box.left, cy - box.top), cx, cy };
+  });
+  return best;
+}
+
+function restoreCanvasViewAnchor(anchor) {
+  const view = el.documentView;
+  if (!anchor || !view || !openPdf || inkPenIsDown()) return;
+  const entry = openPdf.pages.get(anchor.pageNumber);
+  if (!entry?.viewport) return;
+  const box = entry.el.getBoundingClientRect();
+  const [vx, vy] = entry.viewport.convertToViewportPoint(anchor.point[0], anchor.point[1]);
+  const dx = Math.round(box.left + vx - anchor.cx);
+  const dy = Math.round(box.top + vy - anchor.cy);
+  if (dx) view.scrollLeft = Math.max(0, view.scrollLeft + dx);
+  if (dy) view.scrollTop = Math.max(0, view.scrollTop + dy);
+  if (dx || dy) recordReaderMove("compensate:canvas-grew", { page: anchor.pageNumber, dx, dy });
+}
+
 // How far below fit-width a deliberate zoom-out may go. Half again is enough to
 // see a spread, or the shape of a page you are looking for, and not so far that
 // the page becomes a stamp.
@@ -2359,7 +2578,13 @@ export const PDF_ZOOM_OUT_HEADROOM = 0.5;
 export function documentMinScale() {
   const fit = openPdf?.fitScale;
   if (!Number.isFinite(fit) || fit <= 0) return PDF_MIN_SCALE;
-  return Math.max(PDF_ABS_MIN_SCALE, Math.min(PDF_MIN_SCALE, fit * PDF_ZOOM_OUT_HEADROOM));
+  let floor = Math.min(PDF_MIN_SCALE, fit * PDF_ZOOM_OUT_HEADROOM);
+  // A Canvas page grown wider than it is set up, or a Boundless one, can be
+  // zoomed out to be seen whole, with the same headroom past that.
+  const reached = widestReachedWidth();
+  const measured = widestBaseWidth();
+  if (reached > measured && measured > 0) floor = Math.min(floor, fit * (measured / reached) * PDF_ZOOM_OUT_HEADROOM);
+  return Math.max(PDF_ABS_MIN_SCALE, floor);
 }
 
 // How far the reader has zoomed from fit-width: 1 at fit, 3 at three times it.
@@ -2433,6 +2658,7 @@ function buildPagePlaceholders() {
     const page = document.createElement("div");
     page.className = "pdf-page";
     page.dataset.pageNumber = String(pageNumber);
+    if (openPdf.slot === DOC_SLOT_NOTEBOOK && canvasPageIsBoundless(pageNumber)) page.classList.add("is-boundless");
     const base = pageBaseSize(pageNumber);
     page.style.width = `${Math.round(base.width * openPdf.scale)}px`;
     page.style.height = `${Math.round(base.height * openPdf.scale)}px`;
