@@ -13,7 +13,7 @@
 // Built once, on first use, from the .confirm-modal chrome the other small
 // dialogs use (styles/11-chrome.css); its own rules are styles/a8-canvas-feed.css.
 
-import { cardItems, keysOnCanvas, notesHighlightItems, pdfHighlightItems, placeOnCanvas } from "./canvas-feed.js?v=__BUILD__";
+import { cardItems, keysOnCanvas, latestCanvasBlockStyle, notesHighlightItems, pdfHighlightItems, placeOnCanvas } from "./canvas-feed.js?v=__BUILD__";
 import { activePdfId, deckPdfs } from "./pdf-multi.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { INK_PEN_COLORS, INK_PEN_HEX } from "../format/ink-colors.js?v=__BUILD__";
@@ -62,6 +62,24 @@ function writeColourChoice(source, colours) {
   try {
     const all = JSON.parse(localStorage.getItem(COLOUR_STORE) || "{}") || {};
     all[source] = [...colours];
+    localStorage.setItem(COLOUR_STORE, JSON.stringify(all));
+  } catch { /* this session only */ }
+}
+
+// Whether Add fills each Block with its highlight's colour rather than the
+// last Block's fill — off unless chosen, remembered beside the colours.
+function readKeepFill() {
+  try {
+    return JSON.parse(localStorage.getItem(COLOUR_STORE) || "{}")?.keepFill === true;
+  } catch {
+    return false;
+  }
+}
+
+function writeKeepFill(on) {
+  try {
+    const all = JSON.parse(localStorage.getItem(COLOUR_STORE) || "{}") || {};
+    all.keepFill = Boolean(on);
     localStorage.setItem(COLOUR_STORE, JSON.stringify(all));
   } catch { /* this session only */ }
 }
@@ -124,7 +142,7 @@ function buildCanvasFeedDialog() {
       </header>
       <ol class="canvas-feed-list" data-cf-list></ol>
       <footer class="sync-modal-actions canvas-feed-actions">
-        <label class="canvas-feed-check" data-cf-colours-row><input type="checkbox" data-cf-keep-colours checked> Keep highlight colours</label>
+        <label class="canvas-feed-check" data-cf-colours-row><input type="checkbox" data-cf-keep-colours> Fill with each highlight's colour <span class="cf-src">otherwise the last Block's fill</span></label>
         <span class="canvas-feed-spacer"></span>
         <button type="button" class="sync-modal-btn" data-cf-action="cancel">Cancel</button>
         <button type="button" class="sync-modal-btn is-primary" data-cf-action="add"></button>
@@ -228,49 +246,127 @@ const ARROW_HEAD_LABEL = { none: "None", open: "Open", filled: "Filled", dot: "D
 const ARROW_DASH_LABEL = { solid: "Solid", dash: "Dashed", dot: "Dotted" };
 const ARROW_ROUTE_LABEL = { straight: "Straight", elbow: "Elbow", curve: "Curve" };
 
-function chipRow(label, field, options, current, { swatch = null } = {}) {
-  const chips = options.map(([value, text]) => {
+// Where a value in the Style comes from, said beside it: chosen here (with ✕
+// to let it follow again), the last Block styled on the Canvas, ◐ Canvas, or
+// the Shapes tool's arrow. Every control shows the value that will be used —
+// never a bare "Default" or "auto".
+const SOURCE_LABEL = {
+  last: "from the last Block",
+  canvas: "◐ Canvas",
+  plain: "a plain Block",
+  tool: "Shapes tool's arrow"
+};
+
+function sourceTag(field, source) {
+  if (source === "here") {
+    return `<button type="button" class="cf-src is-set" data-cf-clear="${escapeHtml(field)}" title="Stop choosing this here: follow ${field.startsWith("arrow.") ? "the Shapes tool's arrow" : "the last Block on the Canvas"} again">set here ✕</button>`;
+  }
+  return `<span class="cf-src" title="Not chosen here — this is the value in use, and where it comes from">${escapeHtml(SOURCE_LABEL[source] || source)}</span>`;
+}
+
+function cardStyleRow(label, field, source, body) {
+  return `<div class="cf-style-row"><span class="cf-style-head"><span class="canvas-feed-label">${escapeHtml(label)}</span>${sourceTag(field, source)}</span><span class="cf-style-chips">${body}</span></div>`;
+}
+
+function cardStyleChips(field, options, current, { swatch = null } = {}) {
+  return options.map(([value, text]) => {
     const dot = swatch ? `<span class="canvas-feed-dot" style="--swatch:${escapeHtml(swatch(value) || "transparent")}"></span>` : "";
     return `<button type="button" class="canvas-feed-chip" data-cf-set="${field}" data-cf-value="${escapeHtml(value)}" aria-pressed="${String(current) === String(value)}" title="${escapeHtml(text)}">${dot}${escapeHtml(text)}</button>`;
   }).join("");
-  return `<div class="cf-style-row"><span class="canvas-feed-label">${escapeHtml(label)}</span><span class="cf-style-chips">${chips}</span></div>`;
 }
 
-function fontSelect(field, current) {
+const fontName = (key) => {
+  const value = String(key || "system");
+  return value[0].toUpperCase() + value.slice(1);
+};
+
+// The Canvas's own face for a Block's words: ◐ Canvas → Blocks → Font, or the
+// app's font when that follows it.
+function canvasFontKey() {
+  const settings = state.styleSettings || {};
+  const own = settings.canvasBlockFontFamily;
+  return own && own !== "inherit" ? own : settings.fontFamily || "system";
+}
+
+// The Canvas's own size for a Block's words, in points, as it is drawn now.
+function canvasTextPoints() {
+  const probe = document.createElement("div");
+  probe.className = "region-block-host";
+  probe.dataset.docSlot = "notebook";
+  probe.style.cssText = "position:fixed;left:-9999px;top:0;visibility:hidden;font-size:var(--doc-block-font-size, 0.82rem)";
+  document.body.appendChild(probe);
+  const px = parseFloat(getComputedStyle(probe).fontSize) || 13;
+  probe.remove();
+  return Math.round(px * 0.75 * 10) / 10;
+}
+
+function fontSelect(field, current, canvasKey) {
   const known = new Set(fontFamilyOptionGroups.flatMap((group) => group.options));
   const groups = fontFamilyOptionGroups.map((group) => `<optgroup label="${escapeHtml(group.label)}">${group.options
     .filter((key) => Object.prototype.hasOwnProperty.call(fontFamilyChoices, key))
-    .map((key) => `<option value="${escapeHtml(key)}"${current === key ? " selected" : ""}>${escapeHtml(key[0].toUpperCase() + key.slice(1))}</option>`).join("")}</optgroup>`).join("");
+    .map((key) => `<option value="${escapeHtml(key)}"${current === key ? " selected" : ""}>${escapeHtml(fontName(key))}</option>`).join("")}</optgroup>`).join("");
   const extra = current && current !== "inherit" && !known.has(current) ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>` : "";
-  return `<select data-cf-input="${field}"><option value="inherit">The Canvas's font</option>${extra}${groups}</select>`;
+  return `<select data-cf-input="${field}"><option value="inherit"${current === "inherit" ? " selected" : ""}>${escapeHtml(fontName(canvasKey))} — ◐ Canvas's font</option>${extra}${groups}</select>`;
+}
+
+// One side of a card as it will be drawn: the last Block's look, with what was
+// chosen here over it — each value with where it came from.
+function cardSideStyle(side) {
+  const chosen = feedModel.cardStyle[side] || {};
+  const last = feedModel.latest || {};
+  const value = normalizeBlockStyle({ ...last, ...chosen });
+  const sourceOf = (field, follows = "plain") => (field in chosen ? "here" : field in last ? "last" : follows);
+  return { value, sourceOf };
 }
 
 function blockSidePanel(side) {
-  const bag = normalizeBlockStyle(feedModel.cardStyle[side]);
-  const pens = [["default", "Default"], ...INK_PEN_COLORS.map((pen) => [pen.value, pen.name])];
+  const { value, sourceOf } = cardSideStyle(side);
+  const canvasKey = canvasFontKey();
+  const points = value.size ?? canvasTextPoints();
+  const text = getComputedStyle(document.documentElement).getPropertyValue("--text").trim() || "#888";
+  const pens = [["default", "Theme text"], ...INK_PEN_COLORS.map((pen) => [pen.value, pen.name])];
+  const bold = value.weight && value.weight >= 600;
   return [
-    chipRow("Fill", "fill", BLOCK_FILLS.map((fill) => [fill, BLOCK_FILL_LABEL[fill] || fill]), bag.fill, { swatch: (value) => BLOCK_FILL_HEX[value] }),
-    chipRow("Text colour", "ink", pens, bag.ink, { swatch: (value) => INK_PEN_HEX[value] || "" }),
-    `<div class="cf-style-row"><span class="canvas-feed-label">Type</span><span class="cf-style-chips">`
-      + `<label class="cf-style-field">Size <input type="text" inputmode="decimal" data-cf-input="size" value="${bag.size ?? ""}" placeholder="auto"> pt</label>`
-      + `<label class="cf-style-field">Face ${fontSelect("font", bag.font)}</label>`
-      + `<button type="button" class="canvas-feed-chip" data-cf-set="weight" data-cf-value="${bag.weight ? "" : "700"}" aria-pressed="${Boolean(bag.weight && bag.weight >= 600)}"><b>B</b> Bold</button>`
-      + `</span></div>`,
-    chipRow("Align", "align", [["left", "Left"], ["center", "Centre"], ["right", "Right"]], bag.align),
-    chipRow("Frame", "frame", BLOCK_FRAMES.map((frame) => [frame, BLOCK_FRAME_LABEL[frame] || frame]), bag.frame),
-    `<div class="cf-style-row"><span class="canvas-feed-label">Shape</span><span class="cf-style-chips"><select data-cf-input="shape">${BLOCK_SHAPES.map((shape) => `<option value="${shape}"${bag.shape === shape ? " selected" : ""}>${escapeHtml(BLOCK_SHAPE_LABEL[shape] || shape)}</option>`).join("")}</select></span></div>`
+    cardStyleRow("Fill", "fill", sourceOf("fill"), cardStyleChips("fill", BLOCK_FILLS.map((fill) => [fill, BLOCK_FILL_LABEL[fill] || fill]), value.fill, { swatch: (v) => BLOCK_FILL_HEX[v] })),
+    cardStyleRow("Text colour", "ink", sourceOf("ink", "canvas"), cardStyleChips("ink", pens, value.ink, { swatch: (v) => INK_PEN_HEX[v] || text })),
+    cardStyleRow("Size", "size", sourceOf("size", "canvas"), `<label class="cf-style-field"><input type="text" inputmode="decimal" data-cf-input="size" value="${points}"> pt</label>`),
+    cardStyleRow("Face", "font", sourceOf("font", "canvas"), fontSelect("font", value.font, canvasKey)),
+    cardStyleRow("Weight", "weight", sourceOf("weight", "canvas"), cardStyleChips("weight", [["400", "Regular"], ["700", "Bold"]], bold ? "700" : "400")),
+    cardStyleRow("Align", "align", sourceOf("align"), cardStyleChips("align", [["left", "Left"], ["center", "Centre"], ["right", "Right"]], value.align)),
+    cardStyleRow("Frame", "frame", sourceOf("frame"), cardStyleChips("frame", BLOCK_FRAMES.map((frame) => [frame, BLOCK_FRAME_LABEL[frame] || frame]), value.frame)),
+    cardStyleRow("Shape", "shape", sourceOf("shape"), `<select data-cf-input="shape">${BLOCK_SHAPES.map((shape) => `<option value="${shape}"${value.shape === shape ? " selected" : ""}>${escapeHtml(BLOCK_SHAPE_LABEL[shape] || shape)}</option>`).join("")}</select>`)
   ].join("");
 }
 
+// The arrow as it will be drawn: the Shapes tool's connector, with what was
+// chosen here over it.
+function cardArrowValues() {
+  const chosen = feedModel.cardStyle.arrow || {};
+  const base = newConnectorBase();
+  const shape = cardArrowShape(base, chosen);
+  const pen = Object.keys(INK_PEN_HEX).find((token) => INK_PEN_HEX[token].toLowerCase() === String(shape.stroke || "").toLowerCase()) || "";
+  return {
+    shape,
+    color: chosen.color || pen,
+    width: shape.width,
+    dash: shape.dash || "solid",
+    head: (shape.heads || [])[1] || "none",
+    route: shape.route || "straight",
+    sourceOf: (field) => (chosen[field] ? "here" : "tool")
+  };
+}
+
 function arrowPanel() {
-  const arrow = feedModel.cardStyle.arrow;
-  const pens = [["", "Default"], ...INK_PEN_COLORS.map((pen) => [pen.value, pen.name])];
+  const a = cardArrowValues();
+  const pens = INK_PEN_COLORS.map((pen) => [pen.value, pen.name]);
+  // The Shapes tool's own colour, when it is not one of the pens.
+  const own = a.color ? "" : `<span class="canvas-feed-chip" aria-pressed="true"><span class="canvas-feed-dot" style="--swatch:${escapeHtml(a.shape.stroke)}"></span>${escapeHtml(a.shape.stroke)}</span>`;
   return [
-    chipRow("Colour", "arrow.color", pens, arrow.color, { swatch: (value) => INK_PEN_HEX[value] || "" }),
-    `<div class="cf-style-row"><span class="canvas-feed-label">Thickness</span><span class="cf-style-chips"><label class="cf-style-field"><input type="text" inputmode="decimal" data-cf-input="arrow.width" value="${arrow.width ?? ""}" placeholder="auto"> pt</label></span></div>`,
-    chipRow("Line", "arrow.dash", [["", "Default"], ...Object.entries(ARROW_DASH_LABEL)], arrow.dash),
-    chipRow("End", "arrow.head", [["", "Default"], ...Object.entries(ARROW_HEAD_LABEL)], arrow.head),
-    chipRow("Route", "arrow.route", [["", "Default"], ...Object.entries(ARROW_ROUTE_LABEL)], arrow.route)
+    cardStyleRow("Colour", "arrow.color", a.sourceOf("color"), own + cardStyleChips("arrow.color", pens, a.color, { swatch: (v) => INK_PEN_HEX[v] || "" })),
+    cardStyleRow("Thickness", "arrow.width", feedModel.cardStyle.arrow?.width ? "here" : "tool", `<label class="cf-style-field"><input type="text" inputmode="decimal" data-cf-input="arrow.width" value="${a.width}"> pt</label>`),
+    cardStyleRow("Line", "arrow.dash", a.sourceOf("dash"), cardStyleChips("arrow.dash", Object.entries(ARROW_DASH_LABEL), a.dash)),
+    cardStyleRow("End", "arrow.head", a.sourceOf("head"), cardStyleChips("arrow.head", Object.entries(ARROW_HEAD_LABEL), a.head)),
+    cardStyleRow("Route", "arrow.route", a.sourceOf("route"), cardStyleChips("arrow.route", Object.entries(ARROW_ROUTE_LABEL), a.route))
   ].join("");
 }
 
@@ -283,15 +379,18 @@ function paintCardStyle({ panel = true } = {}) {
 }
 
 // The preview's look for one side, from the same custom properties a Block on
-// the page reads (styles/58-block-style.css, styles/52-ink.css).
+// the Canvas reads (styles/58-block-style.css, styles/52-ink.css,
+// styles/79-tab-text.css) — the last Block's look with this side's choices.
 function previewSideStyle(side) {
-  const bag = normalizeBlockStyle(feedModel.cardStyle[side]);
+  const bag = cardSideStyle(side).value;
   const rules = [`background:var(--block-fill-${bag.fill})`];
   if (bag.ink !== "default") rules.push(`color:var(--ink-pen-${bag.ink})`);
-  if (bag.size) rules.push(`font-size:${bag.size}pt`);
+  rules.push(bag.size ? `font-size:${bag.size}pt` : "font-size:var(--doc-block-font-size, 0.82rem)");
   if (bag.font !== "inherit" && fontFamilyChoices[bag.font]) {
     ensureWebfont(bag.font);
     rules.push(`font-family:${fontFamilyChoices[bag.font]}`);
+  } else {
+    rules.push("font-family:var(--canvas-block-font, inherit)");
   }
   if (bag.weight) rules.push(`font-weight:${bag.weight}`);
   rules.push(`text-align:${bag.align}`);
@@ -306,7 +405,7 @@ function previewSideStyle(side) {
 function paintCardPreview() {
   const preview = feedDialog.querySelector("[data-cf-preview]");
   const stacked = feedModel.cardStyle.layout === "stacked";
-  const shape = cardArrowShape(newConnectorBase(), feedModel.cardStyle.arrow);
+  const { shape } = cardArrowValues();
   const dash = shape.dash === "dash" ? `${shape.width * 3} ${shape.width * 2}` : shape.dash === "dot" ? `${shape.width} ${shape.width * 1.6}` : "";
   const head = (shape.heads || ["none", "filled"])[1] || "none";
   const len = 46;
@@ -332,7 +431,7 @@ function setCardStyleValue(field, value) {
     } else if (value === "" || value === null) {
       delete bag[field];
     } else {
-      bag[field] = value;
+      bag[field] = field === "weight" ? Number(value) : value;
     }
     style[side] = bag;
   }
@@ -351,9 +450,21 @@ function onCanvasFeedClick(event) {
   if (tab) { feedModel.styleTab = tab.dataset.cfTab; paintCardStyle(); return; }
   const set = event.target.closest("[data-cf-set]");
   if (set) {
-    const field = set.dataset.cfSet;
-    const value = field === "weight" ? (set.dataset.cfValue ? Number(set.dataset.cfValue) : "") : set.dataset.cfValue;
-    setCardStyleValue(field, value);
+    setCardStyleValue(set.dataset.cfSet, set.dataset.cfValue);
+    paintCardStyle();
+    return;
+  }
+  const clear = event.target.closest("[data-cf-clear]");
+  if (clear) {
+    const field = clear.dataset.cfClear;
+    if (field === "shape") {
+      const side = feedModel.styleTab === "a" ? "a" : "q";
+      const bag = { ...feedModel.cardStyle[side] };
+      ["shape", "align", "valign"].forEach((key) => delete bag[key]);
+      feedModel.cardStyle = writeCardCanvasStyle({ ...feedModel.cardStyle, [side]: bag });
+    } else {
+      setCardStyleValue(field, field.startsWith("arrow.") ? (field === "arrow.width" ? null : "") : "");
+    }
     paintCardStyle();
     return;
   }
@@ -384,9 +495,12 @@ function onCanvasFeedInput(event) {
 
 function onCanvasFeedChange(event) {
   const box = event.target;
-  if (box.matches("select[data-cf-input]")) {
+  if (box.matches("input[data-cf-input]")) {
+    // Left the box: its tag now says it was set here.
+    paintCardStyle();
+  } else if (box.matches("select[data-cf-input]")) {
     setCardStyleValue(box.dataset.cfInput, box.value);
-    paintCardPreview();
+    paintCardStyle();
   } else if (box.matches("[data-cf-item]")) {
     const index = Number(box.dataset.cfItem);
     if (box.checked) feedModel.ticked.add(index);
@@ -397,6 +511,7 @@ function onCanvasFeedChange(event) {
     loadFeedItems();
   } else if (box.matches("[data-cf-keep-colours]")) {
     feedModel.colours = box.checked;
+    writeKeepFill(box.checked);
   }
 }
 
@@ -437,10 +552,10 @@ export function openCanvasFeedDialog(source) {
   }
   if (!feedDialog) feedDialog = buildCanvasFeedDialog();
   feedModel = {
-    source, items: [], ticked: new Set(), onCanvas: new Set(), colourFilter: new Set(), allPdfs: false, colours: true,
-    cardStyle: readCardCanvasStyle(), styleTab: "q"
+    source, items: [], ticked: new Set(), onCanvas: new Set(), colourFilter: new Set(), allPdfs: false, colours: readKeepFill(),
+    cardStyle: readCardCanvasStyle(), styleTab: "q", latest: latestCanvasBlockStyle()
   };
-  feedDialog.querySelector("[data-cf-keep-colours]").checked = true;
+  feedDialog.querySelector("[data-cf-keep-colours]").checked = feedModel.colours;
   feedDialog.querySelector("[data-cf-style]").open = false;
   loadFeedItems();
   feedDialog.hidden = false;

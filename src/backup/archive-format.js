@@ -358,7 +358,7 @@ export const BACKED_UP_SETTINGS_KEYS = {
   "recall:pdfPaper": "The paper tone PDFs are shown on (White, Sepia, Dim, Black or the theme's).",
   "recall:canvasPaper": "The paper tone the Canvas is shown on.",
   recall_card_canvas_style_v1: "How a card looks when it goes onto the Canvas: its question and answer Blocks, the arrow, and side by side or one above the other.",
-  recall_canvas_feed_colours_v1: "Which highlight colours To the Canvas last took, for the Notes and for the PDFs.",
+  recall_canvas_feed_colours_v1: "Which highlight colours To the Canvas last took, for the Notes and for the PDFs, and whether it fills each Block with its highlight's colour.",
   "recall:view-only-v1": "Whether the PDFs and the Canvas are View only on this device — read and zoomed, nothing on the page moved.",
   "recall:readingProgressShown": "Whether the reading-progress row is shown at the foot of Notes and PDFs.",
   "recall:teleprompter-v1": "The teleprompter's speed, type, reading band and behaviour.",

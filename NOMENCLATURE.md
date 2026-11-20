@@ -152,13 +152,19 @@ Each opens the **picker**, a list of the part's items with the new ones ticked
 and the ones already on the Canvas marked "on the Canvas"; Add puts the ticked
 ones at the **end of the Canvas**, under the lowest thing on the last page,
 adding pages as each fills (`appendNotebookPages` in `notebook.js`), one undo
-step. The picker's **Colours** row takes one or several highlight colours (a
+step. Everything put on the Canvas this way takes the **last Block's look** —
+the style of the last Block styled on this device, what + Add starts a Block
+with (`blockStylePreference`, `latestCanvasBlockStyle` in `canvas-feed.js`);
+the picker's **Fill with each highlight's colour** (off unless ticked,
+remembered) puts a highlight's colour over the fill. The picker's **Colours** row takes one or several highlight colours (a
 highlight with none counts as yellow), remembered per part on the device
 (`recall_canvas_feed_colours_v1`). The Cards' picker has a **Style** section —
 Question, Answer and Arrow tabs (fill, text colour, size, face, bold, align,
 frame, shape; the arrow's colour, thickness, line, end and route) and the
-**layout**, side by side or question above answer — which a card dragged by its
-grip takes too (`recall_card_canvas_style_v1`, `card-canvas-style.js`). One at
+**layout**, side by side or question above answer — over the last Block's look,
+each control showing the value in use and where it comes from (from the last
+Block, ◐ Canvas, the Shapes tool's arrow, or "set here ✕"; never a bare
+"Default" or "auto") — which a card dragged by its grip takes too (`recall_card_canvas_style_v1`, `card-canvas-style.js`). One at
 a time: **To the Canvas** in a highlight's menu and ✎ on the selection bar.
 **Dragged across**: with the Canvas side by side, a selection, a highlight
 pressed and dragged, a card by its ⠿ grip, or a whole picture, code listing,
@@ -168,9 +174,12 @@ level or above; `notes-grip.js`), let go over a Canvas page, is a Block there.
 Words, a selection or a picture dragged in from a **web page, another PDF
 reader or another app** land the same way: a page's HTML as markdown, bare
 words as a PDF's words (the page's line ends joined, `pdfPlainToMarkdown`), a
-picture file as a picture Block. While it is dragged, the **drop preview** shows
-the Block it will be, at its size, following the pointer and settling onto the
-edges and middles of the Blocks there; it lands where the preview was. The
+picture file as a picture Block. While it is dragged, the **drop preview** is
+the Block itself, drawn by the page's renderer in the look it will have
+(`renderCanvasPreview`), following the pointer and settling onto the edges and
+middles of the Blocks there; it lands where the preview was. The browser's own
+faded picture of what is dragged is swapped for an empty one; something from
+another app is drawn by that app, and gets a dashed box the size of its kind. The
 **Canvas's sizes, not the source's**: a picture's width in the Notes, a
 diagram's `w=`, a font size in a span or a site's own sizes are taken off
 (`canvasSizedMarkdown` in `canvas-sizing.js`), and the Block takes ◐ Canvas's

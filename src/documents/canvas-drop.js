@@ -19,10 +19,12 @@
 //
 // Whatever it is, it lands the size the Canvas gives its kind, not the size it
 // had where it came from (canvasSizedMarkdown, ./canvas-sizing.js; ◐ Canvas →
-// Blocks), and it lands where its preview was: the preview follows the
-// pointer at the size the Block will be, kept on the page and settling onto
-// the edges and middles of the Blocks already there (snapMove,
-// src/render/snap-guides.js).
+// Blocks), in the look of the last Block styled on the Canvas
+// (latestCanvasBlockStyle), and where its preview was: the preview IS the
+// Block, drawn by the page's own renderer, following the pointer — kept on
+// the page and settling onto the edges and middles of the Blocks already there
+// (snapMove, src/render/snap-guides.js) — and the browser's own faded picture
+// of what is dragged is hidden, so it is the one thing that moves.
 //
 // The parts beside the Canvas, or the Canvas in focus: a drop on a Canvas page
 // is read here either way. HTML5 drag and drop, which a touch screen does not
@@ -33,10 +35,10 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_NOTEBOOK } from "./doc-slot.js?v=__BUILD__";
-import { CANVAS_ITEM_MIME, cardItem, flowItemFor, measureCanvasItems, notesHighlightItemForMark, pdfHighlightItem, placeOnCanvas } from "./canvas-feed.js?v=__BUILD__";
+import { CANVAS_ITEM_MIME, cardItem, flowItemFor, measureCanvasItems, notesHighlightItemForMark, pdfHighlightItem, placeOnCanvas, renderCanvasPreview } from "./canvas-feed.js?v=__BUILD__";
 import { pdfPlainToMarkdown } from "./canvas-sizing.js?v=__BUILD__";
 import { canvasBlockMeasurePercent, canvasDropWidthPercent } from "./block-measure.js?v=__BUILD__";
-import { clampTopLeft, flowItemExtent, flowPlaceFromTopLeft, FLOW_PAIR_GAP } from "./canvas-flow.js?v=__BUILD__";
+import { clampTopLeft, flowItemExtent, FLOW_PAIR_GAP } from "./canvas-flow.js?v=__BUILD__";
 import { blockPageBounds, blocksForPaper } from "./pdf-blocks.js?v=__BUILD__";
 import { snapMove } from "../render/snap-guides.js?v=__BUILD__";
 import { notebookPageSetup } from "./notebook.js?v=__BUILD__";
@@ -169,11 +171,26 @@ function onCanvasDragPointerDown(event) {
   }
 }
 
+// Nothing under the pointer but the preview: the browser's own picture of
+// what is dragged (the selection, the highlight, the element, faded) is
+// swapped for an empty one, so over a Canvas page the Block that will be made
+// is the one thing that moves. A drag from another app is drawn by that app
+// and the system, and cannot be changed from here.
+const BLANK_DRAG_IMAGE = typeof Image === "undefined" ? null : Object.assign(new Image(1, 1), {
+  src: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+});
+
+function hideBrowserDragImage(dt) {
+  if (!BLANK_DRAG_IMAGE) return;
+  try { dt.setDragImage(BLANK_DRAG_IMAGE, 0, 0); } catch { /* the browser's own */ }
+}
+
 function carryCanvasItem(dt, item) {
   dt.setData(CANVAS_ITEM_MIME, JSON.stringify(item));
   dt.setData("text/plain", item.kind === "pair" ? `${item.q}\n\n${item.a}` : item.md || "");
   dt.effectAllowed = "copy";
   setDragItem(item);
+  hideBrowserDragImage(dt);
 }
 
 function onCanvasDragStart(event) {
@@ -205,7 +222,6 @@ function onCanvasDragStart(event) {
     const item = thing ? notesElementItem(thing) : null;
     if (!item) { event.preventDefault(); return; }
     carryCanvasItem(dt, item);
-    try { dt.setDragImage(thing, 12, 12); } catch { /* the grip's own image */ }
     return;
   }
   if (!canvasIsBeside()) return;
@@ -222,6 +238,7 @@ function onCanvasDragStart(event) {
     if (md) {
       dt.setData(CANVAS_ITEM_MIME, JSON.stringify({ kind: "text", md, from: "" }));
       setDragItem({ kind: "text", md, from: "" });
+      hideBrowserDragImage(dt);
     }
     return;
   }
@@ -232,6 +249,7 @@ function onCanvasDragStart(event) {
     if (md) {
       dt.setData(CANVAS_ITEM_MIME, JSON.stringify({ kind: "text", md, from: "" }));
       setDragItem({ kind: "text", md, from: "" });
+      hideBrowserDragImage(dt);
     }
   }
 }
@@ -289,26 +307,21 @@ function ensureGhost() {
 
 function hideGhost() {
   canvasDropGhost?.remove();
+  canvasDropGhost?.replaceChildren();
   ghostState = null;
+  ghostDrawn = null;
 }
 
-function previewLine(item) {
-  const raw = item?.kind === "pair" ? item.q : item?.md;
-  return String(raw || "")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "▧ picture")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/[#*_`>|\\[\]]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 90);
+// The measured entry for the item being dragged, over this page — or null.
+function measuredEntry(frame) {
+  return dragItem && dragMeasure?.key === frame.page ? dragMeasure.result?.sized?.[0] || null : null;
 }
 
 // The preview's item, in canvas-flow.js's terms: the measured item, or a box
 // the size its kind will be.
 function ghostFlowItem(frame, kind) {
-  if (dragItem && dragMeasure?.key === frame.page && dragMeasure.result?.sized?.[0]) {
-    return flowItemFor(dragMeasure.result.sized[0]);
-  }
+  const entry = measuredEntry(frame);
+  if (entry) return flowItemFor(entry);
   const pageWidth = frame.box[2] - frame.box[0];
   if (dragItem?.kind === "pair") {
     const half = Math.max(80, Math.floor((pageWidth * 0.62 - FLOW_PAIR_GAP) / 2));
@@ -328,6 +341,21 @@ function boxesOnCanvasPage(page) {
   } catch {
     return [];
   }
+}
+
+// What the preview is drawn as just now: the measured entry at a scale, so
+// it is drawn once and then only moved.
+let ghostDrawn = null;
+
+function drawGhostBlock(node, entry, scale, arrowStyle) {
+  if (ghostDrawn?.entry === entry && ghostDrawn.scale === scale) return;
+  ghostDrawn = { entry, scale };
+  node.replaceChildren();
+  node.classList.add("is-rendered");
+  const drawn = ghostDrawn;
+  renderCanvasPreview(entry, scale, node, { arrowStyle }).catch(() => {
+    if (ghostDrawn === drawn) node.classList.remove("is-rendered");
+  });
 }
 
 function paintGhost(frame, clientX, clientY, kind) {
@@ -351,30 +379,26 @@ function paintGhost(frame, clientX, clientY, kind) {
   node.style.top = px(y1 - top);
   node.style.width = px(w);
   node.style.height = px(h);
-  node.classList.toggle("is-guess", !(dragItem && dragMeasure?.key === frame.page));
-  const label = dragItem ? previewLine(dragItem) : kind === "picture" ? "Picture" : "Words";
-  if (item.pair) {
-    const place = flowPlaceFromTopLeft(item, frame.page, left, top);
-    const parts = place.parts.map((part, i) => {
-      const size = item.pair[i];
-      return `<span class="canvas-drop-ghost-part" style="left:${px(part.x - left)};top:${px(top - (part.y + size.h))};width:${px(size.w)};height:${px(size.h)}">${i === 0 ? label.replace(/</g, "&lt;") : "Answer"}</span>`;
-    });
-    node.innerHTML = `${parts.join("")}<span class="canvas-drop-ghost-arrow${item.stacked ? " is-down" : ""}"></span>`;
-    node.classList.add("is-pair");
-    const arrow = node.querySelector(".canvas-drop-ghost-arrow");
-    if (item.stacked) {
-      arrow.style.left = px(Math.min(item.pair[0].w, item.pair[1].w) / 2);
-      arrow.style.top = px(item.pair[0].h);
-      arrow.style.height = px(FLOW_PAIR_GAP);
-    } else {
-      arrow.style.left = px(item.pair[0].w);
-      arrow.style.top = px(Math.min(item.pair[0].h, item.pair[1].h) / 2);
-      arrow.style.width = px(FLOW_PAIR_GAP);
-    }
-  } else {
-    node.classList.remove("is-pair");
-    node.textContent = label;
+  const entry = measuredEntry(frame);
+  if (entry) {
+    // The Block itself, as the page will draw it, in the look it will have.
+    node.classList.remove("is-guess", "is-outline");
+    drawGhostBlock(node, entry, frame.scale, dragMeasure.result.cardStyle?.arrow);
+    return;
   }
+  ghostDrawn = null;
+  node.classList.remove("is-rendered");
+  if (dragItem) {
+    // Being measured: its outline only, for the moment that takes.
+    node.classList.add("is-outline");
+    node.classList.remove("is-guess");
+    node.replaceChildren();
+    return;
+  }
+  // From another app, which says what it is only when it is let go.
+  node.classList.add("is-guess");
+  node.classList.remove("is-outline");
+  node.textContent = kind === "picture" ? "Picture" : "Words";
 }
 
 function onCanvasDragOver(event) {

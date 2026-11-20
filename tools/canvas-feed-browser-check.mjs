@@ -235,7 +235,7 @@ try {
     const existing = api.addHandwritingTextBlock("Already here", { page: 1, x: 60, y: 760 });
     await settle(800);
     const before = api.documentBlocks().find((b) => b.id === existing.id);
-    const made = await api.placeOnCanvas(api.notesHighlightItems(), { quiet: true });
+    const made = await api.placeOnCanvas(api.notesHighlightItems(), { quiet: true, colours: true });
     await settle(1200);
     const blocks = api.documentBlocks().filter((b) => made.blocks.includes(b.id));
     return { before, blocks, keys: [...api.keysOnCanvas()] };
@@ -358,6 +358,8 @@ try {
     if (api.isNotesEditing()) { editor.value = source; api.commitNotesEditIfActive(); }
     api.renderNotesView();
     await settle(800);
+    // The last Block styled on this device: what a dragged Block takes.
+    api.writeBlockStylePreference("text", { fill: "violet", size: 14, frame: "outline" });
     const marks = [...document.querySelectorAll("#notesView mark")];
     const mark = marks[1];
     if (!mark) return { marks: marks.length };
@@ -365,6 +367,8 @@ try {
     mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 7, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1, clientX: r.left + 4, clientY: r.top + r.height / 2 }));
     const armed = mark.getAttribute("draggable") === "true";
     const dt = new DataTransfer();
+    let dragImage = null;
+    dt.setDragImage = (image) => { dragImage = image; };
     mark.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt }));
     const carried = dt.getData("application/x-recall-item");
     const pageEl = document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='1']");
@@ -375,10 +379,11 @@ try {
     mark.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: dt }));
     await settle(1500);
     const block = api.documentBlocks().find((b) => b.md === "Retrieval practice beats rereading" && b.page === 1 && b.x > 300);
-    return { marks: marks.length, armed, carried, block, disarmed: !mark.hasAttribute("draggable") };
+    return { marks: marks.length, armed, carried, block, disarmed: !mark.hasAttribute("draggable"), blankImage: Boolean(dragImage && dragImage.width <= 1 && String(dragImage.src).startsWith("data:image/gif")) };
   }`);
   check("a Notes highlight pressed with the Canvas beside can be dragged", markDrag.armed === true && /Retrieval practice/.test(markDrag.carried || ""), JSON.stringify(markDrag));
-  check("...and let go of on a Canvas page, it is a Block there, in its colour", markDrag.block?.style?.fill === "green" && /^notes:/.test(markDrag.block?.from || ""), JSON.stringify(markDrag.block));
+  check("...and let go of on a Canvas page, it is a Block there in the last Block's look", markDrag.block?.style?.fill === "violet" && markDrag.block?.style?.size === 14 && markDrag.block?.style?.frame === "outline" && /^notes:/.test(markDrag.block?.from || ""), JSON.stringify(markDrag.block));
+  check("...and the browser's own faded picture of it is swapped for an empty one", markDrag.blankImage === true);
   check("...and the highlight is not left draggable", markDrag.disarmed === true);
 
   // ── 7c. Whole things of the Notes, by the grip, with the drop preview ──
@@ -407,15 +412,18 @@ try {
         await settle(100);
         target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
       }
+      for (let i = 0; i < 30 && !document.querySelector(".canvas-drop-ghost.is-rendered .pdf-block .pdf-block-body *"); i += 1) await settle(100);
       const ghost = document.querySelector(".canvas-drop-ghost");
+      const rendered = Boolean(ghost?.classList.contains("is-rendered") && ghost.querySelector(".pdf-block .pdf-block-body *"));
+      const ghostFill = ghost?.querySelector(".pdf-block")?.dataset.blockFill || ghost?.querySelector(".pdf-block")?.getAttribute("data-fill") || "";
       const g = ghost?.getBoundingClientRect();
-      const preview = g ? { x: (g.left - box.left) / scale, top: 842 - (g.top - box.top) / scale, w: g.width / scale, measured: !ghost.classList.contains("is-guess") } : null;
+      const preview = g ? { x: (g.left - box.left) / scale, top: 842 - (g.top - box.top) / scale, w: g.width / scale, measured: !ghost.classList.contains("is-guess") && !ghost.classList.contains("is-outline") } : null;
       const before = new Set(api.documentBlocks().map((b) => b.id));
       target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
       grip?.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: dt }));
       await settle(1500);
       const block = api.documentBlocks().find((b) => !before.has(b.id));
-      return { shown, carried: carried ? JSON.parse(carried) : null, preview, block, ghostGone: !document.querySelector(".canvas-drop-ghost") };
+      return { shown, carried: carried ? JSON.parse(carried) : null, preview, rendered, ghostFill, ghostHtml: ghost?.innerHTML.slice(0, 200), block, ghostGone: !document.querySelector(".canvas-drop-ghost") };
     };
     const figures = [...document.querySelectorAll("#notesView h1, #notesView h2, #notesView h3")].find((h) => /Figures/.test(h.textContent));
     const notes = api.state.notes;
@@ -430,6 +438,8 @@ try {
   const pic = grip.picture;
   check("a grip comes up beside a picture of the Notes", pic?.shown === true, JSON.stringify(pic && { shown: pic.shown }));
   check("...and carries the picture without its Notes width", /^!\[dot\]\(data:image\/png/.test(pic?.carried?.md || "") || /dot/.test(pic?.carried?.md || ""), JSON.stringify(pic?.carried?.md?.slice(0, 80)));
+  check("while dragged, the preview is the Block itself, drawn as the page draws it", pic?.rendered === true && grip.section?.rendered === true, JSON.stringify({ pic: pic?.ghostHtml, sec: grip.section?.ghostHtml }));
+  check("...in the last Block's look", grip.section?.block?.style?.fill === "violet" && grip.section?.block?.style?.size === 14, JSON.stringify(grip.section?.block?.style));
   check("while dragged, a preview shows the Block at its size", pic?.preview?.measured === true && Math.abs((pic?.preview?.w || 0) - (pic?.block?.w || -99)) < 3, JSON.stringify({ preview: pic?.preview, w: pic?.block?.w }));
   check("...and the Block lands where the preview was", pic?.block && Math.abs(pic.block.x - pic.preview.x) < 2 && Math.abs((pic.block.y + pic.block.h) - pic.preview.top) < 2 && pic.ghostGone, JSON.stringify({ block: pic?.block && [pic.block.x, pic.block.y + pic.block.h], preview: pic?.preview }));
   check("a picture lands at ◐ Canvas → Pictures land at (40%), not its 640px", pic?.block && Math.abs(pic.block.w - Math.floor(595 * 0.4)) <= 2 && !/640/.test(pic.block.md) && pic.block.style?.imageWidth === 100, JSON.stringify(pic?.block && { w: pic.block.w, md: pic.block.md.slice(0, 40), style: pic.block.style }));
@@ -494,6 +504,19 @@ try {
     const q = (s) => document.querySelector("#canvasFeedModal " + s);
     q("[data-cf-style]").open = true;
     q('[data-cf-tab="q"]').click();
+    const panelText = q("[data-cf-panel]").textContent;
+    const sizeBox = q('[data-cf-panel] input[data-cf-input="size"]');
+    const shown = {
+      size: sizeBox?.value,
+      vague: /\\bauto\\b|\\bDefault\\b/.test(panelText + q("[data-cf-panel]").innerHTML.replace(/<[^>]+>/g, " ")),
+      fillFrom: [...document.querySelectorAll("#canvasFeedModal .cf-style-row")].find((r) => /Fill/.test(r.textContent))?.querySelector(".cf-src")?.textContent,
+      fillPressed: q('[data-cf-set="fill"][aria-pressed="true"]')?.dataset.cfValue
+    };
+    q('[data-cf-tab="arrow"]').click();
+    shown.arrowWidth = q('[data-cf-panel] input[data-cf-input="arrow.width"]')?.value;
+    shown.arrowVague = /\\bauto\\b|\\bDefault\\b/.test(q("[data-cf-panel]").textContent);
+    shown.arrowFrom = q("[data-cf-panel] .cf-src")?.textContent;
+    q('[data-cf-tab="q"]').click();
     q('[data-cf-set="fill"][data-cf-value="yellow"]').click();
     q('[data-cf-tab="a"]').click();
     q('[data-cf-set="frame"][data-cf-value="outline"]').click();
@@ -503,9 +526,10 @@ try {
     q('[data-cf-layout="stacked"]').click();
     const preview = q("[data-cf-preview]").classList.contains("is-stacked") && /dasharray/.test(q("[data-cf-preview]").innerHTML);
     q('[data-cf-tab="q"]').click();
+    shown.fillAfter = [...document.querySelectorAll("#canvasFeedModal .cf-style-row")].find((r) => /Fill/.test(r.textContent))?.querySelector(".cf-src")?.textContent;
     window.__closeFeed = () => q('[data-cf-action="cancel"]').click();
     await settle(300);
-    return { preview };
+    return { preview, shown };
   }`);
   await snap("7-card-style.png");
   const styledMade = await page.evaluate(`async () => {
@@ -525,6 +549,8 @@ try {
   }`);
   Object.assign(styled, styledMade);
   check("the card Style's preview follows what is chosen", styled.preview === true);
+  check("the card Style shows the values in use — a size in points, no bare auto or Default", /^\d+(\.\d+)?$/.test(styled.shown?.size || "") && styled.shown?.vague === false && /^\d/.test(styled.shown?.arrowWidth || "") && styled.shown?.arrowVague === false, JSON.stringify(styled.shown));
+  check("...and says where each comes from: the last Block, the Shapes tool, or set here", styled.shown?.fillFrom === "from the last Block" && styled.shown?.fillPressed === "violet" && /Shapes tool/.test(styled.shown?.arrowFrom || "") && /set here/.test(styled.shown?.fillAfter || ""), JSON.stringify(styled.shown));
   check("the question Block takes its fill, the answer its frame", styled.qb?.style?.fill === "yellow" && styled.ab?.style?.frame === "outline", JSON.stringify({ q: styled.qb?.style, a: styled.ab?.style }));
   check("...the arrow its colour and dashes", styled.arrow?.dash === "dash" && /^#dc2626$/i.test(styled.arrow?.stroke || ""), JSON.stringify(styled.arrow));
   check("...and Question above answer puts the answer under it", styled.qb && styled.ab && styled.ab.y + styled.ab.h < styled.qb.y && Math.abs(styled.ab.x - styled.qb.x) < 2, JSON.stringify([styled.qb && [styled.qb.x, styled.qb.y], styled.ab && [styled.ab.x, styled.ab.y, styled.ab.h]]));
@@ -642,6 +668,8 @@ try {
     api.openCanvasFeedDialog("pdf");
     await settle(200);
     const rows = document.querySelectorAll("#canvasFeedModal .canvas-feed-row").length;
+    const keep = document.querySelector("#canvasFeedModal [data-cf-keep-colours]");
+    if (!keep.checked) keep.click();
     document.querySelector('#canvasFeedModal [data-cf-action="add"]').click();
     for (let i = 0; i < 80 && !(api.state.meta.pdfBlocks || []).some((b) => b.doc === "notebook" && /^pdf:/.test(b.from || "")); i += 1) await settle(100);
     await settle(1500);
