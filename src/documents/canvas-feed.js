@@ -323,12 +323,14 @@ async function measureFeedMarkdown(md, { cap, box, host, style, fixed = false, b
 
 // The Canvas page things are measured for: the page dropped on, or the last.
 //
-// Measured by the page as it is set up, even when it has grown; one that grows
-// as needed, or is Boundless, says how far down it may go (`reach`), and is
-// flowed down rather than onto new pages (canvas-flow.js).
+// Measured by the page as it is set up, even when it has grown; a Boundless
+// one says how far down it may go (`reach`), and is flowed down rather than
+// onto new pages (canvas-flow.js).
 export function canvasPageGeometry(page = Math.max(1, notebookPageCount())) {
   const setup = notebookPageSetup(page);
-  const grows = notebookPageFit(page) !== "fixed";
+  // A page that grows as needed still takes new pages after it, a sheet at a
+  // time as before; only a Boundless page is never full.
+  const grows = notebookPageFit(page) === "boundless";
   return { page, box: sheetBox(setup), margins: setup?.margins || {}, ...(grows ? { reach: EXTENT_MAX } : {}) };
 }
 

@@ -2509,6 +2509,10 @@ async function swapCanvasBytesNow({ blob, sha256, before }) {
     entry.viewport = viewport;
     entry.renderScale = 0;
     entry.el.classList.toggle("is-boundless", canvasPageIsBoundless(n));
+    // The outline a drag left to show where the page would reach
+    // (src/documents/page-grow-preview.js): it reaches there now.
+    entry.el.querySelectorAll(":scope > .canvas-grow-preview").forEach((node) => node.remove());
+    entry.el.classList.remove("is-growing");
   }
   relayoutDocument({
     afterLayout: () => restoreCanvasViewAnchor(anchor)

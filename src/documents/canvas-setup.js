@@ -110,12 +110,21 @@ export const SHEET_MARGIN_COLORS = [
 export const SHEET_DASHES = ["solid", "dashed", "dotted"];
 
 // How a page's size behaves (src/documents/canvas-extent.js):
-//   fixed      the size it is set up at, as every page has always been
-//   grow       that size at least, and longer or wider when what is on it
-//              reaches its right or bottom edge ("Grows as needed")
+//   grow       the size it is set up at, at least, and longer or wider when
+//              what is on it reaches its right edge or its foot ("Grows as
+//              needed") — every page's, unless it says otherwise
+//   set        exactly the size it is set up at: "Grows as needed" switched
+//              off in Page setup
 //   boundless  no size: what is on it, and room round it, in every direction
 //              ("Boundless"). Its own w × h is only where it starts.
-export const SHEET_FITS = ["fixed", "grow", "boundless"];
+// A record from a build that knew only one kind of page has no `fit`, and its
+// pages grow; so does a "fixed", which a build of a day wrote for "not chosen".
+// Growing changes no byte of a page until it has grown (sheetDrawKey).
+export const SHEET_FITS = ["grow", "set", "boundless"];
+
+function fitOf(value) {
+  return value === "set" || value === "boundless" ? value : "grow";
+}
 export const SHEET_DASH_LABEL = { solid: "Solid", dashed: "Dashed", dotted: "Dotted" };
 
 const sheetMmPt = (mm) => sheetRound(mm * SHEET_PT_PER_MM);
@@ -278,7 +287,7 @@ export function nearestLegacyPaper(pattern) {
 // does not know still draws as the nearest thing this one can.
 export function normalizeSheetSetup(raw, fallbackPattern = "grid") {
   const src = raw && typeof raw === "object" ? raw : {};
-  const fit = SHEET_FITS.includes(src.fit) ? src.fit : "fixed";
+  const fit = fitOf(src.fit);
   let pattern = SHEET_PATTERNS.includes(src.pattern) ? src.pattern : (SHEET_PATTERNS.includes(fallbackPattern) ? fallbackPattern : "grid");
   // A page with no edges has no foot for a summary box nor a top for a title
   // band: Cornell paper on it is ruled paper.
@@ -342,14 +351,17 @@ export function sheetDrawKey(setup) {
   } else if (s.pattern === "cornell") {
     parts.push(s.pitch, s.line, s.opacity, s.width, s.dash, s.majorOpacity, m.top, m.right, m.bottom, m.left, s.cue, s.summary);
   }
-  // Last, and only when it is not the size it is set up at, so every page
-  // drawn before pages could grow keeps the key — and the stream — it had.
-  if (s.fit !== "fixed") parts.push(s.fit);
+  // Last, and only for a Boundless page — whose dots are drawn a row at a
+  // time — so every other page, growing or not, keeps the key and the stream it
+  // had until it actually grows (and then its box is in the key, blank-pdf.js).
+  if (s.fit === "boundless") parts.push(s.fit);
   return JSON.stringify(parts);
 }
 
+// ...and set up alike: the same paper, and the same way of growing (a page
+// that grows and one set to its size draw the same until the first grows).
 export function sameSheet(a, b) {
-  return sheetDrawKey(a) === sheetDrawKey(b);
+  return sheetDrawKey(a) === sheetDrawKey(b) && sheetFit(a) === sheetFit(b);
 }
 
 // The first paper a setup draws exactly as, or null. A page whose setup is
@@ -357,7 +369,7 @@ export function sameSheet(a, b) {
 // all of them is the very file it always was.
 export function sheetLegacyKind(setup) {
   const s = normalizeSheetSetup(setup);
-  if (!SHEET_LEGACY_KINDS.includes(s.pattern) || s.fit !== "fixed") return null;
+  if (!SHEET_LEGACY_KINDS.includes(s.pattern) || s.fit === "boundless") return null;
   return sameSheet(s, legacySheetSetup(s.pattern)) ? s.pattern : null;
 }
 
@@ -392,9 +404,9 @@ export function canvasPageBoxes(record) {
   return boxes;
 }
 
-// The setup's own fit: "fixed", "grow" or "boundless".
+// The setup's own fit: "grow", "set" or "boundless".
 export function sheetFit(setup) {
-  return SHEET_FITS.includes(setup?.fit) ? setup.fit : "fixed";
+  return fitOf(setup?.fit);
 }
 
 // A stored box, if it is one: four finite numbers, a real width and height.
@@ -407,11 +419,11 @@ export function validPageBox(box) {
 
 // Where page `n` reaches: the box it has grown to (`pageBoxes`, written by
 // src/documents/notebook.js from what is on it), or the size it is set up at.
-// Only a page that grows or is Boundless has a box of its own — a stored box
-// beside a fixed page (a setup changed back on another device) is not read.
+// A page set to its size has no box of its own — a stored box beside one (a
+// setup changed on another device) is not read.
 export function canvasPageBox(record, n) {
   const setup = sheetSetupForPage(record, n);
-  const own = setup.fit !== "fixed" && record?.pageBoxes && typeof record.pageBoxes === "object"
+  const own = setup.fit !== "set" && record?.pageBoxes && typeof record.pageBoxes === "object"
     ? validPageBox(record.pageBoxes[String(n)])
     : null;
   return own || sheetBox(setup);
@@ -458,7 +470,7 @@ export function sheetSetupSummary(setup) {
   const turn = s.w > s.h ? "landscape" : (s.w === s.h ? "" : "portrait");
   const paper = s.pattern === "blank" ? "Blank" : `${SHEET_PATTERN_LABEL[s.pattern]} ${sheetMmText(s.pitch)} mm`;
   if (s.fit === "boundless") return `Boundless · ${paper}`;
-  return `${name}${turn ? ` ${turn}` : ""}${s.fit === "grow" ? ", grows" : ""} · ${paper}`;
+  return `${name}${turn ? ` ${turn}` : ""}${s.fit === "set" ? ", set size" : ""} · ${paper}`;
 }
 
 // ── Drawing ────────────────────────────────────────────────────────────────
@@ -530,7 +542,7 @@ export function sheetOps(setup, boxIn = null) {
     // zero-length one is dropped by the canvas pdf.js draws on.
     const ys = sheetLattice(s.pitch, area[1], area[3]);
     const xs = sheetLattice(s.pitch, area[0], area[2]);
-    if (s.fit !== "fixed") {
+    if (s.fit === "boundless" || box.some((v, i) => Math.abs(v - sheetBox(s)[i]) >= 0.01)) {
       // A page that grows can be a poster, and a dot each is a megabyte of
       // them. So each row is ONE line whose dashes are the dots: a dash a
       // hundredth of a point long every `pitch`, round-capped — the dotted

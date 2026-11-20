@@ -25,7 +25,7 @@
 // text, and the fixture's job is to be a stand-in for somebody else's document
 // while this one's is to be ours.
 
-import { normalizeSheetSetup, sheetBox, sheetDrawKey, sheetLegacyKind, sheetPdfStream, validPageBox } from "./canvas-setup.js?v=__BUILD__";
+import { legacySheetSetup, normalizeSheetSetup, sheetBox, sheetDrawKey, sheetLegacyKind, sheetPdfStream, validPageBox } from "./canvas-setup.js?v=__BUILD__";
 
 // A4 in PDF points (72 per inch), which is the paper this app's print pipeline
 // already lays out for (installPdfPrintStyle), so a notebook page exported or
@@ -180,15 +180,17 @@ function pdfNumber(value) {
 function blankPageSheet(n, { kind, setup, pageSetups, pageBoxes }) {
   const own = pageSetups && typeof pageSetups === "object" ? pageSetups[String(n)] : null;
   const raw = own || (setup && typeof setup === "object" ? setup : null);
-  if (!raw) return { key: `paper:${kind}`, legacy: kind };
-  const drawn = normalizeSheetSetup(raw);
-  const legacy = sheetLegacyKind(drawn);
-  if (legacy) return { key: `paper:${legacy}`, legacy };
+  const drawn = raw ? normalizeSheetSetup(raw) : legacySheetSetup(kind);
   const base = sheetBox(drawn);
-  const reach = drawn.fit !== "fixed" && pageBoxes && typeof pageBoxes === "object" ? validPageBox(pageBoxes[String(n)]) : null;
+  const reach = drawn.fit !== "set" && pageBoxes && typeof pageBoxes === "object" ? validPageBox(pageBoxes[String(n)]) : null;
   if (reach && reach.some((v, i) => Math.abs(v - base[i]) >= 0.01)) {
+    // Grown past its size: the paper drawn over the box it reaches, on the
+    // same lattice — a first paper too, so nothing under its words moves.
     return { key: `${sheetDrawKey(drawn)}@${reach.join(",")}`, sheet: drawn, box: reach };
   }
+  if (!raw) return { key: `paper:${kind}`, legacy: kind };
+  const legacy = sheetLegacyKind(drawn);
+  if (legacy) return { key: `paper:${legacy}`, legacy };
   return { key: sheetDrawKey(drawn), sheet: drawn, box: base };
 }
 

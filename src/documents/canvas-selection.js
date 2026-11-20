@@ -50,6 +50,7 @@ import {
   setConnectArrowsSuppressed, setDiagramNodeOverrides
 } from "./pdf-connectors.js?v=__BUILD__";
 import { edgeScroller, mapPointBetweenPages, pointOnPage, pageUnderPointer, setCarrying } from "./page-handoff.js?v=__BUILD__";
+import { endPageGrowthPreview, previewPageGrowth } from "./page-grow-preview.js?v=__BUILD__";
 import { clearDiagramPart, diagramSvg, diagramSvgNode, setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
 import { makeCardFromPageArea } from "./region-card.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
@@ -459,6 +460,9 @@ function onMoveMove(event) {
   dragView = { dx, dy, page: drag.target };
   closeArrangeBar();
   setCarrying(drag.page, drag.target !== drag.page);
+  // The page grows past the edge it is carried over, or the page they are
+  // carried onto is outlined (src/documents/page-grow-preview.js).
+  previewPageGrowth({ page: drag.page, target: drag.target, rects: [[drag.box[0] + dx, drag.box[1] + dy, drag.box[2] + dx, drag.box[3] + dy]] });
   previewBlockGeometry(drag.page, blocks);
   paintDocumentShapes(drag.page, { previews: shapes });
   paintCarriedGhosts(drag, preview.shapes);
@@ -475,6 +479,7 @@ function onMoveUp(event) {
   dragView = null;
   moveAdjuster(null);
   setCarrying(drag.page, false);
+  endPageGrowthPreview({ dropped: Boolean(drag.moved) });
   if (drag.moved && drag.target !== drag.page) { dropOnPage(drag); return; }
   if (!drag.moved) {
     // A tap on one of several picked: that one, alone.
@@ -553,6 +558,7 @@ function abortPickMove() {
   dragView = null;
   moveAdjuster(null);
   setCarrying(drag.page, false);
+  endPageGrowthPreview({ dropped: false });
   if (drag.ghostPage) paintDocumentShapes(drag.ghostPage);
   setDiagramNodeOverrides(new Map());
   repaintDocumentBlocks();

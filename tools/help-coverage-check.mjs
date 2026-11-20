@@ -59,7 +59,8 @@ const FEATURES = [
   ["View only", "src/documents/view-only.js", ["View only"]],
   ["Bare numbers in the style boxes", "src/ui/style-settings.js", ["a bare number is enough"]],
   ["The Canvas PDF's words are words", "src/documents/pdf-export.js", ["select, copy and search"]],
-  ["Canvas pages that grow as needed", "src/documents/canvas-extent.js", ["Grows as needed", "longer or wider", "shrink back"]],
+  ["Canvas pages that grow as needed", "src/documents/canvas-extent.js", ["Grows as needed", "shrinks back", "Pages grow as needed"]],
+  ["A page growing while something is dragged past its edge", "src/documents/page-grow-preview.js", ["Page grows", "Where the pointer is decides the page"]],
   ["Boundless Canvas pages", "src/documents/canvas-extent.js", ["Boundless", "cut to exactly what is on it"]],
   ["The Canvas as one web page", "src/export/canvas-html.js", ["Web page (.html)", "moving pictures (GIFs) play"]],
   ["Back up one file, a folder, ticked files or the library", "src/backup/share-dialog.js", ["whole library", "one file", "one folder", "Back up this folder"]],
@@ -78,7 +79,7 @@ const RETIRED = [
 
 // [file text, file name, phrases it must hold]
 const OWNED = [
-  [nomenclature, "NOMENCLATURE.md", ["Offline viewer", "Web pictures", "middle-pan.js", "viewer-pack.js", "keep-web-images.js", "Paste blocks", "Boundless", "Grows as needed", "canvas-extent.js", "canvas-html.js"]],
+  [nomenclature, "NOMENCLATURE.md", ["Offline viewer", "Web pictures", "middle-pan.js", "viewer-pack.js", "keep-web-images.js", "Paste blocks", "Boundless", "Grows as needed", "canvas-extent.js", "canvas-html.js", "page-grow-preview.js", "The pointer decides the page"]],
   [readme, "README.md", ["index.html", "viewer/files/0001.js", "wsrv.nl", "keep-web-images.js", "backup-viewer", "help-coverage"]]
 ];
 

@@ -183,9 +183,9 @@ export function notebookPageMeasureBox(n, meta = state.meta) {
   return canvasMeasureBox(meta?.notebook, Number(n) || 1);
 }
 
-// "fixed", "grow" or "boundless" for page `n`.
+// "grow", "set" or "boundless" for page `n`.
 export function notebookPageFit(n, meta = state.meta) {
-  if (!hasNotebook(meta)) return "fixed";
+  if (!hasNotebook(meta)) return "set";
   return sheetFit(notebookPageSetup(Number(n) || 1, meta));
 }
 
@@ -248,21 +248,59 @@ function canvasRecordsByPage() {
 
 // Every page's box as what is on it asks, for a record as it stands (or with
 // the setups about to be written): only the pages reaching past their size.
-// Null when none do.
-function neededNotebookPageBoxes(record = state.meta?.notebook) {
+// Null when none do. `only` is the pages to fit (a Set of numbers); every
+// other page keeps the box it has.
+function neededNotebookPageBoxes(record = state.meta?.notebook, { only = null, byPage = canvasRecordsByPage(), past = false } = {}) {
   const pages = Number(record?.pages) || 0;
   if (!pages) return null;
-  const byPage = canvasRecordsByPage();
   const held = record?.pageBoxes && typeof record.pageBoxes === "object" ? record.pageBoxes : {};
   const out = {};
   for (let n = 1; n <= pages; n += 1) {
     const setup = sheetSetupForPage(record, n);
-    if (sheetFit(setup) === "fixed") continue;
-    const on = byPage.get(n) || { marks: [], blocks: [] };
-    const box = neededPageBox(setup, pageContentRects(on.marks, on.blocks), validPageBox(held[String(n)]));
-    if (!samePageBox(box, canvasMeasureBox(record, n))) out[String(n)] = box;
+    if (sheetFit(setup) === "set") continue;
+    const now = validPageBox(held[String(n)]);
+    let box;
+    if (only && !only.has(n)) box = now;
+    else {
+      const on = byPage.get(n) || { marks: [], blocks: [] };
+      box = neededPageBox(setup, pageContentRects(on.marks, on.blocks), now, { past });
+    }
+    if (box && !samePageBox(box, canvasMeasureBox(record, n))) out[String(n)] = box;
   }
   return Object.keys(out).length ? out : null;
+}
+
+// ── Only the pages something was done to ────────────────────────────────
+//
+// Every page grows as needed, the pages of every Canvas made before pages
+// could grow included — and some of those were written to their very foot.
+// Fitting every page after any edit would grow a page nobody touched, on
+// opening, on another device, in the middle of reading. So what is on each
+// page is remembered as it was when the Canvas was opened (and after each
+// fit), and only a page whose things have changed since is fitted.
+let fitMemory = { deck: null, pages: new Map() };
+
+function pageSignature(on) {
+  if (!on) return "";
+  return JSON.stringify(pageContentRects(on.marks, on.blocks).map((rect) => rect.map((v) => Math.round(v))));
+}
+
+function rememberCanvasPages(byPage = canvasRecordsByPage()) {
+  const pages = new Map();
+  byPage.forEach((on, n) => pages.set(n, pageSignature(on)));
+  fitMemory = { deck: state.localDeckId || null, pages };
+}
+
+// The pages whose things changed since they were remembered, or null when
+// nothing was remembered for this file (every page is then fitted).
+function changedCanvasPages(byPage) {
+  if (fitMemory.deck !== (state.localDeckId || null)) return null;
+  const changed = new Set();
+  const all = new Set([...byPage.keys(), ...fitMemory.pages.keys()]);
+  all.forEach((n) => {
+    if (pageSignature(byPage.get(n)) !== (fitMemory.pages.get(n) || "")) changed.add(n);
+  });
+  return changed;
 }
 
 function samePageBoxes(a, b) {
@@ -276,12 +314,13 @@ function samePageBoxes(a, b) {
 }
 
 // Whether any page of the Canvas grows or is Boundless — the cheap question
-// every edit asks before it asks for more.
+// every edit asks before it asks for more. Every page does, unless set to its
+// size.
 function canvasHasGrowingPages(record = state.meta?.notebook) {
   if (!record) return false;
-  const fits = (raw) => raw && typeof raw === "object" && (raw.fit === "grow" || raw.fit === "boundless");
-  if (fits(record.setup)) return true;
-  return Boolean(record.pageSetups && typeof record.pageSetups === "object" && Object.values(record.pageSetups).some(fits));
+  if (sheetFit(record.setup) !== "set") return true;
+  return Boolean(record.pageSetups && typeof record.pageSetups === "object"
+    && Object.values(record.pageSetups).some((raw) => sheetFit(raw) !== "set"));
 }
 
 // Each page brought to the box what is on it asks: one new file for every
@@ -290,7 +329,11 @@ function canvasHasGrowingPages(record = state.meta?.notebook) {
 async function applyCanvasPageExtents() {
   if (!hasNotebook()) return false;
   const record = state.meta.notebook;
-  const next = neededNotebookPageBoxes(record);
+  const byPage = canvasRecordsByPage();
+  const only = changedCanvasPages(byPage);
+  rememberCanvasPages(byPage);
+  if (only && !only.size) return false;
+  const next = neededNotebookPageBoxes(record, { only, byPage });
   const held = notebookSheetState().pageBoxes;
   if (samePageBoxes(next, held)) return false;
   return writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), pageBoxes: next, show: "in-place", uploadLater: true });
@@ -370,7 +413,9 @@ async function applyNotebookPageSetup(setup, { page = null, all = false } = {}) 
   let nextPageSetups = current.pageSetups ? { ...current.pageSetups } : null;
   const n = Math.round(Number(page) || 0);
   if (all || pages < 2 || !(n >= 1 && n <= pages)) {
-    const legacy = sheetLegacyKind(pageSheet);
+    // One of the first papers is stored as that paper — unless it is set to
+    // its size, which the first papers (every page of which grows) cannot say.
+    const legacy = pageSheet.fit === "grow" ? sheetLegacyKind(pageSheet) : null;
     paper = legacy || nearestLegacyPaper(pageSheet.pattern);
     nextSetup = legacy ? null : pageSheet;
     nextPageSetups = null;
@@ -382,9 +427,9 @@ async function applyNotebookPageSetup(setup, { page = null, all = false } = {}) 
     if (!Object.keys(nextPageSetups).length) nextPageSetups = null;
   }
   const after = { ...state.meta.notebook, paper, setup: nextSetup, pageSetups: nextPageSetups };
-  // Each page that now grows, or is Boundless, reaches as far as what is on
-  // it; a page set back to a size of its own reaches no further than it.
-  after.pageBoxes = neededNotebookPageBoxes(after);
+  // Each page that now grows, or is Boundless, reaches as far as what is past
+  // its edge; a page set to its size reaches no further than it.
+  after.pageBoxes = neededNotebookPageBoxes(after, { past: true });
   if (notebookDrawnPages(after) === notebookDrawnPages(state.meta.notebook)) {
     // Nothing on screen changes. The record may still be tidier — a page's own
     // setup that now matches the Canvas — and that is saved without new bytes.
@@ -396,6 +441,49 @@ async function applyNotebookPageSetup(setup, { page = null, all = false } = {}) 
     return false;
   }
   return writeNotebookPdf({ pages, paper, setup: nextSetup, pageSetups: nextPageSetups, pageBoxes: after.pageBoxes });
+}
+
+// ── ⋯ → Canvas pages → Pages grow as needed ────────────────────────────────
+//
+// Every page grows unless set to its size (canvas-extent.js). The switch sets
+// every page at once — the Canvas's setup and each page's own — leaving a
+// Boundless page Boundless. On, the pages reach as far as what is on them; off,
+// each is its size again, and what is past its edge is kept, out of view, until
+// it grows again.
+export function notebookPagesGrow(meta = state.meta) {
+  const record = meta?.notebook;
+  if (!record) return false;
+  return canvasHasGrowingPages(record);
+}
+
+export function setNotebookPagesGrow(on) {
+  if (!hasNotebook()) return Promise.resolve(false);
+  return runCanvasPageChange(async () => {
+    const fit = on ? "grow" : "set";
+    const flip = (raw) => {
+      const was = normalizeSheetSetup(raw);
+      return was.fit === "boundless" ? was : normalizeSheetSetup({ ...was, fit });
+    };
+    const record = state.meta.notebook;
+    const wide = flip(canvasWideSheetSetup(record));
+    const legacy = wide.fit === "grow" ? sheetLegacyKind(wide) : null;
+    const paper = legacy || (record.setup ? nearestLegacyPaper(wide.pattern) : notebookPaper());
+    const setup = legacy ? null : wide;
+    let pageSetups = null;
+    Object.entries(notebookSheetState().pageSetups || {}).forEach(([key, raw]) => {
+      pageSetups = { ...(pageSetups || {}), [key]: flip(raw) };
+    });
+    const after = { ...record, paper, setup, pageSetups };
+    after.pageBoxes = neededNotebookPageBoxes(after, { past: true });
+    if (notebookDrawnPages(after) === notebookDrawnPages(record)) {
+      writeNotebookSheetState(setup, pageSetups, after.pageBoxes);
+      state.meta = { ...state.meta, notebook: { ...state.meta.notebook, paper } };
+      await saveDeckToLibrary({ silent: true });
+      rememberCanvasPages();
+      return true;
+    }
+    return writeNotebookPdf({ pages: notebookPageCount(), paper, setup, pageSetups, pageBoxes: after.pageBoxes });
+  });
 }
 
 // Where this deck's notebook bytes are filed on the device. One row per
@@ -508,6 +596,9 @@ async function writeNotebookPdf({ pages, paper, setup = undefined, pageSetups = 
   // window of seconds on a real connection — long enough to look broken, and
   // long enough for the reader to press ＋ Page again into it. The device copy
   // is already what the record names, so the reopen reads it from here.
+  // Pages added, moved or torn out renumber what is on them; that is not
+  // something written on them, so the fit starts from here.
+  if (show !== "in-place") rememberCanvasPages();
   if (show === "in-place") {
     // In place when the Canvas is the paper on the stage; otherwise the next
     // look at it opens the new file, as any page change does.
@@ -674,9 +765,9 @@ export async function ensureNotebookDocument({ paper = null, setup = null } = {}
     if (notebookSheetState().pageBoxes && state.meta.notebook.boxSha !== state.meta.notebook.sha256) {
       return (await writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), reopen: false })) && "wrote";
     }
-    // ...and a page whose box no longer fits what is on it — written to by a
-    // device whose build let it grow no further — is fitted once it is open.
-    scheduleCanvasExtentFit();
+    // What is on each page now, so only a page written to from here is fitted
+    // (see "Only the pages something was done to").
+    rememberCanvasPages();
     return "kept";
   }
   // ── There is no refusal here any more ────────────────────────────────────
@@ -690,7 +781,7 @@ export async function ensureNotebookDocument({ paper = null, setup = null } = {}
   // A new Canvas on the page setup this device last chose, when it chose one
   // that is not simply one of the first papers.
   const pageSheet = setup ? normalizeSheetSetup(setup) : null;
-  const legacy = pageSheet ? sheetLegacyKind(pageSheet) : null;
+  const legacy = pageSheet && pageSheet.fit === "grow" ? sheetLegacyKind(pageSheet) : null;
   if (pageSheet && !legacy) {
     return (await writeNotebookPdf({ pages: 1, paper: nearestLegacyPaper(pageSheet.pattern), setup: pageSheet, pageSetups: null, reopen: false })) && "wrote";
   }
@@ -1043,7 +1134,7 @@ async function applyNotebookPaper(kind) {
   const onto = (raw) => {
     const was = normalizeSheetSetup(raw);
     const next = normalizeSheetSetup({ ...sheetPatternDefaults(paper), w: was.w, h: was.h, paper: was.paper, fit: was.fit });
-    return sheetLegacyKind(next) ? null : next;
+    return next.fit === "grow" && sheetLegacyKind(next) ? null : next;
   };
   const setup = onto(canvasWideSheetSetup(state.meta.notebook));
   let pageSetups = null;

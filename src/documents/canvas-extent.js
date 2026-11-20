@@ -9,13 +9,13 @@
 //
 // ── Three ways a page can be sized ────────────────────────────────────────
 //
-// A page set up at a size (`setup.fit` absent or "fixed") is that size, as
-// every page has always been. A page that **grows as needed** ("grow") is that
-// size at least, and longer or wider when what is on it comes near its right
-// edge or its foot: just enough room past it to keep going, never smaller than
-// it was set up at. A **Boundless** page ("boundless") has no size: it is what
-// is on it with room round it on every side, its own w × h only where it
-// starts.
+// Every page **grows as needed** ("grow", and what a page with no `fit` does):
+// it is the size it is set up at, at least, and longer or wider when what is
+// on it comes near its right edge or its foot — just enough room past it to
+// keep going, never smaller than it was set up at. A page set to its size
+// ("set": Grows as needed switched off) is that size, as every page once was.
+// A **Boundless** page ("boundless") has no size: it is what is on it with room
+// round it on every side, its own w × h only where it starts.
 //
 // ── Why nothing on a page moves when it grows ─────────────────────────────
 //
@@ -154,24 +154,28 @@ function holdSpan(near, far, baseNear, baseFar) {
 }
 
 // The box page `setup` reaches with `rects` on it, given the box it reaches
-// now (`current`, or null for the size it is set up at).
-export function neededPageBox(setup, rects, current = null) {
+// now (`current`, or null for the size it is set up at). `past` asks only
+// whether something is PAST an edge, not merely near it — for a change the
+// reader did not make on the page (a new page setup), which must not grow a
+// page because something was written close to its foot.
+export function neededPageBox(setup, rects, current = null, { past = false } = {}) {
   const s = normalizeSheetSetup(setup);
   const base = sheetBox(s);
   const fit = sheetFit(s);
-  if (fit === "fixed") return base;
+  if (fit === "set") return base;
   const content = unionRects(rects);
   const now = validPageBox(current) || base;
   const top = CANVAS_SHEET_TOP;
   if (fit === "grow") {
     // Right and down only: the corner where writing starts stays put.
-    const right = fittedEdge({ base: base[2], current: now[2], content: content ? content[2] : null, room: EXTENT_ROOM, roomMin: EXTENT_ROOM_MIN });
-    const foot = fittedEdge({ base: top - base[1], current: top - now[1], content: content ? top - content[1] : null, room: EXTENT_ROOM, roomMin: EXTENT_ROOM_MIN });
+    const roomMin = past ? 0 : EXTENT_ROOM_MIN;
+    const right = fittedEdge({ base: base[2], current: now[2], content: content ? content[2] : null, room: EXTENT_ROOM, roomMin });
+    const foot = fittedEdge({ base: top - base[1], current: top - now[1], content: content ? top - content[1] : null, room: EXTENT_ROOM, roomMin });
     return [base[0], sheetRound(top - Math.min(EXTENT_MAX, foot)), sheetRound(Math.min(base[0] + EXTENT_MAX, right)), top];
   }
   // Boundless: every side, from where it starts.
   const edge = (baseEdge, nowEdge, contentEdge) => fittedEdge({
-    base: baseEdge, current: nowEdge, content: contentEdge, room: BOUNDLESS_ROOM, roomMin: BOUNDLESS_ROOM_MIN
+    base: baseEdge, current: nowEdge, content: contentEdge, room: BOUNDLESS_ROOM, roomMin: past ? 0 : BOUNDLESS_ROOM_MIN
   });
   let right = edge(base[2], now[2], content ? content[2] : null);
   let left = edge(-base[0], -now[0], content ? -content[0] : null);
@@ -201,13 +205,14 @@ export function exportPageBox(setup, box, rects) {
 }
 
 // How far a drag may carry something on a page of this fit, as a box in the
-// page's points: the page itself on a page of a set size; past the right edge
-// and the foot on one that grows; anywhere (up to EXTENT_MAX) on a Boundless
-// page. The page grows to it once it is let go.
+// page's points: past the right edge and the foot on a page that grows (every
+// page, unless set to its size); anywhere (up to EXTENT_MAX) on a Boundless
+// page; the page itself on a page set to its size. The page grows to it once
+// it is let go.
 export function canvasDragLimits(fit, box) {
   const b = validPageBox(box);
-  if (!b || fit === "fixed" || !fit) return b;
-  if (fit === "grow") return [b[0], b[3] - EXTENT_MAX, b[0] + EXTENT_MAX, b[3]];
+  if (!b || fit === "set") return b;
+  if (fit !== "boundless") return [b[0], b[3] - EXTENT_MAX, b[0] + EXTENT_MAX, b[3]];
   return [b[2] - EXTENT_MAX, b[3] - EXTENT_MAX, b[0] + EXTENT_MAX, b[1] + EXTENT_MAX];
 }
 

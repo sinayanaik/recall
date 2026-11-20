@@ -131,7 +131,7 @@ function setupSizeNote(setup) {
   const h = setup.h / SHEET_PT_PER_MM;
   const inches = `${Math.round((setup.w / 72) * 100) / 100} × ${Math.round((setup.h / 72) * 100) / 100} in`;
   const turn = setup.w > setup.h ? "Landscape" : (setup.w === setup.h ? "Square" : "Portrait");
-  return `${Math.round(w)} × ${Math.round(h)} mm · ${inches} · ${turn}${setup.fit === "grow" ? " · grows" : ""}`;
+  return `${Math.round(w)} × ${Math.round(h)} mm · ${inches} · ${turn}${setup.fit === "grow" ? " · grows as needed" : ""}`;
 }
 
 // ── Building ───────────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ function buildCanvasSetupDialog() {
               <button type="button" role="radio" aria-checked="false" data-cs-orient="boundless" title="No size: the page reaches as far as what is on it">Boundless</button>
             </div>
             <p class="canvas-setup-hint" data-cs-boundless-note hidden>No edges — the page is as big as what is on it, with room around it to keep going, in every direction. Its PDF is cut to what is on it.</p>
-            ${setupSwitchRow("grow", "Grows as needed", "Longer or wider when what is on it reaches the edge — never smaller than this size", " data-cs-sized")}
+            ${setupSwitchRow("grow", "Grows as needed", "Longer or wider when what is on it reaches the right edge or the foot — never smaller than this size. Off: exactly this size", " data-cs-sized")}
             <div class="canvas-setup-dims" data-cs-sized>
               ${setupLengthField("w", "Width")}
               <span class="canvas-setup-times" aria-hidden="true">×</span>
@@ -473,11 +473,11 @@ function onCanvasSetupClick(event) {
     const landscape = d.csOrient === "landscape";
     // Back from Boundless to a page with a size: as it was set up before, and
     // growing if it was.
-    const fit = setupModel.setup.fit === "boundless" ? (setupModel.growChoice ? "grow" : "fixed") : setupModel.setup.fit;
+    const fit = setupModel.setup.fit === "boundless" ? (setupModel.growChoice === false ? "set" : "grow") : setupModel.setup.fit;
     if ((w > h) !== landscape && w !== h) changeSetup({ w: h, h: w, fit });
     else if (fit !== setupModel.setup.fit) changeSetup({ fit });
   } else if (d.csToggle === "grow") {
-    changeSetup({ fit: setupModel.setup.fit === "grow" ? "fixed" : "grow" });
+    changeSetup({ fit: setupModel.setup.fit === "grow" ? "set" : "grow" });
   } else if (d.csUnit) {
     setupLengthUnit = d.csUnit === "in" ? "in" : "mm";
     setupDialog.querySelectorAll("[data-cs-len]").forEach((input) => { if (document.activeElement === input) input.blur(); });

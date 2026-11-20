@@ -142,6 +142,7 @@ import { DOCUMENT_NOTE_HANDLERS, applyDocumentRecordChanges, documentHighlightBy
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { CANVAS_REF_ID, pdfRegionRefForRecord, pdfRegionRefMarkdown, remapCanvasRefs } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { scheduleCanvasExtentFit, setCanvasGestureCheck, setCanvasPagesRemappedHook } from "./documents/notebook.js?v=__BUILD__";
+import { setPageGrowSoonHook } from "./documents/page-grow-preview.js?v=__BUILD__";
 import { setPageAreaCardMaker } from "./documents/region-card.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
 import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUILD__";
@@ -1826,6 +1827,8 @@ onDomReady(() => {
   // until it is let go.
   setDocumentHighlightsWrittenHook(() => scheduleCanvasExtentFit());
   setCanvasGestureCheck(() => isEditingBlock() || liveBlockGesture());
+  // Let go of past a page's edge: the page grows at once, not after a pause.
+  setPageGrowSoonHook(() => scheduleCanvasExtentFit({ soon: true }));
   setDiagramShapeIO({
     read: () => documentHighlights().filter((record) => record?.kind === "shape"),
     write: (changes) => applyDocumentRecordChanges(changes)
