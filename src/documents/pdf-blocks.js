@@ -2000,7 +2000,10 @@ export function nextBlockZ(blocks = documentBlocks()) {
 // picture pasted where the mouse is, or dropped where the pointer let go,
 // starts exactly there and hangs down and to the right of it, the way a
 // picture pasted into any canvas does.
-export async function addDocumentImageBlock(pageNumber, file, at = null, { anchor = "center" } = {}) {
+// `width`, in points, is the width a picture put on a Canvas from elsewhere
+// takes (◐ Canvas → Pictures land at, src/documents/canvas-drop.js) rather
+// than the most a page gives a picture.
+export async function addDocumentImageBlock(pageNumber, file, at = null, { anchor = "center", width = null } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return null;
   if (!file || !String(file.type || "").startsWith("image/")) {
@@ -2013,9 +2016,9 @@ export async function addDocumentImageBlock(pageNumber, file, at = null, { ancho
   const ratio = await imageAspectRatio(file);
   const maxW = Math.max(PDF_BLOCK_MIN_WIDTH, pageWidth * 0.62);
   const maxH = Math.max(PDF_BLOCK_MIN_HEIGHT, pageHeight * 0.42);
-  let w = maxW;
+  let w = Number(width) > 0 ? Math.min(pageWidth - 24, Number(width)) : maxW;
   let h = w / ratio;
-  if (h > maxH) { h = maxH; w = h * ratio; }
+  if (h > maxH && !(Number(width) > 0)) { h = maxH; w = h * ratio; }
 
   const stored = await storeImageOrQueue(file);
   if (stored.error) {

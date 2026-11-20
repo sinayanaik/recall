@@ -17,7 +17,7 @@ import { setNotesReadingMode } from "../notes/paged-view.js?v=__BUILD__";
 import { setHeadingNumbersOn } from "../notes/heading-numbers.js?v=__BUILD__";
 import { setNotesSectionLines } from "../notes/section-lines.js?v=__BUILD__";
 import { applyNotesFoldState } from "../render/block-cache.js?v=__BUILD__";
-import { setCanvasBlockMeasure, setCanvasBlockWidthMode } from "../documents/block-measure.js?v=__BUILD__";
+import { setCanvasBlockMeasure, setCanvasBlockWidthMode, setCanvasDropWidths } from "../documents/block-measure.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
 import { defaultStyleProfiles, legacySpacingDefaults, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey, styleScopeById, styleScopeKeys, styleScopes, styleV6Seeds } from "./style-schema.js?v=__BUILD__";
@@ -885,6 +885,7 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // the Block code reads (src/documents/block-measure.js). "auto" is its default.
   setCanvasBlockMeasure(usable("canvasBlockMaxWidth"));
   setCanvasBlockWidthMode(usable("canvasBlockWidthRule"));
+  setCanvasDropWidths({ picture: usable("canvasDropPictureWidth"), wide: usable("canvasDropWideWidth") });
   // The only percent that isn't run through numericStyleValue above, so it's the
   // only one where a non-numeric entry would reach CSS as "abc%".
   root.style.setProperty("--question-fill", `${numericStyleValue(settings.questionFillPercent) ?? numericStyleValue(profileDefaults.questionFillPercent) ?? 58}%`);

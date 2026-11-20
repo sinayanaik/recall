@@ -62,3 +62,31 @@ export function balancedWidthGuess(text, { cap, min = 120, pointsPerChar = 5.6, 
   const area = chars * pointsPerChar * linePoints;
   return Math.round(Math.max(min, Math.min(cap, Math.sqrt(area * BALANCED_BLOCK_ASPECT))));
 }
+
+// How wide a thing put on a Canvas from elsewhere lands, by its kind, as a
+// percent of the page — ◐ Canvas → Blocks → Pictures land at / Tables and code
+// land at. Words keep the measure above. Its size where it came from (a
+// picture's width in the Notes, a site's own sizes) is taken off first
+// (canvasSizedMarkdown, ./canvas-sizing.js), so this is what decides.
+export const CANVAS_DROP_PICTURE_DEFAULT = 40;
+export const CANVAS_DROP_WIDE_DEFAULT = 80;
+
+let dropPicturePercent = CANVAS_DROP_PICTURE_DEFAULT;
+let dropWidePercent = CANVAS_DROP_WIDE_DEFAULT;
+
+function dropPercent(value, fallback) {
+  const percent = parseFloat(String(value ?? "").replace("%", ""));
+  return Number.isFinite(percent) && percent >= 5 && percent <= 100 ? percent : fallback;
+}
+
+export function setCanvasDropWidths({ picture, wide } = {}) {
+  dropPicturePercent = dropPercent(picture, CANVAS_DROP_PICTURE_DEFAULT);
+  dropWidePercent = dropPercent(wide, CANVAS_DROP_WIDE_DEFAULT);
+}
+
+// `kind` is canvasItemKind's: "picture", "code", "table", "diagram" or "text".
+export function canvasDropWidthPercent(kind) {
+  if (kind === "picture") return dropPicturePercent;
+  if (kind === "code" || kind === "table" || kind === "diagram") return dropWidePercent;
+  return measurePercent;
+}

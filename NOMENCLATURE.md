@@ -152,15 +152,38 @@ Each opens the **picker**, a list of the part's items with the new ones ticked
 and the ones already on the Canvas marked "on the Canvas"; Add puts the ticked
 ones at the **end of the Canvas**, under the lowest thing on the last page,
 adding pages as each fills (`appendNotebookPages` in `notebook.js`), one undo
-step. One at a time: **To the Canvas** in a highlight's menu and ✎ on the
-selection bar. **Dragged across**: with the Canvas side by side, a selection,
-a highlight pressed and dragged, or a card by its ⠿ grip, let go over a Canvas
-page, is a Block there. A Block made this way says where it came from (`from`:
-`notes:<key>`, `pdf:<highlight id>`, `card:<card id>`), which is how the picker
-knows. Code: `src/documents/canvas-feed.js` (items, measuring, placing),
-`canvas-flow.js` (where they go, pure), `canvas-feed-dialog.js` (the picker),
-`canvas-drop.js` (the drag); `styles/a8-canvas-feed.css`. Say "to the Canvas",
-not "export to canvas" or "send".
+step. The picker's **Colours** row takes one or several highlight colours (a
+highlight with none counts as yellow), remembered per part on the device
+(`recall_canvas_feed_colours_v1`). The Cards' picker has a **Style** section —
+Question, Answer and Arrow tabs (fill, text colour, size, face, bold, align,
+frame, shape; the arrow's colour, thickness, line, end and route) and the
+**layout**, side by side or question above answer — which a card dragged by its
+grip takes too (`recall_card_canvas_style_v1`, `card-canvas-style.js`). One at
+a time: **To the Canvas** in a highlight's menu and ✎ on the selection bar.
+**Dragged across**: with the Canvas side by side, a selection, a highlight
+pressed and dragged, a card by its ⠿ grip, or a whole picture, code listing,
+table, diagram, maths block or heading of the Notes by the ⠿ grip that comes up
+beside it (a heading takes its **section**, down to the next heading of its
+level or above; `notes-grip.js`), let go over a Canvas page, is a Block there.
+Words, a selection or a picture dragged in from a **web page, another PDF
+reader or another app** land the same way: a page's HTML as markdown, bare
+words as a PDF's words (the page's line ends joined, `pdfPlainToMarkdown`), a
+picture file as a picture Block. While it is dragged, the **drop preview** shows
+the Block it will be, at its size, following the pointer and settling onto the
+edges and middles of the Blocks there; it lands where the preview was. The
+**Canvas's sizes, not the source's**: a picture's width in the Notes, a
+diagram's `w=`, a font size in a span or a site's own sizes are taken off
+(`canvasSizedMarkdown` in `canvas-sizing.js`), and the Block takes ◐ Canvas's
+type at the width ◐ Canvas → Blocks gives its kind — words the widest a Block
+grows, pictures **Pictures land at** (40% of the page), tables, code and
+diagrams **Tables and code land at** (80%) (`canvasDropWidthPercent` in
+`block-measure.js`). A Block made this way says where it came from (`from`:
+`notes:<key>`, `notes:el:<hash>`, `pdf:<highlight id>`, `card:<card id>`),
+which is how the picker knows. Code: `src/documents/canvas-feed.js` (items,
+measuring, placing), `canvas-flow.js` (where they go, pure), `canvas-sizing.js`
+(sizes taken off, pure), `canvas-feed-dialog.js` (the picker),
+`canvas-drop.js` (the drag and its preview); `styles/a8-canvas-feed.css`. Say
+"to the Canvas", not "export to canvas" or "send"; "drop preview", not "ghost".
 
 **Section lines** are the thin lines down the left of each heading's section in
 the Notes, whose text is set one **step** in per section — ◐ Notes → Section

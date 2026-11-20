@@ -65,6 +65,8 @@ const API_SRC = `async () => {
     "/src/documents/canvas-feed.js?v=__BUILD__",
     "/src/documents/canvas-feed-dialog.js?v=__BUILD__",
     "/src/documents/canvas-flow.js?v=__BUILD__",
+    "/src/documents/card-canvas-style.js?v=__BUILD__",
+    "/src/documents/notes-grip.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/documents/doc-slot.js?v=__BUILD__",
     "/src/notes/notes-view.js?v=__BUILD__",
@@ -88,6 +90,12 @@ const SETUP_SRC = `async (apiSrc, pdfjsSrc, workerSrc) => {
   window.pdfjsLib.GlobalWorkerOptions.workerSrc =
     URL.createObjectURL(new Blob([workerSrc], { type: "text/javascript" }));
   const api = await (0, eval)(apiSrc)();
+  // Turndown (HTML to markdown) loads from a CDN in the app; here, the copy the
+  // clipper ships, as tools/highlight-check.mjs does.
+  if (typeof TurndownService === "undefined") {
+    (0, eval)(await (await fetch("/recall-clipper/vendor/turndown.js")).text());
+    (0, eval)(await (await fetch("/recall-clipper/vendor/turndown-plugin-gfm.js")).text());
+  }
   const settle = (ms) => new Promise((r) => setTimeout(r, ms));
   window.__recall = { api, settle };
   window.__errs = [];
@@ -372,6 +380,227 @@ try {
   check("a Notes highlight pressed with the Canvas beside can be dragged", markDrag.armed === true && /Retrieval practice/.test(markDrag.carried || ""), JSON.stringify(markDrag));
   check("...and let go of on a Canvas page, it is a Block there, in its colour", markDrag.block?.style?.fill === "green" && /^notes:/.test(markDrag.block?.from || ""), JSON.stringify(markDrag.block));
   check("...and the highlight is not left draggable", markDrag.disarmed === true);
+
+  // ── 7c. Whole things of the Notes, by the grip, with the drop preview ──
+  const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAGCAYAAAD+Bd/7AAAAGklEQVR42mNk+M9Qz0AEYBxVSF+FAAHnA/0CsoRHAAAAAElFTkSuQmCC";
+  const grip = await page.evaluate(`async (png) => {
+    const { api, settle } = window.__recall;
+    api.state.notes = api.state.notes + "\\n## Figures\\n\\nA figure and a table.\\n\\n<img src=\\"" + png + "\\" alt=\\"dot\\" class=\\"has-custom-size\\" style=\\"--notes-img-w:640px; width:640px\\">\\n\\n| Term | Gap |\\n|---|---|\\n| one | 1 day |\\n\\n## After\\n\\nNot in the section.\\n";
+    api.renderNotesView();
+    await settle(1200);
+    const pageEl = document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='1']");
+    const box = pageEl.getBoundingClientRect();
+    const scale = box.width / 595;
+    const dragOnto = async (thing, fx, fy) => {
+      const r = thing.getBoundingClientRect();
+      thing.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse", clientX: r.left + 10, clientY: r.top + 6 }));
+      const grip = document.querySelector(".notes-canvas-grip");
+      const shown = Boolean(grip && !grip.hidden);
+      const dt = new DataTransfer();
+      grip?.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt }));
+      const carried = dt.getData("application/x-recall-item");
+      const x = box.left + box.width * fx;
+      const y = box.top + box.height * fy;
+      const target = document.elementFromPoint(x, y);
+      target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
+      for (let i = 0; i < 40 && document.querySelector(".canvas-drop-ghost.is-guess"); i += 1) {
+        await settle(100);
+        target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
+      }
+      const ghost = document.querySelector(".canvas-drop-ghost");
+      const g = ghost?.getBoundingClientRect();
+      const preview = g ? { x: (g.left - box.left) / scale, top: 842 - (g.top - box.top) / scale, w: g.width / scale, measured: !ghost.classList.contains("is-guess") } : null;
+      const before = new Set(api.documentBlocks().map((b) => b.id));
+      target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
+      grip?.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: dt }));
+      await settle(1500);
+      const block = api.documentBlocks().find((b) => !before.has(b.id));
+      return { shown, carried: carried ? JSON.parse(carried) : null, preview, block, ghostGone: !document.querySelector(".canvas-drop-ghost") };
+    };
+    const figures = [...document.querySelectorAll("#notesView h1, #notesView h2, #notesView h3")].find((h) => /Figures/.test(h.textContent));
+    const notes = api.state.notes;
+    const exact = notes.slice(notes.indexOf("## Figures"), notes.indexOf("## After")).trim();
+    const sliced = figures ? api.notesElementMarkdown(figures) === exact : false;
+    const shell = document.querySelector("#notesView .diagram-shell") || document.querySelector("#notesView img");
+    const picture = shell ? await dragOnto(shell, 0.1, 0.12) : null;
+    const heading = [...document.querySelectorAll("#notesView h1, #notesView h2, #notesView h3")].find((h) => /Figures/.test(h.textContent));
+    const section = heading ? await dragOnto(heading, 0.1, 0.55) : null;
+    return { picture, section, sliced, pageWidth: 595 };
+  }`, PNG);
+  const pic = grip.picture;
+  check("a grip comes up beside a picture of the Notes", pic?.shown === true, JSON.stringify(pic && { shown: pic.shown }));
+  check("...and carries the picture without its Notes width", /^!\[dot\]\(data:image\/png/.test(pic?.carried?.md || "") || /dot/.test(pic?.carried?.md || ""), JSON.stringify(pic?.carried?.md?.slice(0, 80)));
+  check("while dragged, a preview shows the Block at its size", pic?.preview?.measured === true && Math.abs((pic?.preview?.w || 0) - (pic?.block?.w || -99)) < 3, JSON.stringify({ preview: pic?.preview, w: pic?.block?.w }));
+  check("...and the Block lands where the preview was", pic?.block && Math.abs(pic.block.x - pic.preview.x) < 2 && Math.abs((pic.block.y + pic.block.h) - pic.preview.top) < 2 && pic.ghostGone, JSON.stringify({ block: pic?.block && [pic.block.x, pic.block.y + pic.block.h], preview: pic?.preview }));
+  check("a picture lands at ◐ Canvas → Pictures land at (40%), not its 640px", pic?.block && Math.abs(pic.block.w - Math.floor(595 * 0.4)) <= 2 && !/640/.test(pic.block.md) && pic.block.style?.imageWidth === 100, JSON.stringify(pic?.block && { w: pic.block.w, md: pic.block.md.slice(0, 40), style: pic.block.style }));
+  const sec = grip.section;
+  check("a heading's section is the Notes' own markdown, as written", grip.sliced === true);
+  check("a heading's grip takes its whole section and stops at the next heading", /^#+ Figures/.test(sec?.block?.md || "") && /\| Term/.test(sec?.block?.md || "") && !/Not in the section/.test(sec?.block?.md || ""), JSON.stringify(sec?.block?.md));
+  check("...without the picture's Notes width", sec?.block && !/640px/.test(sec.block.md), JSON.stringify(sec?.block?.md));
+  check("...a table's Block no wider than Tables and code land at (80%)", sec?.block && sec.block.w <= Math.floor(595 * 0.8) + 1, `w=${sec?.block?.w}`);
+  await snap("5-grip-drop.png");
+
+  if (SHOTS) {
+    // The preview, mid-drag: a card by its grip over the Canvas beside.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const pageEl = document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='1']");
+      const box = pageEl.getBoundingClientRect();
+      const dt = new DataTransfer();
+      window.__cardsBefore = [api.state.cards, api.state.current];
+      api.state.cards = api.state.masterCards;
+      api.state.current = 1;
+      document.getElementById("cardCanvasGripBtn").dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt }));
+      const x = box.left + box.width * 0.45;
+      const y = box.top + box.height * 0.08;
+      const fire = () => document.elementFromPoint(x, y).dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
+      fire();
+      for (let i = 0; i < 30 && document.querySelector(".canvas-drop-ghost.is-guess"); i += 1) { await settle(100); fire(); }
+    }`);
+    await snap("5b-preview.png");
+    await page.evaluate(`() => { document.getElementById("cardCanvasGripBtn").dispatchEvent(new DragEvent("dragend", { bubbles: true })); [window.__recall.api.state.cards, window.__recall.api.state.current] = window.__cardsBefore; }`);
+  }
+
+  // ── 7d. The picker: New only / All / None, and the Colours row ────────
+  const colours = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.openCanvasFeedDialog("notes");
+    await settle(200);
+    const q = (s) => document.querySelector("#canvasFeedModal " + s);
+    const ticked = () => [...document.querySelectorAll("#canvasFeedModal .canvas-feed-row input")].filter((i) => i.checked).length;
+    const rows = () => document.querySelectorAll("#canvasFeedModal .canvas-feed-row").length;
+    const out = {};
+    q('[data-cf-pick="all"]').click(); out.all = ticked();
+    q('[data-cf-pick="none"]').click(); out.none = ticked();
+    q('[data-cf-pick="new"]').click(); out.fresh = ticked();
+    out.chips = [...document.querySelectorAll("#canvasFeedModal [data-cf-colour]")].map((b) => b.dataset.cfColour);
+    q('[data-cf-colour="green"]').click(); out.greenRows = rows();
+    q('[data-cf-colour="blue"]').click(); out.twoRows = rows();
+    q('[data-cf-pick="all"]').click(); out.twoTicked = ticked(); out.add = q('[data-cf-action="add"]').textContent;
+    q('[data-cf-colour=""]').click(); out.backToAll = rows();
+    q('[data-cf-action="cancel"]').click();
+    return out;
+  }`);
+  check("All ticks every row, None none, New only the new ones", colours.all === 3 && colours.none === 0 && colours.fresh === 0, JSON.stringify(colours));
+  check("the Colours row has a chip per colour, uncoloured counted as yellow", ["", "yellow", "green", "blue"].every((c) => colours.chips.includes(c)), JSON.stringify(colours.chips));
+  check("...one colour shows only its rows, two show both", colours.greenRows === 1 && colours.twoRows === 2, JSON.stringify(colours));
+  check("...Add adds only what is on show", colours.twoTicked === 2 && colours.add === "Add 2 Blocks" && colours.backToAll === 3, JSON.stringify(colours));
+
+  // ── 7e. A card's style, chosen in the picker ─────────────────────────
+  const styled = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.openCanvasFeedDialog("cards");
+    await settle(200);
+    const q = (s) => document.querySelector("#canvasFeedModal " + s);
+    q("[data-cf-style]").open = true;
+    q('[data-cf-tab="q"]').click();
+    q('[data-cf-set="fill"][data-cf-value="yellow"]').click();
+    q('[data-cf-tab="a"]').click();
+    q('[data-cf-set="frame"][data-cf-value="outline"]').click();
+    q('[data-cf-tab="arrow"]').click();
+    q('[data-cf-set="arrow.dash"][data-cf-value="dash"]').click();
+    q('[data-cf-set="arrow.color"][data-cf-value="red"]').click();
+    q('[data-cf-layout="stacked"]').click();
+    const preview = q("[data-cf-preview]").classList.contains("is-stacked") && /dasharray/.test(q("[data-cf-preview]").innerHTML);
+    q('[data-cf-tab="q"]').click();
+    window.__closeFeed = () => q('[data-cf-action="cancel"]').click();
+    await settle(300);
+    return { preview };
+  }`);
+  await snap("7-card-style.png");
+  const styledMade = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    window.__closeFeed();
+    const made = await api.placeOnCanvas([api.cardItem("card-b")], { quiet: true });
+    await settle(1000);
+    const [qb, ab] = made.blocks.map((id) => api.documentBlocks().find((b) => b.id === id));
+    const arrow = api.documentHighlights().find((r) => made.arrows.includes(r.id));
+    api.writeCardCanvasStyle(api.CARD_CANVAS_STYLE_DEFAULT);
+    api.runDiagramEdit(() => {
+      api.writeDocumentBlocks(api.documentBlocks().filter((b) => !made.blocks.includes(b.id)), { removed: made.blocks });
+      api.applyDocumentRecordChanges({ remove: made.arrows });
+    });
+    await settle(300);
+    return { qb, ab, arrow: arrow?.shape };
+  }`);
+  Object.assign(styled, styledMade);
+  check("the card Style's preview follows what is chosen", styled.preview === true);
+  check("the question Block takes its fill, the answer its frame", styled.qb?.style?.fill === "yellow" && styled.ab?.style?.frame === "outline", JSON.stringify({ q: styled.qb?.style, a: styled.ab?.style }));
+  check("...the arrow its colour and dashes", styled.arrow?.dash === "dash" && /^#dc2626$/i.test(styled.arrow?.stroke || ""), JSON.stringify(styled.arrow));
+  check("...and Question above answer puts the answer under it", styled.qb && styled.ab && styled.ab.y + styled.ab.h < styled.qb.y && Math.abs(styled.ab.x - styled.qb.x) < 2, JSON.stringify([styled.qb && [styled.qb.x, styled.qb.y], styled.ab && [styled.ab.x, styled.ab.y, styled.ab.h]]));
+
+  // ── 7f. From a web page, another PDF reader and a picture file ────────
+  const outside = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const pageEl = document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='2']") || document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='1']");
+    pageEl.scrollIntoView({ block: "start" });
+    await settle(500);
+    const box = pageEl.getBoundingClientRect();
+    const dropAt = async (dt, fx, fy) => {
+      const x = box.left + box.width * fx;
+      const y = box.top + box.height * fy;
+      const target = document.elementFromPoint(x, y);
+      const over = new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt });
+      target.dispatchEvent(over);
+      const ghost = document.querySelector(".canvas-drop-ghost");
+      const shown = { accepted: over.defaultPrevented, ghost: Boolean(ghost), guess: ghost?.classList.contains("is-guess"), label: ghost?.textContent };
+      const before = new Set(api.documentBlocks().map((b) => b.id));
+      target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
+      return { shown, before };
+    };
+    const html = new DataTransfer();
+    html.setData("text/html", "<meta charset='utf-8'><h2 style='font-size:40px'>From the web</h2><p>Some <b>bold</b> words.</p><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table><img src='https://example.org/pic.png' width='900' style='width:900px'>");
+    html.setData("text/plain", "From the web Some bold words.");
+    const a = await dropAt(html, 0.08, 0.1);
+    for (let i = 0; i < 40 && !api.documentBlocks().some((b) => !a.before.has(b.id)); i += 1) await settle(100);
+    await settle(600);
+    const web = api.documentBlocks().find((b) => !a.before.has(b.id));
+    const plain = new DataTransfer();
+    plain.setData("text/plain", "Words copied out of a PDF reader run on\\nacross the line ends of its page and a hy-\\nphenated word.\\n\\nA second paragraph.");
+    const b = await dropAt(plain, 0.08, 0.7);
+    await settle(1500);
+    const pdfWords = api.documentBlocks().find((x) => !b.before.has(x.id));
+    // A picture file, onto the Canvas in focus.
+    if (api.state.splitPart) api.closeSplitPart();
+    api.setViewMode("handwriting");
+    await settle(900);
+    const canvasPage = document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='1']");
+    canvasPage.scrollIntoView({ block: "start" });
+    await settle(500);
+    const cbox = canvasPage.getBoundingClientRect();
+    const blob = await new Promise((resolve) => { const c = document.createElement("canvas"); c.width = 80; c.height = 40; c.getContext("2d").fillRect(0, 0, 80, 40); c.toBlob(resolve, "image/png"); });
+    const file = new File([blob], "shot.png", { type: "image/png" });
+    const pic = new DataTransfer();
+    pic.items.add(file);
+    const x = cbox.left + cbox.width * 0.5;
+    const y = cbox.top + cbox.height * 0.4;
+    const target = document.elementFromPoint(x, y);
+    const over = new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: pic });
+    target.dispatchEvent(over);
+    const picGhost = document.querySelector(".canvas-drop-ghost")?.textContent || "";
+    const before = new Set(api.documentBlocks().map((b2) => b2.id));
+    target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: pic }));
+    for (let i = 0; i < 40 && !document.querySelector(".image-compress-modal [data-compress-confirm]:not([disabled])"); i += 1) await settle(100);
+    document.querySelector(".image-compress-modal [data-compress-confirm]")?.click();
+    for (let i = 0; i < 60 && !api.documentBlocks().some((b2) => !before.has(b2.id)); i += 1) await settle(100);
+    const picture = api.documentBlocks().find((b2) => !before.has(b2.id));
+    return { webShown: a.shown, web, plainShown: b.shown, pdfWords, picShown: over.defaultPrevented, picGhost, picture };
+  }`);
+  check("a drag from a web page shows a preview over the Canvas", outside.webShown?.accepted && outside.webShown?.ghost && outside.webShown?.guess, JSON.stringify(outside.webShown));
+  check("...and lands as markdown: heading, bold, table and picture kept", /^## From the web/m.test(outside.web?.md || "") && /\*\*bold\*\*/.test(outside.web?.md || "") && /\| A/.test(outside.web?.md || "") && /!\[\]\(https:\/\/example\.org\/pic\.png\)/.test(outside.web?.md || ""), JSON.stringify(outside.web?.md));
+  check("...without the site's sizes", outside.web && !/900|font-size|40px/.test(outside.web.md), JSON.stringify(outside.web?.md));
+  check("words from another PDF reader join their line ends, paragraphs kept", outside.pdfWords?.md === "Words copied out of a PDF reader run on across the line ends of its page and a hyphenated word.\n\nA second paragraph.", JSON.stringify(outside.pdfWords?.md));
+  check("a picture file over the Canvas in focus is previewed as a Picture", outside.picShown === true && outside.picGhost === "Picture", JSON.stringify({ shown: outside.picShown, ghost: outside.picGhost }));
+  check("...and lands as a picture Block at the Pictures width", outside.picture?.kind === "image" && Math.abs(outside.picture.w - Math.floor(595 * 0.4)) <= 2, JSON.stringify(outside.picture && { kind: outside.picture.kind, w: outside.picture.w, h: outside.picture.h }));
+  await snap("6-outside.png");
+  // Back beside the Notes for what follows.
+  await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("notes");
+    await settle(500);
+    api.openSplitPart("handwriting");
+    await settle(1200);
+  }`);
 
   // ── 8. The toast's Undo, and one undo step ────────────────────────────
   const undo = await page.evaluate(`async () => {

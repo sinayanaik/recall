@@ -75,44 +75,63 @@ export function flowOntoCanvas({ pages, lowest = null, items }) {
     fresh = true;
   };
   (items || []).forEach((item) => {
-    const pair = Array.isArray(item?.pair) ? item.pair : null;
-    const h = pair ? Math.max(...pair.map((part) => Number(part?.h) || 0)) : Number(item?.h) || 0;
+    const { h } = flowItemExtent(item);
     if (top - h < content.bottom && !fresh) nextPage();
-    if (!pair) {
-      places.push({ page, x: Math.round(content.left), y: Math.round(top - h) });
-    } else {
-      const [q, a] = pair;
-      const qx = content.left;
-      const ax = content.left + (Number(q?.w) || 0) + FLOW_PAIR_GAP;
-      places.push({
-        page,
-        parts: [
-          { x: Math.round(qx), y: Math.round(top - (Number(q?.h) || 0)) },
-          { x: Math.round(ax), y: Math.round(top - (Number(a?.h) || 0)) }
-        ]
-      });
-    }
+    places.push(flowPlaceFromTopLeft(item, page, content.left, top));
     top -= h + FLOW_GAP;
     fresh = false;
   });
   return { places, newPages };
 }
 
+// How much room one item takes, as { w, h }: a Block its own; a card its two
+// halves side by side with the arrow's room between, or (`stacked`) one above
+// the other with the arrow's room under the question.
+export function flowItemExtent(item) {
+  const pair = Array.isArray(item?.pair) ? item.pair : null;
+  if (!pair) return { w: Number(item?.w) || 0, h: Number(item?.h) || 0 };
+  const [q, a] = pair.map((part) => ({ w: Number(part?.w) || 0, h: Number(part?.h) || 0 }));
+  if (item.stacked) return { w: Math.max(q.w, a.w), h: q.h + FLOW_PAIR_GAP + a.h };
+  return { w: q.w + FLOW_PAIR_GAP + a.w, h: Math.max(q.h, a.h) };
+}
+
+// An item's place with its top-left corner at (left, top) — y UP, so a
+// Block's own y is its bottom edge.
+export function flowPlaceFromTopLeft(item, page, left, top) {
+  const pair = Array.isArray(item?.pair) ? item.pair : null;
+  if (!pair) return { page, x: Math.round(left), y: Math.round(top - (Number(item?.h) || 0)) };
+  const [q, a] = pair.map((part) => ({ w: Number(part?.w) || 0, h: Number(part?.h) || 0 }));
+  if (item.stacked) {
+    return {
+      page,
+      parts: [
+        { x: Math.round(left), y: Math.round(top - q.h) },
+        { x: Math.round(left), y: Math.round(top - q.h - FLOW_PAIR_GAP - a.h) }
+      ]
+    };
+  }
+  return {
+    page,
+    parts: [
+      { x: Math.round(left), y: Math.round(top - q.h) },
+      { x: Math.round(left + q.w + FLOW_PAIR_GAP), y: Math.round(top - a.h) }
+    ]
+  };
+}
+
 // One thing dropped at a point (a drag from beside, src/documents/canvas-drop.js):
 // its top-left corner there, kept on the page. Same shape of place as above.
 export function placeAtPoint({ box, at, item }) {
+  const { left, top } = clampTopLeft({ box, at, item });
+  return flowPlaceFromTopLeft(item, Number(at?.page) || 1, left, top);
+}
+
+// Where the top-left corner of `item` goes for a drop at `at`, kept 12 points
+// inside the page — what the drop's preview shows before it is let go.
+export function clampTopLeft({ box, at, item }) {
   const [x0, y0, x1, y1] = box;
-  const pair = Array.isArray(item?.pair) ? item.pair : null;
-  const width = pair ? (Number(pair[0]?.w) || 0) + FLOW_PAIR_GAP + (Number(pair[1]?.w) || 0) : Number(item?.w) || 0;
-  const h = pair ? Math.max(...pair.map((part) => Number(part?.h) || 0)) : Number(item?.h) || 0;
-  const left = Math.max(x0 + 12, Math.min(x1 - width - 12, Number(at?.x) || x0));
+  const { w, h } = flowItemExtent(item);
+  const left = Math.max(x0 + 12, Math.min(x1 - w - 12, Number(at?.x) || x0));
   const top = Math.min(y1 - 12, Math.max(y0 + 12 + Math.min(h, y1 - y0 - 24), Number(at?.y) || y1));
-  if (!pair) return { page: Number(at?.page) || 1, x: Math.round(left), y: Math.round(top - h) };
-  return {
-    page: Number(at?.page) || 1,
-    parts: [
-      { x: Math.round(left), y: Math.round(top - (Number(pair[0]?.h) || 0)) },
-      { x: Math.round(left + (Number(pair[0]?.w) || 0) + FLOW_PAIR_GAP), y: Math.round(top - (Number(pair[1]?.h) || 0)) }
-    ]
-  };
+  return { left, top };
 }

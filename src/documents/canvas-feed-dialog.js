@@ -3,19 +3,35 @@
 // the new ones ticked, the ones already on the Canvas not, and marked so —
 // and Add, which puts the ticked ones at the end of the Canvas.
 //
+// Highlights can be narrowed to some of their colours (the Colours row, which
+// this device remembers per part). Cards have a Style section: how the
+// question Block, the answer Block and the arrow between them look, and
+// whether the answer goes beside the question or under it
+// (src/documents/card-canvas-style.js) — also what a card dragged by its grip
+// takes.
+//
 // Built once, on first use, from the .confirm-modal chrome the other small
 // dialogs use (styles/11-chrome.css); its own rules are styles/a8-canvas-feed.css.
 
 import { cardItems, keysOnCanvas, notesHighlightItems, pdfHighlightItems, placeOnCanvas } from "./canvas-feed.js?v=__BUILD__";
 import { activePdfId, deckPdfs } from "./pdf-multi.js?v=__BUILD__";
-import { MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
+import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
+import { INK_PEN_COLORS, INK_PEN_HEX } from "../format/ink-colors.js?v=__BUILD__";
+import {
+  BLOCK_FILL_HEX, BLOCK_FILL_LABEL, BLOCK_FILLS, BLOCK_FRAME_LABEL, BLOCK_FRAMES, BLOCK_SHAPE_LABEL, BLOCK_SHAPES,
+  blockShapePatch, normalizeBlockStyle
+} from "./block-style.js?v=__BUILD__";
+import { CARD_CANVAS_STYLE_DEFAULT, cardArrowShape, readCardCanvasStyle, writeCardCanvasStyle } from "./card-canvas-style.js?v=__BUILD__";
+import { newConnectorBase } from "./pdf-shapes.js?v=__BUILD__";
+import { fontFamilyChoices, fontFamilyOptionGroups } from "../ui/theme-catalog.js?v=__BUILD__";
+import { ensureWebfont } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
 let feedDialog = null;
-// { source, items, ticked: Set, onCanvas: Set, colourFilter, allPdfs, colours }
+// { source, items, ticked: Set, onCanvas: Set, colourFilter: Set, allPdfs, colours, cardStyle, styleTab }
 let feedModel = null;
 
 const FEED_TITLE = {
@@ -29,6 +45,32 @@ const FEED_EMPTY = {
   pdf: "No highlights in this PDF yet — highlight something first",
   cards: "No cards in this file yet"
 };
+
+// The colours last chosen, per part, on this device.
+const COLOUR_STORE = "recall_canvas_feed_colours_v1";
+
+function readColourChoice(source) {
+  try {
+    const all = JSON.parse(localStorage.getItem(COLOUR_STORE) || "{}");
+    return Array.isArray(all?.[source]) ? all[source].map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeColourChoice(source, colours) {
+  try {
+    const all = JSON.parse(localStorage.getItem(COLOUR_STORE) || "{}") || {};
+    all[source] = [...colours];
+    localStorage.setItem(COLOUR_STORE, JSON.stringify(all));
+  } catch { /* this session only */ }
+}
+
+const colourName = (color) => {
+  const name = String(color || MARK_HIGHLIGHT_DEFAULT);
+  return name[0].toUpperCase() + name.slice(1);
+};
+const colourHex = (color) => MARK_HIGHLIGHT_HEX?.[color] || (/^#[0-9a-f]{3,8}$/i.test(color) ? color : MARK_HIGHLIGHT_HEX[MARK_HIGHLIGHT_DEFAULT]);
 
 function feedItemsFor(source, { allPdfs = false } = {}) {
   if (source === "notes") return notesHighlightItems();
@@ -50,12 +92,35 @@ function buildCanvasFeedDialog() {
         <h3 class="prompt-modal-title" id="canvasFeedTitle"></h3>
         <p class="canvas-feed-note">Ticked items become Blocks at the end of the Canvas, sized and placed for you. New pages are added when one fills up.</p>
         <div class="canvas-feed-tools">
-          <button type="button" class="canvas-feed-chip" data-cf-pickFeedRows="new">New only</button>
-          <button type="button" class="canvas-feed-chip" data-cf-pickFeedRows="all">All</button>
-          <button type="button" class="canvas-feed-chip" data-cf-pickFeedRows="none">None</button>
-          <span class="canvas-feed-colours" data-cf-colours></span>
+          <button type="button" class="canvas-feed-chip" data-cf-pick="new">New only</button>
+          <button type="button" class="canvas-feed-chip" data-cf-pick="all">All</button>
+          <button type="button" class="canvas-feed-chip" data-cf-pick="none">None</button>
+        </div>
+        <div class="canvas-feed-colours" data-cf-colours-bar hidden>
+          <span class="canvas-feed-label">Colours</span>
+          <span class="canvas-feed-colour-chips" data-cf-colours></span>
         </div>
         <label class="canvas-feed-check" data-cf-all-pdfs-row hidden><input type="checkbox" data-cf-all-pdfs> Every PDF of this file</label>
+        <details class="canvas-feed-style" data-cf-style hidden>
+          <summary>Style</summary>
+          <div class="cf-style-body">
+            <div class="cf-style-preview" data-cf-preview aria-hidden="true"></div>
+            <div class="cf-style-tabs" role="tablist">
+              <button type="button" role="tab" data-cf-tab="q">Question</button>
+              <button type="button" role="tab" data-cf-tab="a">Answer</button>
+              <button type="button" role="tab" data-cf-tab="arrow">Arrow</button>
+            </div>
+            <div class="cf-style-panel" data-cf-panel></div>
+            <div class="cf-style-row">
+              <span class="canvas-feed-label">Layout</span>
+              <span class="cf-style-chips">
+                <button type="button" class="canvas-feed-chip" data-cf-layout="side">Side by side</button>
+                <button type="button" class="canvas-feed-chip" data-cf-layout="stacked">Question above answer</button>
+              </span>
+              <button type="button" class="canvas-feed-chip cf-style-reset" data-cf-reset>Reset</button>
+            </div>
+          </div>
+        </details>
       </header>
       <ol class="canvas-feed-list" data-cf-list></ol>
       <footer class="sync-modal-actions canvas-feed-actions">
@@ -68,6 +133,7 @@ function buildCanvasFeedDialog() {
   document.body.appendChild(section);
   section.addEventListener("click", onCanvasFeedClick);
   section.addEventListener("change", onCanvasFeedChange);
+  section.addEventListener("input", onCanvasFeedInput);
   section.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -78,9 +144,30 @@ function buildCanvasFeedDialog() {
   return section;
 }
 
+function feedVisible(item) {
+  return !feedModel.colourFilter.size || feedModel.colourFilter.has(item.color || MARK_HIGHLIGHT_DEFAULT);
+}
+
 function feedVisibleItems() {
   if (!feedModel) return [];
-  return feedModel.items.filter((item) => !feedModel.colourFilter || item.color === feedModel.colourFilter);
+  return feedModel.items.filter(feedVisible);
+}
+
+function paintColourChips() {
+  const bar = feedDialog.querySelector("[data-cf-colours-bar]");
+  const counts = new Map();
+  if (feedModel.source !== "cards") {
+    feedModel.items.forEach((item) => {
+      const color = item.color || MARK_HIGHLIGHT_DEFAULT;
+      counts.set(color, (counts.get(color) || 0) + 1);
+    });
+  }
+  bar.hidden = !counts.size;
+  if (!counts.size) return;
+  const all = `<button type="button" class="canvas-feed-chip canvas-feed-colour" data-cf-colour="" aria-pressed="${!feedModel.colourFilter.size}">All colours <span class="canvas-feed-count">${feedModel.items.length}</span></button>`;
+  const chips = [...counts.entries()].map(([color, count]) => `<button type="button" class="canvas-feed-chip canvas-feed-colour" data-cf-colour="${escapeHtml(color)}" aria-pressed="${feedModel.colourFilter.has(color)}" title="Only ${escapeHtml(colourName(color).toLowerCase())} highlights — press more than one to take several">`
+    + `<span class="canvas-feed-dot" style="--swatch:${escapeHtml(colourHex(color))}"></span>${escapeHtml(colourName(color))} <span class="canvas-feed-count">${count}</span></button>`);
+  feedDialog.querySelector("[data-cf-colours]").innerHTML = all + chips.join("");
 }
 
 function paintCanvasFeedDialog() {
@@ -91,30 +178,33 @@ function paintCanvasFeedDialog() {
   allRow.hidden = !severalPdfs;
   allRow.querySelector("input").checked = feedModel.allPdfs;
   feedDialog.querySelector("[data-cf-colours-row]").hidden = feedModel.source === "cards";
-  const colours = [...new Set(feedModel.items.map((item) => item.color).filter(Boolean))];
-  feedDialog.querySelector("[data-cf-colours]").innerHTML = colours.length > 1
-    ? colours.map((color) => `<button type="button" class="canvas-feed-swatch" data-cf-colour="${escapeHtml(color)}" aria-pressed="${feedModel.colourFilter === color}" title="Only ${escapeHtml(color)}" style="--swatch:${escapeHtml(MARK_HIGHLIGHT_HEX?.[color] || color)}"></button>`).join("")
-    : "";
+  paintColourChips();
   let lastLabel = null;
   const rows = feedVisibleItems().map((item) => {
     const index = feedModel.items.indexOf(item);
     const on = feedModel.onCanvas.has(item.from);
     const head = item.label && item.label !== lastLabel ? `<li class="canvas-feed-group">${escapeHtml(item.label)}</li>` : "";
     lastLabel = item.label;
-    const dot = item.color ? `<span class="canvas-feed-dot" style="--swatch:${escapeHtml(MARK_HIGHLIGHT_HEX?.[item.color] || item.color)}"></span>` : "";
+    const dot = item.color ? `<span class="canvas-feed-dot" style="--swatch:${escapeHtml(colourHex(item.color))}"></span>` : "";
     return `${head}<li class="canvas-feed-row${on ? " is-on-canvas" : ""}"><label>`
       + `<input type="checkbox" data-cf-item="${index}"${feedModel.ticked.has(index) ? " checked" : ""}>`
       + `${dot}<span class="canvas-feed-text">${escapeHtml(item.preview || "")}</span>`
       + `${on ? '<span class="canvas-feed-badge">on the Canvas</span>' : ""}</label></li>`;
   });
-  feedDialog.querySelector("[data-cf-list]").innerHTML = rows.join("");
+  feedDialog.querySelector("[data-cf-list]").innerHTML = rows.join("")
+    || '<li class="canvas-feed-group">No highlights in these colours</li>';
   const count = feedModel.ticked.size;
   const blocks = feedModel.source === "cards" ? count * 2 : count;
   const addButton = feedDialog.querySelector('[data-cf-action="add"]');
   addButton.textContent = count ? `Add ${blocks} Block${blocks === 1 ? "" : "s"}` : "Add";
   addButton.disabled = !count;
+  const style = feedDialog.querySelector("[data-cf-style]");
+  style.hidden = feedModel.source !== "cards";
+  if (feedModel.source === "cards") paintCardStyle();
 }
 
+// Ticks the rows on show: the new ones, all of them, or none. Rows the colour
+// filter hides are never ticked, so Add adds what is on show.
 function pickFeedRows(which) {
   feedModel.ticked = new Set();
   feedVisibleItems().forEach((item) => {
@@ -124,14 +214,158 @@ function pickFeedRows(which) {
   paintCanvasFeedDialog();
 }
 
+function chooseColour(color) {
+  if (!color) feedModel.colourFilter = new Set();
+  else if (feedModel.colourFilter.has(color)) feedModel.colourFilter.delete(color);
+  else feedModel.colourFilter.add(color);
+  writeColourChoice(feedModel.source, feedModel.colourFilter);
+  pickFeedRows("new");
+}
+
+// ── The card style ────────────────────────────────────────────────────────
+
+const ARROW_HEAD_LABEL = { none: "None", open: "Open", filled: "Filled", dot: "Dot", bar: "Bar" };
+const ARROW_DASH_LABEL = { solid: "Solid", dash: "Dashed", dot: "Dotted" };
+const ARROW_ROUTE_LABEL = { straight: "Straight", elbow: "Elbow", curve: "Curve" };
+
+function chipRow(label, field, options, current, { swatch = null } = {}) {
+  const chips = options.map(([value, text]) => {
+    const dot = swatch ? `<span class="canvas-feed-dot" style="--swatch:${escapeHtml(swatch(value) || "transparent")}"></span>` : "";
+    return `<button type="button" class="canvas-feed-chip" data-cf-set="${field}" data-cf-value="${escapeHtml(value)}" aria-pressed="${String(current) === String(value)}" title="${escapeHtml(text)}">${dot}${escapeHtml(text)}</button>`;
+  }).join("");
+  return `<div class="cf-style-row"><span class="canvas-feed-label">${escapeHtml(label)}</span><span class="cf-style-chips">${chips}</span></div>`;
+}
+
+function fontSelect(field, current) {
+  const known = new Set(fontFamilyOptionGroups.flatMap((group) => group.options));
+  const groups = fontFamilyOptionGroups.map((group) => `<optgroup label="${escapeHtml(group.label)}">${group.options
+    .filter((key) => Object.prototype.hasOwnProperty.call(fontFamilyChoices, key))
+    .map((key) => `<option value="${escapeHtml(key)}"${current === key ? " selected" : ""}>${escapeHtml(key[0].toUpperCase() + key.slice(1))}</option>`).join("")}</optgroup>`).join("");
+  const extra = current && current !== "inherit" && !known.has(current) ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>` : "";
+  return `<select data-cf-input="${field}"><option value="inherit">The Canvas's font</option>${extra}${groups}</select>`;
+}
+
+function blockSidePanel(side) {
+  const bag = normalizeBlockStyle(feedModel.cardStyle[side]);
+  const pens = [["default", "Default"], ...INK_PEN_COLORS.map((pen) => [pen.value, pen.name])];
+  return [
+    chipRow("Fill", "fill", BLOCK_FILLS.map((fill) => [fill, BLOCK_FILL_LABEL[fill] || fill]), bag.fill, { swatch: (value) => BLOCK_FILL_HEX[value] }),
+    chipRow("Text colour", "ink", pens, bag.ink, { swatch: (value) => INK_PEN_HEX[value] || "" }),
+    `<div class="cf-style-row"><span class="canvas-feed-label">Type</span><span class="cf-style-chips">`
+      + `<label class="cf-style-field">Size <input type="text" inputmode="decimal" data-cf-input="size" value="${bag.size ?? ""}" placeholder="auto"> pt</label>`
+      + `<label class="cf-style-field">Face ${fontSelect("font", bag.font)}</label>`
+      + `<button type="button" class="canvas-feed-chip" data-cf-set="weight" data-cf-value="${bag.weight ? "" : "700"}" aria-pressed="${Boolean(bag.weight && bag.weight >= 600)}"><b>B</b> Bold</button>`
+      + `</span></div>`,
+    chipRow("Align", "align", [["left", "Left"], ["center", "Centre"], ["right", "Right"]], bag.align),
+    chipRow("Frame", "frame", BLOCK_FRAMES.map((frame) => [frame, BLOCK_FRAME_LABEL[frame] || frame]), bag.frame),
+    `<div class="cf-style-row"><span class="canvas-feed-label">Shape</span><span class="cf-style-chips"><select data-cf-input="shape">${BLOCK_SHAPES.map((shape) => `<option value="${shape}"${bag.shape === shape ? " selected" : ""}>${escapeHtml(BLOCK_SHAPE_LABEL[shape] || shape)}</option>`).join("")}</select></span></div>`
+  ].join("");
+}
+
+function arrowPanel() {
+  const arrow = feedModel.cardStyle.arrow;
+  const pens = [["", "Default"], ...INK_PEN_COLORS.map((pen) => [pen.value, pen.name])];
+  return [
+    chipRow("Colour", "arrow.color", pens, arrow.color, { swatch: (value) => INK_PEN_HEX[value] || "" }),
+    `<div class="cf-style-row"><span class="canvas-feed-label">Thickness</span><span class="cf-style-chips"><label class="cf-style-field"><input type="text" inputmode="decimal" data-cf-input="arrow.width" value="${arrow.width ?? ""}" placeholder="auto"> pt</label></span></div>`,
+    chipRow("Line", "arrow.dash", [["", "Default"], ...Object.entries(ARROW_DASH_LABEL)], arrow.dash),
+    chipRow("End", "arrow.head", [["", "Default"], ...Object.entries(ARROW_HEAD_LABEL)], arrow.head),
+    chipRow("Route", "arrow.route", [["", "Default"], ...Object.entries(ARROW_ROUTE_LABEL)], arrow.route)
+  ].join("");
+}
+
+function paintCardStyle({ panel = true } = {}) {
+  const tab = feedModel.styleTab;
+  feedDialog.querySelectorAll("[data-cf-tab]").forEach((button) => button.setAttribute("aria-selected", String(button.dataset.cfTab === tab)));
+  feedDialog.querySelectorAll("[data-cf-layout]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.cfLayout === feedModel.cardStyle.layout)));
+  if (panel) feedDialog.querySelector("[data-cf-panel]").innerHTML = tab === "arrow" ? arrowPanel() : blockSidePanel(tab);
+  paintCardPreview();
+}
+
+// The preview's look for one side, from the same custom properties a Block on
+// the page reads (styles/58-block-style.css, styles/52-ink.css).
+function previewSideStyle(side) {
+  const bag = normalizeBlockStyle(feedModel.cardStyle[side]);
+  const rules = [`background:var(--block-fill-${bag.fill})`];
+  if (bag.ink !== "default") rules.push(`color:var(--ink-pen-${bag.ink})`);
+  if (bag.size) rules.push(`font-size:${bag.size}pt`);
+  if (bag.font !== "inherit" && fontFamilyChoices[bag.font]) {
+    ensureWebfont(bag.font);
+    rules.push(`font-family:${fontFamilyChoices[bag.font]}`);
+  }
+  if (bag.weight) rules.push(`font-weight:${bag.weight}`);
+  rules.push(`text-align:${bag.align}`);
+  if (bag.frame === "none") rules.push("border-color:transparent;box-shadow:none");
+  else if (bag.frame === "outline") rules.push("box-shadow:none");
+  const radius = { rounded: "12px", pill: "999px", ellipse: "50%" }[bag.shape];
+  if (radius) rules.push(`border-radius:${radius}`);
+  if (bag.shape === "diamond") rules.push("clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);padding:14px 22px");
+  return rules.join(";");
+}
+
+function paintCardPreview() {
+  const preview = feedDialog.querySelector("[data-cf-preview]");
+  const stacked = feedModel.cardStyle.layout === "stacked";
+  const shape = cardArrowShape(newConnectorBase(), feedModel.cardStyle.arrow);
+  const dash = shape.dash === "dash" ? `${shape.width * 3} ${shape.width * 2}` : shape.dash === "dot" ? `${shape.width} ${shape.width * 1.6}` : "";
+  const head = (shape.heads || ["none", "filled"])[1] || "none";
+  const len = 46;
+  const w = Math.max(1, Number(shape.width) || 1.6);
+  const tip = { filled: `<path d="M${len - 9} -5 L${len} 0 L${len - 9} 5 Z" fill="${shape.stroke}"/>`, open: `<path d="M${len - 9} -5 L${len} 0 L${len - 9} 5" fill="none" stroke="${shape.stroke}" stroke-width="${w}"/>`, dot: `<circle cx="${len - 3}" cy="0" r="3.4" fill="${shape.stroke}"/>`, bar: `<path d="M${len} -5 L${len} 5" stroke="${shape.stroke}" stroke-width="${w}"/>` }[head] || "";
+  const arrow = `<svg class="cf-preview-arrow" viewBox="0 -8 ${len} 16" width="${len}" height="16"${stacked ? ' style="transform:rotate(90deg)"' : ""}>`
+    + `<line x1="2" y1="0" x2="${head === "none" ? len : len - 4}" y2="0" stroke="${shape.stroke}" stroke-width="${w}"${dash ? ` stroke-dasharray="${dash}"` : ""}/>${tip}</svg>`;
+  preview.classList.toggle("is-stacked", stacked);
+  preview.innerHTML = `<div class="cf-preview-block" style="${previewSideStyle("q")}">What is a question?</div>${arrow}<div class="cf-preview-block" style="${previewSideStyle("a")}">Its answer, on the Canvas.</div>`;
+}
+
+function setCardStyleValue(field, value) {
+  const style = JSON.parse(JSON.stringify(feedModel.cardStyle));
+  if (field.startsWith("arrow.")) {
+    style.arrow[field.slice(6)] = value;
+  } else {
+    const side = feedModel.styleTab === "a" ? "a" : "q";
+    const bag = { ...style[side] };
+    if (field === "shape") {
+      const patch = blockShapePatch(value);
+      delete patch.fit;
+      Object.assign(bag, patch);
+    } else if (value === "" || value === null) {
+      delete bag[field];
+    } else {
+      bag[field] = value;
+    }
+    style[side] = bag;
+  }
+  feedModel.cardStyle = writeCardCanvasStyle(style);
+}
+
+// ── Events ────────────────────────────────────────────────────────────────
+
 function onCanvasFeedClick(event) {
   if (event.target === feedDialog) { closeCanvasFeedDialog(); return; }
-  const chip = event.target.closest("[data-cf-pickFeedRows]");
+  const chip = event.target.closest("[data-cf-pick]");
   if (chip) { pickFeedRows(chip.dataset.cfPick); return; }
-  const swatch = event.target.closest("[data-cf-colour]");
-  if (swatch) {
-    feedModel.colourFilter = feedModel.colourFilter === swatch.dataset.cfColour ? "" : swatch.dataset.cfColour;
-    pickFeedRows("new");
+  const colour = event.target.closest("[data-cf-colour]");
+  if (colour) { chooseColour(colour.dataset.cfColour); return; }
+  const tab = event.target.closest("[data-cf-tab]");
+  if (tab) { feedModel.styleTab = tab.dataset.cfTab; paintCardStyle(); return; }
+  const set = event.target.closest("[data-cf-set]");
+  if (set) {
+    const field = set.dataset.cfSet;
+    const value = field === "weight" ? (set.dataset.cfValue ? Number(set.dataset.cfValue) : "") : set.dataset.cfValue;
+    setCardStyleValue(field, value);
+    paintCardStyle();
+    return;
+  }
+  const layout = event.target.closest("[data-cf-layout]");
+  if (layout) {
+    feedModel.cardStyle = writeCardCanvasStyle({ ...feedModel.cardStyle, layout: layout.dataset.cfLayout });
+    paintCardStyle({ panel: false });
+    return;
+  }
+  if (event.target.closest("[data-cf-reset]")) {
+    feedModel.cardStyle = writeCardCanvasStyle(CARD_CANVAS_STYLE_DEFAULT);
+    paintCardStyle();
     return;
   }
   const action = event.target.closest("[data-cf-action]")?.dataset.cfAction;
@@ -139,9 +373,21 @@ function onCanvasFeedClick(event) {
   else if (action === "add") addFeedItems();
 }
 
+// A typed size: the preview follows each key; the box is left alone so the
+// caret stays where it is.
+function onCanvasFeedInput(event) {
+  const input = event.target.closest?.("input[data-cf-input]");
+  if (!input) return;
+  setCardStyleValue(input.dataset.cfInput, input.value.trim());
+  paintCardPreview();
+}
+
 function onCanvasFeedChange(event) {
   const box = event.target;
-  if (box.matches("[data-cf-item]")) {
+  if (box.matches("select[data-cf-input]")) {
+    setCardStyleValue(box.dataset.cfInput, box.value);
+    paintCardPreview();
+  } else if (box.matches("[data-cf-item]")) {
     const index = Number(box.dataset.cfItem);
     if (box.checked) feedModel.ticked.add(index);
     else feedModel.ticked.delete(index);
@@ -157,13 +403,15 @@ function onCanvasFeedChange(event) {
 function loadFeedItems() {
   feedModel.items = feedItemsFor(feedModel.source, { allPdfs: feedModel.allPdfs });
   feedModel.onCanvas = keysOnCanvas();
-  feedModel.colourFilter = "";
-  feedModel.ticked = new Set(feedModel.items.map((item, index) => (feedModel.onCanvas.has(item.from) ? -1 : index)).filter((index) => index >= 0));
-  paintCanvasFeedDialog();
+  const present = new Set(feedModel.items.map((item) => item.color || MARK_HIGHLIGHT_DEFAULT));
+  feedModel.colourFilter = new Set(feedModel.source === "cards" ? [] : readColourChoice(feedModel.source).filter((color) => present.has(color)));
+  pickFeedRows("new");
 }
 
 async function addFeedItems() {
-  const chosen = [...feedModel.ticked].sort((a, b) => a - b).map((index) => feedModel.items[index]).filter(Boolean);
+  const chosen = [...feedModel.ticked].sort((a, b) => a - b)
+    .map((index) => feedModel.items[index])
+    .filter((item) => item && feedVisible(item));
   const colours = feedModel.colours;
   closeCanvasFeedDialog();
   if (chosen.length) await placeOnCanvas(chosen, { colours });
@@ -188,8 +436,12 @@ export function openCanvasFeedDialog(source) {
     return false;
   }
   if (!feedDialog) feedDialog = buildCanvasFeedDialog();
-  feedModel = { source, items: [], ticked: new Set(), onCanvas: new Set(), colourFilter: "", allPdfs: false, colours: true };
+  feedModel = {
+    source, items: [], ticked: new Set(), onCanvas: new Set(), colourFilter: new Set(), allPdfs: false, colours: true,
+    cardStyle: readCardCanvasStyle(), styleTab: "q"
+  };
   feedDialog.querySelector("[data-cf-keep-colours]").checked = true;
+  feedDialog.querySelector("[data-cf-style]").open = false;
   loadFeedItems();
   feedDialog.hidden = false;
   lockPageScroll();

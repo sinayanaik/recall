@@ -34,7 +34,10 @@ import {
   allDocumentBlocks, blockNaturalWidth, blockPageBounds, buildStaticBlock, documentBlocks,
   freshDocumentBlockId, nextBlockZ, PDF_BLOCK_MARKDOWN, runDiagramEdit, writeDocumentBlocks
 } from "./pdf-blocks.js?v=__BUILD__";
-import { canvasBlockMeasurePercent, canvasBlockWidthMode, CANVAS_BLOCK_WIDTH_BALANCED } from "./block-measure.js?v=__BUILD__";
+import { canvasBlockMeasurePercent, canvasBlockWidthMode, canvasDropWidthPercent, CANVAS_BLOCK_WIDTH_BALANCED } from "./block-measure.js?v=__BUILD__";
+import { canvasItemKind, canvasSizedMarkdown, escapePlainMarkdown } from "./canvas-sizing.js?v=__BUILD__";
+import { cardArrowShape, readCardCanvasStyle } from "./card-canvas-style.js?v=__BUILD__";
+import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { BLOCK_FILLS } from "./block-style.js?v=__BUILD__";
 import { appendNotebookPages, hasNotebook, notebookPageCount, notebookPageSetup } from "./notebook.js?v=__BUILD__";
 import { sheetBox } from "./canvas-setup.js?v=__BUILD__";
@@ -107,7 +110,7 @@ export function notesHighlightItems() {
       from: `notes:${first.noteRef || feedKeyHash(text)}`,
       kind: "text",
       md,
-      color: group.color || first.color || "",
+      color: group.color || first.color || MARK_HIGHLIGHT_DEFAULT,
       label: heading?.title || "",
       preview: feedPreviewLine(text),
       // Which rendered <mark>s are this highlight — its ordinals among the
@@ -126,16 +129,6 @@ export function notesHighlightItemForMark(markIndex) {
 // A PDF highlight, by its record — what one dragged from beside carries.
 export function pdfHighlightItem(recordId) {
   return pdfHighlightItems(null).find((item) => item.from === `pdf:${recordId}`) || null;
-}
-
-// Markdown that shows a PDF's words as they are — no emphasis, list or
-// heading made by a star or a hash that happens to be in them.
-export function escapePlainMarkdown(text) {
-  return String(text || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/([\\`*_[\]<>|~])/g, "\\$1")
-    .replace(/^(#{1,6}\s|[-+]\s|\d+[.)]\s|>)/, "\\$1");
 }
 
 function feedRecordTop(record) {
@@ -175,12 +168,12 @@ export function pdfHighlightItems(pdfId = null) {
     if (record.kind === "area") {
       const md = pdfRegionRefForRecord(record);
       if (!md) return;
-      items.push({ from: `pdf:${record.id}`, kind: "ref", md, color: record.color || "", label, preview: `Region · ${where}` });
+      items.push({ from: `pdf:${record.id}`, kind: "ref", md, color: record.color || MARK_HIGHLIGHT_DEFAULT, label, preview: `Region · ${where}` });
       return;
     }
     const text = String(record.text || "").trim();
     if (!text) return;
-    items.push({ from: `pdf:${record.id}`, kind: "text", md: escapePlainMarkdown(text), color: record.color || "", label, preview: feedPreviewLine(text) });
+    items.push({ from: `pdf:${record.id}`, kind: "text", md: escapePlainMarkdown(text), color: record.color || MARK_HIGHLIGHT_DEFAULT, label, preview: feedPreviewLine(text) });
   });
   return items;
 }
@@ -294,17 +287,24 @@ function feedRefSize(md, cap) {
   return { w, h: Math.round(Math.max(24, w * (rh / Math.max(1, rw)) + 14)) };
 }
 
-async function measureFeedMarkdown(md, { cap, box, host, style }) {
+// `fixed`: the Block is `cap` wide whatever its words want — a picture, which
+// fills the width ◐ Canvas gives pictures. Otherwise as wide as the words want
+// under the width rule, up to `cap`; `balanced` false for a listing or a table,
+// which keep their lines.
+async function measureFeedMarkdown(md, { cap, box, host, style, fixed = false, balanced = true }) {
   if (/^!\[[^\]]*\]\(pdfref:[^)]+\)$/.test(String(md).trim())) return feedRefSize(md, cap);
   const viewport = feedStandInViewport(box);
   const block = { id: "measure", page: 1, x: box[0], y: box[1], w: cap, h: 40, z: 0, kind: PDF_BLOCK_MARKDOWN, md, ...(style ? { style } : {}) };
   let node = null;
   try {
     node = await buildStaticBlock(block, viewport, { mountIn: host });
-    const code = /^\s*(```|~~~)/m.test(md);
-    const balanced = !code && canvasBlockWidthMode() === CANVAS_BLOCK_WIDTH_BALANCED;
-    const natural = blockNaturalWidth(node, { scale: 1, cap, balanced });
-    const w = Math.round(Math.min(cap, natural || cap));
+    let w = Math.round(cap);
+    if (!fixed) {
+      const code = /^\s*(```|~~~)/m.test(md);
+      const balance = balanced && !code && canvasBlockWidthMode() === CANVAS_BLOCK_WIDTH_BALANCED;
+      const natural = blockNaturalWidth(node, { scale: 1, cap, balanced: balance });
+      w = Math.round(Math.min(cap, natural || cap));
+    }
     node.style.width = `${w}px`;
     node.style.height = "auto";
     const body = node.querySelector(".pdf-block-body");
@@ -317,6 +317,79 @@ async function measureFeedMarkdown(md, { cap, box, host, style }) {
   } finally {
     node?.remove();
   }
+}
+
+// The Canvas page things are measured for: the page dropped on, or the last.
+export function canvasPageGeometry(page = Math.max(1, notebookPageCount())) {
+  const setup = notebookPageSetup(page);
+  return { page, box: sheetBox(setup), margins: setup?.margins || {} };
+}
+
+// Each item measured for Canvas page `page` as it will be drawn there:
+//
+//   { item, md, style, kind, w, h, keepWidth }        a Block
+//   { item, pair: [{ md, style, w, h }, ×2], stacked } a card
+//
+// Its sizes from where it came are taken off first (canvasSizedMarkdown), and
+// its width comes from ◐ Canvas by its kind: words the measure, a picture
+// "Pictures land at", a table, a listing or a diagram "Tables and code land
+// at". A card takes the card style chosen in the Cards' picker. `colours`
+// keeps a highlight's colour as its Block's fill.
+export async function measureCanvasItems(items, { page, colours = true, cardStyle = readCardCanvasStyle() } = {}) {
+  const list = (items || []).filter(Boolean);
+  const geometry = canvasPageGeometry(page);
+  const content = flowContentBox(geometry.box, geometry.margins);
+  const widths = flowWidths(content);
+  const pageWidth = geometry.box[2] - geometry.box[0];
+  const share = (kind) => Math.max(80, Math.floor(pageWidth * canvasDropWidthPercent(kind) / 100));
+  const single = Math.min(widths.single, Math.max(120, Math.floor(pageWidth * canvasBlockMeasurePercent() / 100)));
+  const host = feedMeasureHost(geometry.box);
+  const sized = [];
+  try {
+    for (const item of list) {
+      if (item.kind === "pair") {
+        const stacked = cardStyle.layout === "stacked";
+        const cap = stacked ? single : widths.half;
+        const halves = [];
+        for (const [text, style] of [[item.q, cardStyle.q], [item.a, cardStyle.a]]) {
+          const md = canvasSizedMarkdown(text || " ");
+          const bag = style && Object.keys(style).length ? { ...style } : null;
+          // eslint-disable-next-line no-await-in-loop
+          const size = await measureFeedMarkdown(md, { cap, box: geometry.box, host, style: bag });
+          halves.push({ md, style: bag, ...size });
+        }
+        sized.push({ item, pair: halves, stacked });
+        continue;
+      }
+      const fill = colours ? feedFillFor(item.color) : "";
+      const md = item.kind === "ref" ? item.md : canvasSizedMarkdown(item.md);
+      const kind = item.kind === "ref" ? "ref" : canvasItemKind(md);
+      const style = { ...(fill ? { fill } : {}), ...(kind === "picture" ? { imageWidth: 100 } : {}) };
+      const bag = Object.keys(style).length ? style : null;
+      let size;
+      if (kind === "picture") {
+        // eslint-disable-next-line no-await-in-loop
+        size = await measureFeedMarkdown(md, { cap: Math.min(widths.single, share("picture")), box: geometry.box, host, style: bag, fixed: true });
+      } else if (kind === "code" || kind === "table" || kind === "diagram") {
+        // eslint-disable-next-line no-await-in-loop
+        size = await measureFeedMarkdown(md, { cap: Math.min(widths.single, share(kind)), box: geometry.box, host, style: bag, balanced: false });
+      } else {
+        // eslint-disable-next-line no-await-in-loop
+        size = await measureFeedMarkdown(md, { cap: single, box: geometry.box, host, style: bag });
+      }
+      // A picture, a region's picture, a listing, a table and a diagram keep
+      // the width they were laid out at; words follow their words.
+      sized.push({ item, md, style: bag, kind, keepWidth: kind !== "text", ...size });
+    }
+  } finally {
+    host.remove();
+  }
+  return { page: geometry.page, box: geometry.box, sized, cardStyle };
+}
+
+// What canvas-flow.js lays out for a measured entry.
+export function flowItemFor(entry) {
+  return entry.pair ? { pair: entry.pair, stacked: entry.stacked } : { w: entry.w, h: entry.h };
 }
 
 // ── Putting them down ─────────────────────────────────────────────────────
@@ -334,22 +407,17 @@ function canvasThingsOnPage(page) {
   return rects;
 }
 
-function canvasPageGeometry(page) {
-  const setup = notebookPageSetup(page);
-  return { page, box: sheetBox(setup), margins: setup?.margins || {} };
-}
-
 // `fit`: the width is the words' and follows them as the page draws them; a
 // card's halves are laid out side by side at the widths measured here, so their
 // widths are kept (`wHand`) and only their heights follow the words.
-function feedBlockRecord({ id, page, x, y, w, h, md, from, fill, group = null, fit = true, keepWidth = false }) {
+function feedBlockRecord({ id, page, x, y, w, h, md, from, style = null, group = null, fit = true, keepWidth = false }) {
   return {
     id, page, x, y, w, h,
     z: nextBlockZ(),
     kind: PDF_BLOCK_MARKDOWN,
     md,
     at: Date.now(),
-    ...(fill ? { style: { fill } } : {}),
+    ...(style && Object.keys(style).length ? { style: { ...style } } : {}),
     ...(fit && !keepWidth ? { wFit: true, wBal: true } : {}),
     ...(keepWidth ? { wHand: true } : {}),
     ...(from ? { from } : {}),
@@ -361,10 +429,13 @@ function freshFeedGroupId() {
   return `gp-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
 }
 
-// Put `items` on the Canvas. With `at` ({ page, x, y }, a drop) the one item
-// goes there; without, every item goes at the end. `colours` keeps each
-// highlight's colour as its Block's fill. Resolves to the ids made, or null.
-export async function placeOnCanvas(items, { at = null, colours = true, quiet = false } = {}) {
+// Put `items` on the Canvas. With `at` ({ page, x, y }, a drop — the top-left
+// corner the drop's preview showed) the one item goes there; without, every
+// item goes at the end. `colours` keeps each highlight's colour as its Block's
+// fill. `measured` is measureCanvasItems' answer when the caller has one
+// already (a drop measured while it was dragged). Resolves to the ids made, or
+// null.
+export async function placeOnCanvas(items, { at = null, colours = true, quiet = false, measured = null } = {}) {
   const list = (items || []).filter(Boolean);
   if (!list.length) return null;
   if (!at && !(await bringCanvasUp())) {
@@ -376,42 +447,20 @@ export async function placeOnCanvas(items, { at = null, colours = true, quiet = 
     return null;
   }
   const lastPage = Math.max(1, notebookPageCount());
-  const geometry = canvasPageGeometry(at ? Number(at.page) || 1 : lastPage);
-  const content = flowContentBox(geometry.box, geometry.margins);
-  const widths = flowWidths(content);
-  const measure = Math.max(120, Math.floor((geometry.box[2] - geometry.box[0]) * canvasBlockMeasurePercent() / 100));
-  const single = Math.min(widths.single, measure);
-  const half = widths.half;
-  const host = feedMeasureHost(geometry.box);
-  const sized = [];
-  try {
-    for (const item of list) {
-      const fill = colours ? feedFillFor(item.color) : "";
-      const style = fill ? { fill } : null;
-      if (item.kind === "pair") {
-        // eslint-disable-next-line no-await-in-loop
-        const q = await measureFeedMarkdown(item.q || " ", { cap: half, box: geometry.box, host, style });
-        // eslint-disable-next-line no-await-in-loop
-        const a = await measureFeedMarkdown(item.a || " ", { cap: half, box: geometry.box, host, style });
-        sized.push({ item, fill, pair: [q, a] });
-      } else {
-        const cap = /^\s*(```|~~~)/m.test(item.md) ? widths.single : single;
-        // eslint-disable-next-line no-await-in-loop
-        const size = await measureFeedMarkdown(item.md, { cap, box: geometry.box, host, style });
-        sized.push({ item, fill, ...size });
-      }
-    }
-  } finally {
-    host.remove();
-  }
+  const targetPage = at ? Number(at.page) || 1 : lastPage;
+  const sizes = measured && measured.page === targetPage && measured.sized?.length === list.length
+    ? measured
+    : await measureCanvasItems(list, { page: targetPage, colours });
+  const { sized, box, cardStyle } = sizes;
+  const geometry = canvasPageGeometry(targetPage);
   let places;
   if (at) {
-    places = [placeAtPoint({ box: geometry.box, at, item: sized[0] })];
+    places = [placeAtPoint({ box: box || geometry.box, at, item: flowItemFor(sized[0]) })];
   } else {
     const flow = flowOntoCanvas({
       pages: [geometry],
       lowest: lowestEdge(canvasThingsOnPage(lastPage)),
-      items: sized.map((entry) => (entry.pair ? { pair: entry.pair } : { w: entry.w, h: entry.h }))
+      items: sized.map(flowItemFor)
     });
     places = flow.places;
     if (flow.newPages) {
@@ -434,27 +483,27 @@ export async function placeOnCanvas(items, { at = null, colours = true, quiet = 
     sized.forEach((entry, index) => {
       const place = places[index];
       if (!place) return;
-      const { item, fill } = entry;
+      const { item } = entry;
       if (entry.pair) {
         const group = freshFeedGroupId();
         const qId = freshDocumentBlockId();
         const aId = freshDocumentBlockId();
-        blocks.push(feedBlockRecord({ id: qId, page: place.page, ...place.parts[0], ...entry.pair[0], md: item.q, from: item.from, fill, group, keepWidth: true }));
-        blocks.push(feedBlockRecord({ id: aId, page: place.page, ...place.parts[1], ...entry.pair[1], md: item.a, from: item.from, fill, group, keepWidth: true }));
+        const [q, a] = entry.pair;
+        blocks.push(feedBlockRecord({ id: qId, page: place.page, ...place.parts[0], w: q.w, h: q.h, md: q.md, style: q.style, from: item.from, group, keepWidth: true }));
+        blocks.push(feedBlockRecord({ id: aId, page: place.page, ...place.parts[1], w: a.w, h: a.h, md: a.md, style: a.style, from: item.from, group, keepWidth: true }));
         madeBlocks.push(qId, aId);
-        madeArrows.push({ page: place.page, q: qId, a: aId, group });
+        madeArrows.push({ page: place.page, q: qId, a: aId, group, stacked: entry.stacked });
       } else {
         const id = freshDocumentBlockId();
-        // A region's picture keeps the width it was laid out at.
-        blocks.push(feedBlockRecord({ id, page: place.page, x: place.x, y: place.y, w: entry.w, h: entry.h, md: item.md, from: item.from, fill, fit: item.kind !== "ref" }));
+        blocks.push(feedBlockRecord({ id, page: place.page, x: place.x, y: place.y, w: entry.w, h: entry.h, md: entry.md, style: entry.style, from: item.from, keepWidth: entry.keepWidth }));
         madeBlocks.push(id);
       }
     });
     writeDocumentBlocks([...documentBlocks(), ...blocks]);
-    const arrows = madeArrows.map(({ page, q, a, group }) => {
+    const arrows = madeArrows.map(({ page, q, a, group, stacked }) => {
       const shape = resolveConnector({
-        ...newConnectorBase(), type: "arrow", p: [[0, 0], [1, 1]],
-        ends: [{ id: q, side: "right" }, { id: a, side: "left" }]
+        ...cardArrowShape(newConnectorBase(), cardStyle?.arrow), type: "arrow", p: [[0, 0], [1, 1]],
+        ends: stacked ? [{ id: q, side: "bottom" }, { id: a, side: "top" }] : [{ id: q, side: "right" }, { id: a, side: "left" }]
       }, diagramNodes(page));
       const record = shape ? newShapeRecord(page, shape) : null;
       return record ? { ...record, group } : null;
