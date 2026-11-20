@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a8-canvas-feed.css":
+    "To the Canvas (src/documents/canvas-feed.js): the picker that puts the " +
+    "Notes' or a PDF's highlights or the Cards on the Canvas as Blocks, the " +
+    "outline on a Canvas page while something is dragged onto it from beside, " +
+    "and the grip a card is dragged by.",
   "a7-code-lines.css":
     "Notes' and Cards' Code line spacing reaches the code: Prism's theme pinned " +
     "every code block's <code> at line-height 1.5 and tab-size 4, so the " +

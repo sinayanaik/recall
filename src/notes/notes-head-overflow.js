@@ -114,6 +114,7 @@ const OVERFLOW_SELECTORS = [
   ".notes-head > #readingProgressNotesBtn",
   ".notes-head > #teleprompterBtn",
   ".notes-head > #bookmarkGoBtn",
+  ".notes-head > #notesToCanvasBtn",
   ".notes-head > .notes-make-card",
   ".notes-head > .notes-quick-note",
   ".notes-head > .cloze-make-icon",

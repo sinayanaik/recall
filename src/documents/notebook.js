@@ -802,6 +802,25 @@ export function addNotebookPage(options = {}) {
   return runCanvasPageChange(() => insertNotebookPage(options));
 }
 
+// `count` blank pages at the end in ONE rewrite of the paper — for Blocks put
+// on the Canvas from the Notes, a PDF or the Cards (src/documents/canvas-feed.js),
+// which can run over several pages at once. Each is set up as the last page
+// is. Refused, as a whole, past NOTEBOOK_MAX_PAGES.
+export function appendNotebookPages(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (!n) return Promise.resolve(true);
+  return runCanvasPageChange(async () => {
+    if (!hasNotebook()) return false;
+    const pages = notebookPageCount();
+    if (pages + n > NOTEBOOK_MAX_PAGES) {
+      showToast(`A canvas stops at ${NOTEBOOK_MAX_PAGES} pages — start another one`, "info");
+      return false;
+    }
+    for (let k = 1; k <= n; k += 1) copyNotebookPageSetup(pages, pages + k);
+    return writeNotebookPdf({ pages: pages + n, paper: notebookPaper() });
+  });
+}
+
 export function duplicateNotebookPage(pageNumber) {
   return runCanvasPageChange(() => copyNotebookPage(pageNumber));
 }

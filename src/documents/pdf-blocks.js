@@ -58,7 +58,7 @@ import { BLOCK_PAD_DEFAULT_PT, BLOCK_SHAPE_DEFAULT, blockFillVar, blockHeadInkVa
 import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { normalizeShapeRotation, rotatePoint } from "../render/annot-shapes.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
-import { canvasBlockMeasurePercent } from "./block-measure.js?v=__BUILD__";
+import { BALANCED_BLOCK_ASPECT, CANVAS_BLOCK_WIDTH_BALANCED, canvasBlockMeasurePercent, canvasBlockWidthMode } from "./block-measure.js?v=__BUILD__";
 import { documentStages } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
@@ -354,7 +354,17 @@ function normalizeBlocks(list) {
       // under that rule. A Block without it — one laid out before it, whose
       // paragraph wraps at the width it was given — is only ever drawn in, so
       // a page set out with them is not pushed about the next time it opens.
-      ...(block.wFit === true && block.wHand !== true ? { wFit: true } : {})
+      ...(block.wFit === true && block.wHand !== true ? { wFit: true } : {}),
+      // Balanced: a paragraph laid out near 3:2 rather than a strip the
+      // measure wide (fitBlockWidthToContent, blockNaturalWidth). Set on a
+      // Block made, pasted or typed in since ◐ Canvas → Blocks → Block width
+      // came, so a page laid out before it is not rewrapped. Only with wFit.
+      ...(block.wBal === true && block.wFit === true && block.wHand !== true ? { wBal: true } : {}),
+      // Where the Block came from, when it was put on the Canvas from the
+      // Notes, a PDF or the Cards (src/documents/canvas-feed.js) —
+      // "notes:<key>", "pdf:<highlight id>", "card:<card id>" — so the picker
+      // can say what is already on the Canvas. Only when there is one.
+      ...(typeof block.from === "string" && block.from ? { from: block.from } : {})
     }));
 }
 
@@ -1525,6 +1535,58 @@ function fitBlockWidthToContent(node, block, { force = false } = {}) {
   const body = node.querySelector(".pdf-block-body");
   if (!viewport || !body || bodyHasWidthlessContent(body)) return false;
   const scale = viewport.scale || 1;
+  const code = Boolean(body.querySelector("pre"));
+  // A paragraph on a Canvas under ◐ Canvas → Blocks → Block width: Balanced
+  // is laid out near 3:2 rather than a strip the measure wide — a Block made,
+  // pasted or typed in since that rule came (`wBal`), or one fitted to its
+  // words again (`force`). A page set out before it keeps its widths.
+  const balanced = !code && (force || block.wBal === true) && balancedWidthsOn();
+  // Grown only under the rule that lets it (`wFit`, or Fit to words); a Block
+  // laid out before it is only drawn in — see normalizeBlocks.
+  const mayGrow = force || block.wFit === true;
+  const cap = blockGrowCap(block, viewport, { strict: force || balanced, code });
+  const measured = blockNaturalWidth(node, { scale, cap, balanced });
+  if (measured === null) return false;
+  const natural = Math.min(cap, measured);
+  const wanted = mayGrow ? natural : Math.min(block.w, natural);
+  const promote = force && (block.wHand || !block.wFit || (balanced && !block.wBal));
+  if (Math.abs(wanted - block.w) <= 1 && !promote) return false;
+  // Not undoable, for the same reason queueFit's height write is not: this is
+  // the block agreeing with its own words, not a step the reader took.
+  writeBlocks(documentBlocks().map((entry) => {
+    if (entry.id !== block.id) return entry;
+    const { wHand: _hand, wSet: _set, ...rest } = entry;
+    return {
+      ...rest,
+      w: Math.abs(wanted - block.w) <= 1 ? entry.w : wanted,
+      ...(mayGrow ? { wFit: true } : {}),
+      ...(mayGrow && balanced ? { wBal: true } : {}),
+      at: Date.now()
+    };
+  }), { undoable: false });
+  return true;
+}
+
+// Whether a Block on the open surface is balanced by ◐ Canvas → Blocks →
+// Block width (src/documents/block-measure.js): a Canvas, under "Balanced".
+function balancedWidthsOn(slot = activeDocSlot()) {
+  return slot === DOC_SLOT_NOTEBOOK && canvasBlockWidthMode() === CANVAS_BLOCK_WIDTH_BALANCED;
+}
+
+// ── How wide a Block's words want it, in points ───────────────────────────
+//
+// The width of the whole Block — frame, padding and words — that its rendered
+// words want: their longest line unwrapped. With `balanced`, words longer than
+// `cap` are not laid a strip `cap` wide: the box aims at BALANCED_BLOCK_ASPECT
+// (3:2-ish), from the area the words take at `cap` — so a Block widens with
+// the square root of what is in it — never narrower than its longest word,
+// and is then drawn in to its widest line, so no empty band is left down its
+// right side. Exported for the Blocks laid out off the page before they are
+// put on it (src/documents/canvas-feed.js), which must come out as wide as the
+// page will then draw them. Null without a body.
+export function blockNaturalWidth(node, { scale = 1, cap = Infinity, balanced = false } = {}) {
+  const body = node?.querySelector?.(".pdf-block-body");
+  if (!body) return null;
   // The borders, the padding — everything of the block that is not the body's
   // own content box — measured the same way fitBlockHeight measures its chrome,
   // one axis over.
@@ -1546,29 +1608,47 @@ function fitBlockWidthToContent(node, block, { force = false } = {}) {
   body.style.flex = "none";
   body.style.width = "max-content";
   const content = Math.max(body.scrollWidth, body.getBoundingClientRect().width);
-  body.style.flex = "";
-  body.style.width = "";
   // A pixel of slack on the SCREEN, then up to the next point: a pixel is two
   // points at half size, and slack of one point let a Block fitted at one zoom
   // wrap its last word at another.
-  // Grown only under the rule that lets it (`wFit`, or Fit to words); a Block
-  // laid out before it is only drawn in — see normalizeBlocks.
-  const mayGrow = force || block.wFit === true;
-  const natural = Math.min(
-    blockGrowCap(block, viewport, { strict: force, code: Boolean(body.querySelector("pre")) }),
-    Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + content + 1) / scale))
-  );
-  const wanted = mayGrow ? natural : Math.min(block.w, natural);
-  const promote = force && (block.wHand || !block.wFit);
-  if (Math.abs(wanted - block.w) <= 1 && !promote) return false;
-  // Not undoable, for the same reason queueFit's height write is not: this is
-  // the block agreeing with its own words, not a step the reader took.
-  writeBlocks(documentBlocks().map((entry) => {
-    if (entry.id !== block.id) return entry;
-    const { wHand: _hand, wSet: _set, ...rest } = entry;
-    return { ...rest, w: Math.abs(wanted - block.w) <= 1 ? entry.w : wanted, ...(mayGrow ? { wFit: true } : {}), at: Date.now() };
-  }), { undoable: false });
-  return true;
+  let points = Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + content + 1) / scale));
+  if (balanced && Number.isFinite(cap) && points > cap) {
+    const capPx = Math.max(1, cap * scale - chrome);
+    body.style.width = "min-content";
+    const least = body.scrollWidth;
+    body.style.width = `${capPx}px`;
+    const tall = body.scrollHeight;
+    const target = Math.max(least, Math.min(capPx, Math.sqrt(capPx * tall * BALANCED_BLOCK_ASPECT)));
+    body.style.width = `${target}px`;
+    const widest = node.classList.contains("is-turned") ? 0 : widestLinePx(body);
+    const drawn = widest > 0 ? Math.min(target, Math.max(least, widest)) : target;
+    points = Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + drawn + 1) / scale));
+  }
+  body.style.flex = "";
+  body.style.width = "";
+  return points;
+}
+
+// The right end of the longest line laid in a body, from its left edge and
+// with its right padding, in the body's own (unzoomed) pixels — 0 when that
+// cannot be read: words not set left, or none at all.
+function widestLinePx(body) {
+  const style = getComputedStyle(body);
+  if (!/^(left|start|-webkit-left)$/.test(style.textAlign) || style.direction === "rtl") return 0;
+  const box = body.getBoundingClientRect();
+  const ratio = box.width > 0 && body.offsetWidth > 0 ? box.width / body.offsetWidth : 1;
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  let right = -Infinity;
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    if (!text.nodeValue.trim()) continue;
+    range.selectNodeContents(text);
+    for (const rect of range.getClientRects()) {
+      if (rect.width > 0) right = Math.max(right, rect.right);
+    }
+  }
+  if (!Number.isFinite(right)) return 0;
+  return Math.ceil((right - box.left) / ratio + (parseFloat(style.paddingRight) || 0) + (parseFloat(style.borderRightWidth) || 0));
 }
 
 // The width, in points, a Block being typed in should be drawn at: the longest
@@ -1883,7 +1963,7 @@ export function addDocumentBlock(pageNumber, at = null, { style = null, w = null
     ...(inherited ? { style: compactBlockStyle(inherited) } : {}),
     // A new Block's width is its words', both ways (fitBlockWidthToContent) —
     // unless it was given one that is not a guess.
-    ...(followsWords && growToWords ? { wFit: true } : {})
+    ...(followsWords && growToWords ? { wFit: true, wBal: true } : {})
   };
   writeBlocks([...blocks, block]);
   setSelectedId(block.id);
@@ -2194,7 +2274,7 @@ function writeBlockText(id, text) {
       const next = { ...entry, [field]: text, at: Date.now() };
       if (!follow) return next;
       const { wSet: _was, ...rest } = next;
-      return { ...rest, w: typedWidth, wFit: true };
+      return { ...rest, w: typedWidth, wFit: true, wBal: true };
     }));
   }
   repaintDocumentBlocks();
@@ -2555,6 +2635,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       if (widthDragged) {
         delete next.wSet;
         delete next.wFit;
+        delete next.wBal;
         // ...and not to be drawn in or out again by a render or by typing.
         if (!isImage) next.wHand = true;
       }

@@ -50,6 +50,7 @@ import { sheetSetupSummary } from "../documents/canvas-setup.js?v=__BUILD__";
 import { openCanvasSetupDialog } from "../documents/canvas-setup-dialog.js?v=__BUILD__";
 import { notebookPaperPreference, notebookSetupPreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { addDocumentBlock, addDocumentImageBlock, canvasBlockMeasure } from "../documents/pdf-blocks.js?v=__BUILD__";
+import { balancedWidthGuess, canvasBlockWidthMode, CANVAS_BLOCK_WIDTH_BALANCED } from "../documents/block-measure.js?v=__BUILD__";
 import { BLOCK_SHAPES, BLOCK_SHAPE_LABEL, blockShapePatch, normalizeBlockShape } from "../documents/block-style.js?v=__BUILD__";
 import { blockShapeIconSvg } from "../documents/block-style-bar.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
@@ -393,7 +394,12 @@ export function addHandwritingTextBlock(markdown, at = null) {
   // Held to the same measure the Block then grows to (canvasBlockMeasure) —
   // code excepted, which may run to the page's edge rather than wrap.
   const measure = /^\s*(```|~~~)/m.test(md) ? (vx1 - vx0) * 0.9 : canvasBlockMeasure(viewport, DOC_SLOT_NOTEBOOK);
-  const w = Math.round(Math.min(measure, Math.max(Math.min(PASTED_BLOCK_MIN_WIDTH, measure), longest * PASTED_POINTS_PER_CHAR)));
+  // Balanced (◐ Canvas → Blocks → Block width): a guess at the box near 3:2
+  // the render then draws it to, so the first paint is close to the last.
+  const balanced = !/^\s*(```|~~~)/m.test(md) && canvasBlockWidthMode() === CANVAS_BLOCK_WIDTH_BALANCED;
+  const w = balanced
+    ? balancedWidthGuess(md, { cap: measure, min: Math.min(PASTED_BLOCK_MIN_WIDTH / 2, measure), pointsPerChar: PASTED_POINTS_PER_CHAR })
+    : Math.round(Math.min(measure, Math.max(Math.min(PASTED_BLOCK_MIN_WIDTH, measure), longest * PASTED_POINTS_PER_CHAR)));
   const block = at
     ? addDocumentBlock(page, at, { anchor: "corner", md, w, edit: false, growToWords: true })
     : addDocumentBlock(page, handwritingDropPoint(page), { md, w, edit: false, growToWords: true });
