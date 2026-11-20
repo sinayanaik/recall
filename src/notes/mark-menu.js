@@ -70,7 +70,7 @@ const NOTES_MARK_HANDLERS = {
   surface: "notes",
   // "style" is the Notes' alone: the look it opens is how a highlight is drawn
   // in rendered text (◐ Highlights in text), which a PDF's marks are not.
-  actions: ["card", "pin", "highlights", "copy", "share", "search", "style"],
+  actions: ["card", "pin", "highlights", "canvas", "copy", "share", "search", "style"],
   keyIndex: (ref) => highlightRefIndex(ref),
   recolour: (ref, color) => recolourHighlightAt(ref, color),
   remove: (ref) => removeHighlightAt(ref),
@@ -169,6 +169,9 @@ const MARK_MENU_ACTIONS = [
   { id: "card", verb: "makeCard", label: "Make a card", icon: "&#43;", run: "keep" },
   { id: "pin", verb: "pin", label: "Pin to Quick Notes", icon: PIN_ICON, run: "keep" },
   { id: "highlights", verb: "showInHighlights", label: "Show in Highlights", icon: "&#9776;", run: "keep" },
+  // As a Block at the end of the Canvas (src/documents/canvas-feed.js) — a
+  // region as a live picture of its spot.
+  { id: "canvas", verb: "toCanvas", label: "To the Canvas", icon: "&#9998;", run: "keep" },
   { id: "copy", verb: "copy", label: "Copy", icon: "&#10697;", run: "send" },
   // A PDF highlight's SPOT rather than its words — a `pdfref:` that renders as
   // a live picture of it wherever it is pasted (src/documents/pdf-region-embed.js).
@@ -465,6 +468,7 @@ function ensureMarkMenu() {
     else if (action === "card") markActions.makeCard?.(entry.codeMarkdown ?? entry.text, entry.anchor, entry);
     else if (action === "pin") markActions.pin?.(entry.codeMarkdown ?? entry.text, entry.anchor, button);
     else if (action === "highlights") markActions.showInHighlights?.(surface, entry.locator);
+    else if (action === "canvas") markActions.toCanvas?.(surface, entry);
     // The two that take the words out of the app entirely. Each is handed the
     // passage and nothing else — neither has any business with an anchor, a
     // locator or which surface this was.

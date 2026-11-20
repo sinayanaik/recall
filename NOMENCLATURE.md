@@ -76,7 +76,7 @@ Canvas's page **pans** it, and swallows the paste a middle click fires on Linux
 
 | Say | Meaning | Data | Code |
 |---|---|---|---|
-| **Block** | A box of markdown — words, maths, code, tables and pictures — rendered like a note, written in where it is, dragged, resized from any edge or corner, and **turned** by the round handle over it (or Arrange → Turn 90°). Its height follows its words until its height is dragged — a top or bottom edge, or a corner dragged mostly up or down, to more room than the words need — and then it is the reader's (`style.fit: false`), still growing when the words need more; a corner dragged mostly sideways sets only the width. Its width is its words' too: as it is typed in, and whenever its words are drawn, it is as wide as its longest line — growing with the words and drawn in when they are cut — up to a little short of the page's right edge on a PDF, or the **widest a Block grows** on a Canvas (below), where they wrap and the height takes over. No resize corner is painted; the edges and corners still resize it. A width dragged by hand is the reader's: kept when it is typed in again, the words wrapping at it. A new Block takes the last Block's look but never its height. Arrange → **Fit to words** (or a double-click on a resize handle) brings one back to its words. It is always typed left-aligned; its alignment shows once the words are down. Not "text block": it holds more than text. Insert → Block and a tap; with a mouse, the **T** or **B** key or a double-click on bare paper (never a pen's) puts one at the pointer; words pasted (Ctrl+V) onto the page become one there | a record in `meta.pdfBlocks`; `kind` `"text"` (or none) is markdown; a turn is `rot`, degrees counter-clockwise; `wHand` says the width was dragged by hand (a `wSet` from older builds is dropped) | `src/documents/pdf-blocks.js` (`PDF_BLOCK_MARKDOWN`), `pdf-block-inline.js`, `pdf-block-editor.js` (Full editor); `src/documents/page-pointer.js` |
+| **Block** | A box of markdown — words, maths, code, tables and pictures — rendered like a note, written in where it is, dragged, resized from any edge or corner, and **turned** by the round handle over it (or Arrange → Turn 90°). Its height follows its words until its height is dragged — a top or bottom edge, or a corner dragged mostly up or down, to more room than the words need — and then it is the reader's (`style.fit: false`), still growing when the words need more; a corner dragged mostly sideways sets only the width. Its width is its words' too: as it is typed in, and whenever its words are drawn, it is as wide as its longest line — growing with the words and drawn in when they are cut — up to a little short of the page's right edge on a PDF, or the **widest a Block grows** on a Canvas (below), where they wrap and the height takes over. No resize corner is painted; the edges and corners still resize it. A width dragged by hand is the reader's: kept when it is typed in again, the words wrapping at it. A new Block takes the last Block's look but never its height. Arrange → **Fit to words** (or a double-click on a resize handle) brings one back to its words. It is always typed left-aligned; its alignment shows once the words are down. Not "text block": it holds more than text. Insert → Block and a tap; with a mouse, the **T** or **B** key or a double-click on bare paper (never a pen's) puts one at the pointer; words pasted (Ctrl+V) onto the page become one there | a record in `meta.pdfBlocks`; `kind` `"text"` (or none) is markdown; a turn is `rot`, degrees counter-clockwise; `wHand` says the width was dragged by hand (a `wSet` from older builds is dropped); `wBal` that it is balanced; `from` where To the Canvas made it from | `src/documents/pdf-blocks.js` (`PDF_BLOCK_MARKDOWN`), `pdf-block-inline.js`, `pdf-block-editor.js` (Full editor); `src/documents/page-pointer.js` |
 | **Picture** | A block that is a picture alone, from Insert → Picture… or Paste picture, or pasted (Ctrl+V) or dropped onto the page — its top-left corner where the mouse is; compressed first, as a note's picture is | a `meta.pdfBlocks` record with `kind: "image"` and a `src` | `PDF_BLOCK_IMAGE`; `addHandwritingImages` in `src/handwriting/board.js`; `src/documents/page-pointer.js`, `page-clipboard.js` |
 | **Block shape** | A Block's outline in a diagram — rectangle, rounded, pill, ellipse, diamond, hexagon, parallelogram, cylinder or document — from Insert's palette or Style → Shape. Still a **Block**: say "a diamond block", not "a shape", which is the Shapes tool's | `style.shape` (with `line`, `lineWidth`, `lineDash`, `valign`) on a `meta.pdfBlocks` record | `src/render/node-outlines.js`; `paintBlockOutline` in `pdf-blocks.js` |
 | **Connector** | A line or an arrow whose ends are tied to the Blocks (or Shapes-tool boxes) it joins, so it follows them: made from a picked-up Block's four arrows, or by drawing or dragging a line's end onto one | a line/arrow shape in `meta.pdfHighlights` with `ends` (and `route`, `exits`, a bend in `p[2]`, an elbow's corners round what is in its way in `via`, words in `text`) | `src/documents/pdf-connectors.js`; the page's connectors laid out together — sides, shared-out ends, routes — in `src/render/connector-route.js`; `connectorPath` in `src/render/annot-shapes.js` |
@@ -132,6 +132,35 @@ A Block that follows its words grows with its longest line only as far as the
 **widest a Block grows** — ◐ Canvas → Blocks, a share of the page's width (62%
 unless set; `canvasBlockMaxWidth`, held by `src/documents/block-measure.js`) —
 and wraps there; code may run to the page's edge. Pasted words keep to it too.
+Once its words run past one line, a Block on a Canvas is **balanced** (◐
+Canvas → Blocks → **Block width**, `canvasBlockWidthRule`: "auto" is Balanced,
+"longest" the old Longest line): laid out in a box near 3:2, widening with the
+square root of how much is in it rather than with its longest line, and drawn
+in to its widest line (`blockNaturalWidth` in `src/documents/pdf-blocks.js`;
+`BALANCED_BLOCK_ASPECT`, `balancedWidthGuess` in `block-measure.js`). Only a
+Block made, pasted or typed in since — or fitted to its words again — is
+balanced (`wBal: true` on its record, with `wFit`), so a page laid out before
+keeps its widths. Say "balanced", not "auto-sized".
+
+**To the Canvas** puts what the reader has already picked out onto the Canvas
+as Blocks, sized, placed and stacked for them: the Notes' highlights (⋯ →
+Highlights to the Canvas…), a PDF's highlights (⋯ → Highlights to the
+Canvas… — a text highlight as its words, a ▣ region as a `pdfref:` live
+picture of its spot, a reference rather than a copy), and the Cards (**To the
+Canvas** under them — a question Block, an arrow, an answer Block, grouped).
+Each opens the **picker**, a list of the part's items with the new ones ticked
+and the ones already on the Canvas marked "on the Canvas"; Add puts the ticked
+ones at the **end of the Canvas**, under the lowest thing on the last page,
+adding pages as each fills (`appendNotebookPages` in `notebook.js`), one undo
+step. One at a time: **To the Canvas** in a highlight's menu and ✎ on the
+selection bar. **Dragged across**: with the Canvas side by side, a selection,
+a highlight pressed and dragged, or a card by its ⠿ grip, let go over a Canvas
+page, is a Block there. A Block made this way says where it came from (`from`:
+`notes:<key>`, `pdf:<highlight id>`, `card:<card id>`), which is how the picker
+knows. Code: `src/documents/canvas-feed.js` (items, measuring, placing),
+`canvas-flow.js` (where they go, pure), `canvas-feed-dialog.js` (the picker),
+`canvas-drop.js` (the drag); `styles/a8-canvas-feed.css`. Say "to the Canvas",
+not "export to canvas" or "send".
 
 **Section lines** are the thin lines down the left of each heading's section in
 the Notes, whose text is set one **step** in per section — ◐ Notes → Section

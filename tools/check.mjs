@@ -396,6 +396,11 @@ const checks = [
   // share a stream; a page's setup follows it through add, move and tear-out.
   // pdf-lib from disk, no browser.
   ["canvas-setup  ", ["node", ["tools/canvas-setup-check.mjs"], ROOT]],
+  // To the Canvas (src/documents/canvas-flow.js): Blocks from the Notes, a
+  // PDF or the Cards go under what is on the last page, stacked without
+  // overlapping, onto new pages when it is full; a card is one row with room
+  // for its arrow; a drop's top-left corner is where it was let go. No browser.
+  ["canvas-feed   ", ["node", ["tools/canvas-feed-check.mjs"], ROOT]],
   // Markdown → PDF (src/documents/md-pdf/): every word is real text in the
   // PDF, in order; bookmarks and links; the page-break planner (smart, paper,
   // one long page, two columns, a new page per heading, breaks placed by hand);
@@ -728,6 +733,12 @@ const checks = [
     // of that spot of the Canvas (`pdfref:…:canvas`) that shows, opens the
     // Canvas, and follows its page when pages are torn out.
     ["canvas-cards  ", ["node", ["tools/canvas-cards-check.mjs"], ROOT]],
+    // To the Canvas in the app: a pasted paragraph is a balanced box, not a
+    // strip; the Notes' highlights, the Cards (question → arrow → answer) and a
+    // PDF's highlights (words, or a region's live picture) go at the end of the
+    // Canvas, onto new pages; the picker ticks only what is new; a drag from
+    // beside lands where it is let go; the toast's Undo takes a batch back.
+    ["canvas-feed-ui", ["node", ["tools/canvas-feed-browser-check.mjs"], ROOT]],
     // View only (✎ | 👁) on the PDFs and the Canvas, and a pinch that never
     // moves a Block: a second finger calls a finger's drag off and puts the
     // Block or the typed words back; on 👁 nothing is drawn, moved, added,

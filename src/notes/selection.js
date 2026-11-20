@@ -32,7 +32,7 @@ import { lineIndexAtOffset } from "./caret.js?v=__BUILD__";
 import { clearProgrammaticNotesSelection, isProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { codeLanguageOrGeneric, inferCodeLanguage, normalizeCodeLanguage } from "../render/code-language.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
-import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
+import { activeDocSlot, DOC_SLOT_NOTEBOOK, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 import { isCardsShown, isNotesShown } from "../ui/split-parts.js?v=__BUILD__";
 
 // The three faces that support "select text → make a flashcard". Active while
@@ -1780,6 +1780,8 @@ export function positionNotesSelectionButton() {
     // A cloze is markdown ({{…}} spliced into the source) and so is a quick-note
     // pin's round-trip through the note; neither has a home on a document.
     if (el.makeClozeFromSelectionBtn) el.makeClozeFromSelectionBtn.hidden = true;
+    // A PDF's words go to the Canvas; words already on the Canvas do not.
+    if (el.canvasFromSelectionBtn) el.canvasFromSelectionBtn.hidden = activeDocSlot() === DOC_SLOT_NOTEBOOK;
     button.hidden = false;
     if (mobile) return placeTouchSelectionBar(button, rangeRectsOf(documentRange), el.documentView);
     return placeSelectionPillNearRange(button, documentRange);
@@ -1832,6 +1834,7 @@ export function positionNotesSelectionButton() {
     // shared by every surface, so a control hidden for one has to be restored
     // by the others rather than staying hidden for the rest of the session.
     if (el.makeClozeFromSelectionBtn) el.makeClozeFromSelectionBtn.hidden = false;
+    if (el.canvasFromSelectionBtn) el.canvasFromSelectionBtn.hidden = false;
     // Splitting text into its own note only makes sense from a note. A card
     // face would end up with a link on it that you cannot follow while
     // studying, so the button is simply not offered there.
@@ -1951,6 +1954,7 @@ export function positionNotesSelectionButton() {
   schedulePillSelectionCapture();
   button.dataset.renderTarget = renderedTarget.name;
   if (el.makeClozeFromSelectionBtn) el.makeClozeFromSelectionBtn.hidden = false;
+  if (el.canvasFromSelectionBtn) el.canvasFromSelectionBtn.hidden = false;
   if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = false;
   // Highlight and erase work for every rendered face (notes AND card
   // question/answer — renderTargetConfig handles all three). Splitting out a

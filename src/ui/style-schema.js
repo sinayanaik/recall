@@ -96,6 +96,9 @@ const sharedDefaults = {
   notesOutlineStrength: "auto",
   // Canvas — the widest a Block grows to by itself (src/documents/block-measure.js).
   canvasBlockMaxWidth: "auto",
+  // Canvas — how a Block that follows its words takes its width once they are
+  // more than a line: "balanced" (near 3:2) or "longest" (its longest line).
+  canvasBlockWidthRule: "auto",
   // Canvas — the type of everything on a Canvas page. Every one of these is a
   // "follow" state by default (inherit / auto / the theme's ladder / the
   // paper), which writes nothing, so a Canvas nobody has styled reads exactly
@@ -679,7 +682,14 @@ export const styleControlGroups = [
       { key: "canvasTableFontScale", label: "Table text size", type: "text", probe: "number", auto: "1", hint: "Tables in Blocks, as a multiple of the words around them — 1 is the same size, 0.85 a little smaller." },
       // Not a variable: src/documents/block-measure.js holds it for the width
       // a Block grows to (pdf-blocks.js), set by hand in applyStyleSettings.
-      { key: "canvasBlockMaxWidth", label: "Widest a Block grows", type: "text", probe: "number", auto: "62", hint: "How wide a Block grows with its words — pasted text included — as a percent of the page, before it wraps. Code may run to the page's edge. Arrange → Fit to words brings a wider Block back to it." }
+      { key: "canvasBlockMaxWidth", label: "Widest a Block grows", type: "text", probe: "number", auto: "62", hint: "How wide a Block grows with its words — pasted text included — as a percent of the page, before it wraps. Code may run to the page's edge. Arrange → Fit to words brings a wider Block back to it." },
+      // Not a variable either: block-measure.js holds it beside the measure.
+      {
+        key: "canvasBlockWidthRule", label: "Block width", type: "select",
+        options: ["auto", "longest"],
+        optionLabels: { auto: "Balanced — a box near 3:2", longest: "Longest line — a strip up to the widest" },
+        hint: "How a Block takes its width once its words run past one line. Balanced lays a paragraph out in a box about half again as wide as it is tall, growing with the words, and draws it in to its widest line; Longest line widens it with its longest line up to the widest a Block grows. A Block laid out before this keeps its width until it is typed in or fitted to its words again."
+      }
     ]
   },
   {

@@ -20,7 +20,7 @@
 // `meta.pdfHighlights` — an array on the deck's existing JSONB meta bag, no new
 // table and no new column.
 
-import { activeDocSlot, deckHasPdf, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { activeDocSlot, deckHasPdf, DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { activePdfId, PDF_PRIMARY_ID, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { lastInkContactWasPen, msSinceLastInkStroke } from "../core/gesture.js?v=__BUILD__";
@@ -1670,8 +1670,11 @@ export const DOCUMENT_MARK_HANDLERS = {
   // "Copy location" is a `pdfref:` (src/documents/pdf-region-embed.js), which
   // names a spot on one of the file's PDFs or on its Canvas (CANVAS_REF_ID) —
   // so it is offered on both.
+  // "To the Canvas" only from a PDF: a mark already on the Canvas is there.
   get actions() {
-    return ["card", "highlights", "copy", "location", "share", "search"];
+    return activeDocSlot() === DOC_SLOT_NOTEBOOK
+      ? ["card", "highlights", "copy", "location", "share", "search"]
+      : ["card", "highlights", "canvas", "copy", "location", "share", "search"];
   },
   // ...and a region adds "Save as image" and "Save as PDF" — on the paper and
   // on the notebook alike, since both carry the ink and blocks drawn over the

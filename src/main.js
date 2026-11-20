@@ -159,6 +159,9 @@ import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__
 import { currentPdfDocument, currentPdfPageCount, openDocumentSlot, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentChromeMovedHook, setDocumentOpenedHook, noteBesideDocumentStale, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkArmed, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
+import { cardItem, escapePlainMarkdown, notesHighlightItemForMark, pdfHighlightItem, placeOnCanvas } from "./documents/canvas-feed.js?v=__BUILD__";
+import { openCanvasFeedDialog } from "./documents/canvas-feed-dialog.js?v=__BUILD__";
+import { initCanvasDrop } from "./documents/canvas-drop.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, isEditingBlock, liveBlockGesture, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, rerenderPaperDiagrams, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
@@ -901,6 +904,32 @@ el.makeClozeFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   hideNotesSelectionButton();
 });
 
+// The floater's ✎: the selection as a Block at the end of the Canvas — the
+// Notes' as markdown, a PDF's words as they are (src/documents/canvas-feed.js).
+el.canvasFromSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const capture = ensurePillSelectionCapture();
+  const fromPdf = capture?.targetName === "document";
+  const text = fromPdf ? escapePlainMarkdown(capture?.markdown || "") : (currentNotesSelectionMarkdown() || capture?.markdown || "");
+  hideNotesSelectionButton();
+  window.getSelection()?.removeAllRanges();
+  if (!String(text).trim()) return;
+  placeOnCanvas([{ kind: "text", md: String(text).trim(), from: "" }]);
+});
+
+// The Notes' ⋯ → Highlights to the Canvas…, the Cards' To the Canvas, and a
+// card's ⠿ grip pressed rather than dragged (src/documents/canvas-feed-dialog.js).
+el.notesToCanvasBtn?.addEventListener("click", () => openCanvasFeedDialog("notes"));
+el.cardsToCanvasBtn?.addEventListener("click", () => openCanvasFeedDialog("cards"));
+el.cardCanvasGripBtn?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const card = state.cards?.[state.current];
+  const item = card ? cardItem(card.id) : null;
+  if (item) placeOnCanvas([item]);
+});
+initCanvasDrop();
+
 // The floater's quick-note button: pin the selection to the quick_notes deck —
 // same destination as the render-toolbar 📌 and the raw-editor toolbar button.
 el.pinQuickNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
@@ -1564,6 +1593,14 @@ onDomReady(() => {
       : null),
     // The pane, opened on this highlight. openHighlightSplit first, because
     // cycleToLocator has nothing to point at until it is.
+    // As a Block at the end of the Canvas (src/documents/canvas-feed.js).
+    toCanvas: (surface, entry) => {
+      const item = surface === "document"
+        ? pdfHighlightItem(entry?.locator?.highlightId)
+        : notesHighlightItemForMark(entry?.locator?.markIndex);
+      if (item) placeOnCanvas([item]);
+      else showToast("Couldn't find that highlight", "error");
+    },
     showInHighlights: (surface, locator) => {
       openHighlightSplit(surface);
       cycleToLocator(locator);
@@ -4797,6 +4834,7 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   if (runHandwritingMenuAction(action)) return;
   if (action === "offload") await offloadCurrentDocument();
   if (action === "margins") openPdfMarginsDialog();
+  if (action === "canvas-feed") openCanvasFeedDialog("pdf");
   if (action === "md-new") openMarkdownPdfDialog({ mode: "new" });
   if (action === "md-insert") openMarkdownPdfDialog({ mode: "insert" });
   if (action === "md-edit") openMarkdownPdfDialog({ mode: "edit" });

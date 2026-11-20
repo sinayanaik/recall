@@ -1,0 +1,177 @@
+/* To the Canvas (src/documents/canvas-feed.js): the picker a part's
+ * "To the Canvas…" opens (#canvasFeedModal, src/documents/canvas-feed-dialog.js),
+ * the outline a Canvas page shows while something from beside is dragged over
+ * it (src/documents/canvas-drop.js), and the grip a card is dragged by. */
+.canvas-feed-content {
+  max-width: 560px;
+  max-height: calc(100dvh - 36px);
+  padding: 0;
+  gap: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.canvas-feed-head {
+  display: grid;
+  gap: 8px;
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.canvas-feed-note {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.canvas-feed-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.canvas-feed-chip {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.canvas-feed-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+
+.canvas-feed-colours {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.canvas-feed-swatch {
+  width: 22px;
+  height: 22px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--swatch);
+  cursor: pointer;
+}
+
+.canvas-feed-swatch[aria-pressed="true"] {
+  border-color: var(--text);
+}
+
+.canvas-feed-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  color: var(--text);
+}
+
+.canvas-feed-list {
+  margin: 0;
+  padding: 6px 12px 10px;
+  list-style: none;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.canvas-feed-group {
+  padding: 10px 10px 4px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.canvas-feed-row label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.canvas-feed-row label:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* The app's inputs are text fields (100% wide, a field's height and padding,
+   styles/08-panels.css); these are tick boxes. */
+.canvas-feed-modal input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border-radius: 4px;
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+
+.canvas-feed-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--swatch);
+}
+
+.canvas-feed-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
+.canvas-feed-row.is-on-canvas .canvas-feed-text {
+  color: var(--muted);
+}
+
+.canvas-feed-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+  font-size: 0.72rem;
+}
+
+.canvas-feed-actions {
+  padding: 12px 22px 16px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.canvas-feed-spacer {
+  flex: 1 1 auto;
+}
+
+/* A Canvas page something from beside is being dragged over. */
+.pdf-page.is-canvas-drop-target {
+  outline: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 3px;
+}
+
+/* The grip a card is dragged onto the Canvas by — only while the Canvas is
+   beside the Cards (src/main.js sets the panel's data-split-* attributes). */
+.card-canvas-grip {
+  display: none;
+  cursor: grab;
+}
+
+.quiz-panel.is-parts-split:is([data-split-left="handwriting"], [data-split-right="handwriting"]):is([data-split-left="cards"], [data-split-right="cards"]) .card-canvas-grip {
+  display: inline-flex;
+}

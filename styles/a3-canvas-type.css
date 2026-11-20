@@ -210,6 +210,14 @@
   letter-spacing: var(--doc-block-letter-spacing);
 }
 
+/* A paragraph on a Canvas wraps into lines of even length, not a full line
+   and a last word on its own — the box a balanced Block is drawn in to
+   (◐ Canvas → Blocks → Block width; blockNaturalWidth in
+   src/documents/pdf-blocks.js) is then its widest line, not a ragged edge. */
+:where(.document-stage, .region-block-host)[data-doc-slot="notebook"] .pdf-block-body :is(p, li, blockquote) {
+  text-wrap: pretty;
+}
+
 /* Headings, in a Block and in a Shapes text box. With no face of their own they
    inherit the words', which is what they always did. The weights are the
    ladder 06-rendered.css draws (800, 800, 700, 700, 600, 600) unless one weight
