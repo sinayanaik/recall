@@ -1540,7 +1540,12 @@ function fitBlockWidthToContent(node, block, { force = false } = {}) {
   // is laid out near 3:2 rather than a strip the measure wide — a Block made,
   // pasted or typed in since that rule came (`wBal`), or one fitted to its
   // words again (`force`). A page set out before it keeps its widths.
-  const balanced = !code && (force || block.wBal === true) && balancedWidthsOn();
+  //
+  // ...and one already wider than the measure is not balanced when its page
+  // opens — that would draw it in and push the page about — only by Fit to
+  // words, which is the reader asking.
+  const balanced = !code && balancedWidthsOn()
+    && (force || (block.wBal === true && Number(block.w) <= canvasBlockMeasure(viewport) + 1));
   // Grown only under the rule that lets it (`wFit`, or Fit to words); a Block
   // laid out before it is only drawn in — see normalizeBlocks.
   const mayGrow = force || block.wFit === true;

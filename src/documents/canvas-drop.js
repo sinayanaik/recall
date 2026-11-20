@@ -82,7 +82,9 @@ function canvasDragSelectionEmpty() {
 // anywhere but on a highlight.
 function onCanvasDragPointerDown(event) {
   disarmCanvasDrag();
-  if (event.button !== 0 || event.pointerType === "touch" || !canvasIsBeside() || !canvasDragSelectionEmpty()) return;
+  // A mouse only: a pen or a finger over a highlight writes, selects or
+  // scrolls, and a drag armed under it would take that press away.
+  if (event.button !== 0 || event.pointerType !== "mouse" || !canvasIsBeside() || !canvasDragSelectionEmpty()) return;
   const target = event.target;
   // A <mark> of the Notes, as rendered (not while the Notes are typed in).
   const mark = target?.closest?.("mark");

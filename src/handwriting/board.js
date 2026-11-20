@@ -396,9 +396,12 @@ export function addHandwritingTextBlock(markdown, at = null) {
   const measure = /^\s*(```|~~~)/m.test(md) ? (vx1 - vx0) * 0.9 : canvasBlockMeasure(viewport, DOC_SLOT_NOTEBOOK);
   // Balanced (◐ Canvas → Blocks → Block width): a guess at the box near 3:2
   // the render then draws it to, so the first paint is close to the last.
-  const balanced = !/^\s*(```|~~~)/m.test(md) && canvasBlockWidthMode() === CANVAS_BLOCK_WIDTH_BALANCED;
+  // Words that fit on a line start as they always did, and the render draws
+  // the Block in to them.
+  const balanced = longest * PASTED_POINTS_PER_CHAR > measure
+    && !/^\s*(```|~~~)/m.test(md) && canvasBlockWidthMode() === CANVAS_BLOCK_WIDTH_BALANCED;
   const w = balanced
-    ? balancedWidthGuess(md, { cap: measure, min: Math.min(PASTED_BLOCK_MIN_WIDTH / 2, measure), pointsPerChar: PASTED_POINTS_PER_CHAR })
+    ? balancedWidthGuess(md, { cap: measure, min: Math.min(PASTED_BLOCK_MIN_WIDTH, measure), pointsPerChar: PASTED_POINTS_PER_CHAR })
     : Math.round(Math.min(measure, Math.max(Math.min(PASTED_BLOCK_MIN_WIDTH, measure), longest * PASTED_POINTS_PER_CHAR)));
   const block = at
     ? addDocumentBlock(page, at, { anchor: "corner", md, w, edit: false, growToWords: true })

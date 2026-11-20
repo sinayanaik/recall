@@ -821,13 +821,15 @@ try {
     const typed = { w: read().w, wFit: read().wFit };
     api.fitBlockToContents(block.id);
     await settleLong();
-    const fitted = { w: read().w, wFit: read().wFit };
+    const fitted = { w: read().w, wFit: read().wFit, wBal: read().wBal };
     api.deleteBlock(block.id);
     await settle(100);
     return { opened, typed, fitted };
   }`);
   check("a paragraph laid out at its own width keeps it when opened and typed in", laidOut.opened.w === 200 && !laidOut.opened.wFit && laidOut.typed.w === 200, JSON.stringify(laidOut));
-  check("...and Fit to words gives its width back to its words", laidOut.fitted.w > 200 && laidOut.fitted.wFit === true, JSON.stringify(laidOut));
+  // Fit to words gives it back to its words — on a Canvas, balanced (◐ Canvas
+  // → Blocks → Block width): a box near 3:2, not the strip of its longest line.
+  check("...and Fit to words gives its width back to its words, balanced", laidOut.fitted.w !== 200 && laidOut.fitted.wFit === true && laidOut.fitted.wBal === true, JSON.stringify(laidOut));
 
   // ── 5b′. Pasted words keep to a reading measure ─────────────────────────
   //
@@ -848,6 +850,13 @@ try {
     await settleLong();
     const p = read(pasted.id);
     const out = { pageW, measure: Math.floor(pageW * 0.62), prose: { w: p.w, h: p.h, wFit: p.wFit } };
+    // Under Block width → Longest line, the strip as wide as the measure.
+    api.setCanvasBlockWidthMode("longest");
+    const strip = api.addHandwritingTextBlock(prose, { page: 1, x: 40, y: 300 });
+    await settleLong();
+    out.strip = { w: read(strip.id).w };
+    api.setCanvasBlockWidthMode("auto");
+    api.deleteBlock(strip.id);
     const code = api.addHandwritingTextBlock("\\u0060\\u0060\\u0060\\nconst aVeryLongLineOfCode = someFunction(withArguments, andMoreArguments, andEvenMoreArgumentsThanThat);\\n\\u0060\\u0060\\u0060", { page: 1, x: 40, y: 400 });
     await settleLong();
     out.code = { w: read(code.id).w };
@@ -869,7 +878,10 @@ try {
     await settle(100);
     return out;
   }`);
-  check("pasted prose grows to the reading measure, not the page's edge", measure.prose.w <= measure.measure && measure.prose.w >= measure.measure - 40 && measure.prose.wFit === true, JSON.stringify(measure));
+  // Balanced (◐ Canvas → Blocks → Block width): a box near 3:2 inside the
+  // measure, not a strip across it; Longest line keeps the strip.
+  check("pasted prose is a balanced box inside the reading measure, not the page's edge", measure.prose.w <= measure.measure && measure.prose.w / measure.prose.h > 0.9 && measure.prose.w / measure.prose.h < 2.6 && measure.prose.wFit === true, JSON.stringify(measure));
+  check("...and under Block width → Longest line it grows to the measure", measure.strip.w <= measure.measure && measure.strip.w >= measure.measure - 40, JSON.stringify(measure.strip));
   check("...and wraps there, its height following the words", measure.prose.h > 40, JSON.stringify(measure.prose));
   check("pasted code may run wider than the measure rather than wrap", measure.code.w > measure.measure, JSON.stringify(measure.code));
   check("a Block already wider is not drawn in when its page opens", measure.wide.opened === measure.wide.given, JSON.stringify(measure.wide));

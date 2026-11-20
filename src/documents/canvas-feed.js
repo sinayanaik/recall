@@ -285,13 +285,18 @@ function feedMeasureHost(box) {
   return host;
 }
 
+// The row of controls a live picture of a spot has under it
+// (mountPdfRegionEmbed, src/render/enhance.js), in points, roughly.
+const FEED_REF_CONTROLS = 40;
+
 function feedRefSize(md, cap) {
   const parsed = parsePdfRef(String(md).replace(/^!\[[^\]]*\]\(|\)$/g, ""));
   const rect = parsed?.rect;
   const rw = rect ? Math.abs(rect[2] - rect[0]) : 200;
   const rh = rect ? Math.abs(rect[3] - rect[1]) : 120;
   const w = Math.round(Math.max(120, Math.min(cap, rw)));
-  return { w, h: Math.round(Math.max(24, w * (rh / Math.max(1, rw)) + 14)) };
+  // The picture, the Block's padding, and the row under it ("p. 2 ↗", Zoom).
+  return { w, h: Math.round(Math.max(24, w * (rh / Math.max(1, rw)) + 14 + FEED_REF_CONTROLS)) };
 }
 
 async function measureFeedMarkdown(md, { cap, box, host, style }) {
