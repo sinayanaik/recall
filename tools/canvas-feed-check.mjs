@@ -18,7 +18,10 @@
 //   • what goes on the Canvas leaves its sizes behind (canvas-sizing.js) —
 //     a picture's width, a diagram's w=, a font size — and keeps its look;
 //   • words with no markup join their page's line ends, as a PDF's words do;
-//   • a card's style is kept to what it can be (card-canvas-style.js).
+//   • a card's style is kept to what it can be (card-canvas-style.js);
+//   • a balanced Block's width (block-measure.js) is continuous and never
+//     shrinks as words are added: a label keeps its line, a sentence wraps
+//     at a comfortable line, a paragraph widens toward the measure.
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,6 +30,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const flow = await import(pathToFileURL(path.join(ROOT, "src/documents/canvas-flow.js")).href);
 const sizing = await import(pathToFileURL(path.join(ROOT, "src/documents/canvas-sizing.js")).href);
 const cardStyle = await import(pathToFileURL(path.join(ROOT, "src/documents/card-canvas-style.js")).href);
+const measure = await import(pathToFileURL(path.join(ROOT, "src/documents/block-measure.js")).href);
 
 let failures = 0;
 let ran = 0;
@@ -175,6 +179,37 @@ must("the arrow changes only what was chosen", () => {
   const same = cardStyle.cardArrowShape(base, {});
   const changed = cardStyle.cardArrowShape(base, { color: "red", dash: "dot", head: "open", route: "straight" });
   return (JSON.stringify(same) === JSON.stringify(base) && changed.stroke === "#dc2626" && changed.dash === "dot" && changed.heads[1] === "open" && !("route" in changed) && changed.width === 1.6) || JSON.stringify({ same, changed });
+});
+
+// ── Balanced width, as a guess from the words (balancedWidthGuess) ──────────
+const WORDS = "Spaced repetition works because each review is timed to land just as the memory begins to fade, so the effort of recalling it strengthens the trace more than an easy review would; the intervals grow with each success and shrink after a lapse, which keeps the total time spent small while the material stays within reach for months or years. ".repeat(3);
+const guess = (n) => measure.balancedWidthGuess(WORDS.slice(0, n), { cap: 368, min: 20 });
+
+must("a balanced width: a label keeps its own line", () => {
+  const w = guess(18);
+  return Math.abs(w - 18 * 5.6) < 1 || w;
+});
+
+must("...a sentence shorter than the measure still wraps, at a comfortable line", () => {
+  const w = guess(60);
+  return (w < 60 * 5.6 && w >= 150) || w;
+});
+
+must("...never narrower as words are added, and no jump anywhere", () => {
+  let last = guess(4);
+  for (let n = 5; n <= WORDS.length; n += 1) {
+    const w = guess(n);
+    if (w < last - 1) return `narrower at ${n}: ${last} → ${w}`;
+    if (w > last + 12) return `jumped at ${n}: ${last} → ${w}`;
+    last = w;
+  }
+  return true;
+});
+
+must("...a long paragraph widens toward the measure, never past it", () => {
+  const mid = guess(340);
+  const long = guess(WORDS.length);
+  return (mid > guess(120) && long <= 368 && long > mid) || JSON.stringify({ mid, long });
 });
 
 console.log(`\ncanvas-feed-check: ${ran - failures}/${ran} passed`);

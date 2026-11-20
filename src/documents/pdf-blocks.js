@@ -58,7 +58,7 @@ import { BLOCK_PAD_DEFAULT_PT, BLOCK_SHAPE_DEFAULT, blockFillVar, blockHeadInkVa
 import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { normalizeShapeRotation, rotatePoint } from "../render/annot-shapes.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
-import { BALANCED_BLOCK_ASPECT, CANVAS_BLOCK_WIDTH_BALANCED, canvasBlockMeasurePercent, canvasBlockWidthMode } from "./block-measure.js?v=__BUILD__";
+import { BALANCED_MIN_LINE_EM, CANVAS_BLOCK_WIDTH_BALANCED, balancedWidthPx, canvasBlockMeasurePercent, canvasBlockWidthMode } from "./block-measure.js?v=__BUILD__";
 import { documentStages } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
@@ -1577,12 +1577,12 @@ function balancedWidthsOn(slot = activeDocSlot()) {
 //
 // The width of the whole Block — frame, padding and words — that its rendered
 // words want: their longest line unwrapped. With `balanced`, words longer than
-// `cap` are not laid a strip `cap` wide: the box aims at BALANCED_BLOCK_ASPECT
-// (3:2-ish), from the area the words take at `cap` — so a Block widens with
-// the square root of what is in it — never narrower than its longest word,
-// and is then drawn in to its widest line, so no empty band is left down its
-// right side. Exported for the Blocks laid out off the page before they are
-// put on it (src/documents/canvas-feed.js), which must come out as wide as the
+// a comfortable line (BALANCED_MIN_LINE_EM) are wrapped in a box near 3:2
+// (balancedWidthPx, ./block-measure.js) — at that line while they are few,
+// then widening with the square root of what is in it, up to `cap` — never
+// narrower than its longest word, and then drawn in to its widest line, so no
+// empty band is left down its right side. Exported for the Blocks laid out off
+// the page before they are put on it (src/documents/canvas-feed.js), which must come out as wide as the
 // page will then draw them. Null without a body.
 export function blockNaturalWidth(node, { scale = 1, cap = Infinity, balanced = false } = {}) {
   const body = node?.querySelector?.(".pdf-block-body");
@@ -1612,17 +1612,24 @@ export function blockNaturalWidth(node, { scale = 1, cap = Infinity, balanced = 
   // points at half size, and slack of one point let a Block fitted at one zoom
   // wrap its last word at another.
   let points = Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + content + 1) / scale));
-  if (balanced && Number.isFinite(cap) && points > cap) {
+  // Balanced (balancedWidthPx, ./block-measure.js): wrapped at a comfortable
+  // line as soon as the words are longer than one, not only once they run past
+  // the measure — a sentence was otherwise a strip as wide as itself.
+  if (balanced && Number.isFinite(cap)) {
     const capPx = Math.max(1, cap * scale - chrome);
-    body.style.width = "min-content";
-    const least = body.scrollWidth;
-    body.style.width = `${capPx}px`;
-    const tall = body.scrollHeight;
-    const target = Math.max(least, Math.min(capPx, Math.sqrt(capPx * tall * BALANCED_BLOCK_ASPECT)));
-    body.style.width = `${target}px`;
-    const widest = node.classList.contains("is-turned") ? 0 : widestLinePx(body);
-    const drawn = widest > 0 ? Math.min(target, Math.max(least, widest)) : target;
-    points = Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + drawn + 1) / scale));
+    const minLinePx = (parseFloat(bodyStyle.fontSize) || 16) * BALANCED_MIN_LINE_EM;
+    const { width: target, single } = balancedWidthPx(body, { capPx, minLinePx });
+    if (target < single - 1) {
+      body.style.flex = "none";
+      body.style.width = "min-content";
+      const least = body.scrollWidth;
+      body.style.width = `${target}px`;
+      // ...and drawn in to its widest line, so no empty band is left down its
+      // right side.
+      const widest = node.classList.contains("is-turned") ? 0 : widestLinePx(body);
+      const drawn = widest > 0 ? Math.min(target, Math.max(least, widest)) : target;
+      points = Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + drawn + 1) / scale));
+    }
   }
   body.style.flex = "";
   body.style.width = "";
@@ -1655,19 +1662,40 @@ function widestLinePx(body) {
 // line of what is typed (measured by the editor, `contentPx` in screen pixels,
 // padding included) plus the frame, up to the page's right edge. Null for a
 // Block whose width is not its words'.
-function blockTypingWidth(block, node, { contentPx, framePx }, text = "") {
+//
+// On a Canvas under Balanced (balancedWidthsOn) it is the balanced width of
+// what is typed instead — the same rule its rendered words are put down by
+// (blockNaturalWidth), laid out by the editor (`balance`, from
+// src/documents/pdf-block-inline.js) — so the box being written in is the
+// shape it will be, not a strip as wide as the line until it is closed. Once
+// the words wrap, the width moves only by more than an em at a time
+// (`prev`, the width it is drawn at now), so lines are not rewrapped under
+// the caret at every key.
+function blockTypingWidth(block, node, { contentPx, framePx, fontPx, balance }, text = "", prev = null) {
   if (!widthFollowsWords(block) || !Number.isFinite(contentPx)) return null;
   const viewport = pdfPageViewport(block.page);
   if (!viewport) return null;
   const scale = viewport.scale || 1;
-  const wanted = Math.ceil((contentPx + (Number(framePx) || 0) + 2) / scale);
+  const frame = Number(framePx) || 0;
+  const wanted = Math.ceil((contentPx + frame + 2) / scale);
   // Decided once, as the editor opens: see typingGrows.
   if (!typingGrows.has(block.id)) typingGrows.set(block.id, block.wFit === true || wanted <= block.w + 2);
   if (!typingGrows.get(block.id)) return null;
   const body = node?.querySelector(".pdf-block-body");
   if (WIDTHLESS_SOURCE.test(String(text || "")) || (body && bodyHasWidthlessContent(body))) return null;
   const code = CODE_SOURCE.test(String(text || "")) || Boolean(body?.querySelector("pre"));
-  return Math.min(blockGrowCap(block, viewport, { code }), Math.max(PDF_BLOCK_MIN_WIDTH, wanted));
+  const balanced = !code && typeof balance === "function" && balancedWidthsOn();
+  const cap = blockGrowCap(block, viewport, { code, strict: balanced });
+  if (balanced && String(text || "").trim()) {
+    const em = Number(fontPx) > 0 ? fontPx : 16;
+    const laid = balance({ capPx: Math.max(1, cap * scale - frame - 2), minLinePx: em * BALANCED_MIN_LINE_EM });
+    if (laid && laid.width < laid.single - 1) {
+      const width = Math.min(cap, Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((laid.width + frame + 2) / scale)));
+      const step = em / scale;
+      return Number.isFinite(prev) && prev > 0 && Math.abs(width - prev) < step && prev <= cap ? prev : width;
+    }
+  }
+  return Math.min(cap, Math.max(PDF_BLOCK_MIN_WIDTH, wanted));
 }
 
 // ── A diagram at its own size, never wider than the block ─────────────────
@@ -2102,6 +2130,12 @@ function beginBlockEdit(id, { inWindow = false, value = null } = {}) {
     const node = document.querySelector(`[data-pdf-block="${CSS.escape(id)}"]`);
     if (node) {
       editingId = id;
+      // A balanced Block opened again is typed in at the width it has, which
+      // the width while typing keeps unless the words move it by more than an
+      // em (blockTypingWidth) — not blown back out to a strip and drawn in
+      // again when it is put down.
+      if (block.wBal === true && String(block.md || "").trim() && block.w > 0) typingWidths.set(id, block.w);
+      else typingWidths.delete(id);
       closeBlockStylePopover();
       node.classList.add("is-editing");
       openInlineBlockEditor({
@@ -2114,7 +2148,7 @@ function beginBlockEdit(id, { inWindow = false, value = null } = {}) {
           const viewport = pdfPageViewport(block.page);
           const live = documentBlocks().find((entry) => entry.id === id);
           if (!viewport || !live) return;
-          const width = blockTypingWidth(live, node, measure, inlineBlockEditorValue());
+          const width = blockTypingWidth(live, node, measure, inlineBlockEditorValue(), typingWidths.get(id));
           if (width === null) typingWidths.delete(id);
           else typingWidths.set(id, width);
           placeBlock(node, viewport, live);

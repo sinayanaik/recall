@@ -12,7 +12,9 @@
 // typed into the block itself, in its own size, face and colour, with the
 // markdown coloured as the Notes editor colours it. The block grows with the
 // lines as they are typed — wider with the longest line, up to the page's
-// edge, then taller; one whose width was dragged by hand wraps at it.
+// edge, then taller; on a Canvas, in the balanced box its words will be put
+// down in (measureTypedWidth's `balance`); one whose width was dragged by hand
+// wraps at it.
 // Selecting words raises the Notes selection bar — bold, colour, highlight,
 // maths, a cloze — because the editor is the Notes editor's own kit
 // (src/notes/note-editor-kit.js) registered as the surface the bar acts on. Its
@@ -28,6 +30,7 @@
 
 import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
 import { hideNotesSelectionButton, scheduleNotesSelectionCheck } from "../notes/selection.js?v=__BUILD__";
+import { balancedWidthPx } from "./block-measure.js?v=__BUILD__";
 
 export const PDF_BLOCK_INLINE_CLASS = "pdf-block-inline";
 
@@ -102,7 +105,44 @@ function measureTypedWidth(textarea, node) {
   if (!typedWidthProbe.isConnected) document.body.appendChild(typedWidthProbe);
   const contentPx = typedWidthProbe.getBoundingClientRect().width;
   const framePx = Math.max(0, node.offsetWidth - textarea.offsetWidth);
-  return { contentPx, framePx };
+  const fontPx = parseFloat(style.fontSize) || 16;
+  // The balanced width of the same words (balancedWidthPx), asked for by a
+  // Block on a Canvas: the probe wrapped as the textarea wraps, its width
+  // counting its padding as the textarea's does. Laid out only when asked.
+  const balance = ({ capPx, minLinePx }) => {
+    const probe = typedWidthProbe;
+    probe.style.lineHeight = style.lineHeight;
+    // The height counts the padding above and below, as the rendered body's
+    // does, or the box typed in comes out narrower than the one put down.
+    probe.style.paddingTop = style.paddingTop;
+    probe.style.paddingBottom = style.paddingBottom;
+    probe.style.whiteSpace = "pre-wrap";
+    probe.style.overflowWrap = style.overflowWrap || "break-word";
+    probe.style.boxSizing = "border-box";
+    probe.textContent = textarea.value || " ";
+    try {
+      const laid = balancedWidthPx(probe, { capPx, minLinePx });
+      if (!(laid.width < laid.single - 1)) return laid;
+      // ...drawn in to its widest line, as the render draws the rendered words
+      // in (blockNaturalWidth), so putting it down does not narrow it again.
+      probe.style.width = `${laid.width}px`;
+      const box = probe.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(probe);
+      let right = -Infinity;
+      for (const rect of range.getClientRects()) if (rect.width > 0) right = Math.max(right, rect.right);
+      if (!Number.isFinite(right)) return laid;
+      const drawn = Math.ceil(right - box.left + (parseFloat(style.paddingRight) || 0));
+      return { ...laid, width: Math.min(laid.width, Math.max(1, drawn)) };
+    } finally {
+      probe.style.whiteSpace = "pre";
+      probe.style.boxSizing = "";
+      probe.style.paddingTop = "";
+      probe.style.paddingBottom = "";
+      probe.style.width = "max-content";
+    }
+  };
+  return { contentPx, framePx, fontPx, balance };
 }
 
 export function isInlineBlockEditorOpen() {

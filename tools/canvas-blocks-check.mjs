@@ -791,7 +791,7 @@ try {
     await settle(100);
     return out;
   }`);
-  check("words pasted onto the page are drawn in to their line, nothing cut off", compact.pasted.w < compact.pasted.w0 && compact.pasted.wSet === undefined && compact.pasted.overflowX <= 1 && compact.pasted.overflowY <= 1, JSON.stringify(compact.pasted));
+  check("words pasted onto the page are drawn in to their line, nothing cut off", compact.pasted.w < 200 && compact.pasted.wSet === undefined && compact.pasted.overflowX <= 1 && compact.pasted.overflowY <= 1, JSON.stringify(compact.pasted));
   check("a new Block takes the last look but never a height that was dragged", compact.pref.prefFit === true && compact.pref.fit === true && compact.pref.align === "center", JSON.stringify(compact.pref));
   check("the corner dragged mostly sideways sets the width; the height still follows the words", compact.sideways.w < compact.sideways.w0 && compact.sideways.h > compact.sideways.h0 && compact.sideways.fit === true && compact.sideways.wHand === true && compact.sideways.overflowY <= 1, JSON.stringify(compact.sideways));
   check("...dragged mostly down, it sets the height", compact.down.fit === false && compact.down.h > compact.down.h0 + 20, JSON.stringify(compact.down));
@@ -837,8 +837,12 @@ try {
   // Canvas measure now (◐ Canvas → Blocks → Widest a Block grows, 62%), wraps
   // there, and its height follows; code may still run to the edge; a Block
   // already wider is not drawn in when its page opens, but Fit to words is.
+  // Under ◐ Canvas → Blocks → Block width → Longest line, which is the rule
+  // that grows a paragraph to the measure; Balanced lays it out narrower, in a
+  // box near 3:2 (tools/canvas-feed-browser-check.mjs).
   const measure = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
+    api.setCanvasBlockWidthMode("longest");
     const settleLong = async () => { for (let i = 0; i < 20; i += 1) await settle(60); };
     const read = (id) => api.documentBlocks().find((b) => b.id === id);
     const [vx0, , vx1] = api.pdfPageViewport(1).viewBox;
@@ -865,6 +869,7 @@ try {
     await settleLong();
     out.narrow = { w: read(narrow.id).w, measure: Math.floor(pageW * 0.4) };
     api.setCanvasBlockMeasure("auto");
+    api.setCanvasBlockWidthMode("auto");
     [pasted.id, code.id, wide.id, narrow.id].forEach((id) => api.deleteBlock(id));
     await settle(100);
     return out;
