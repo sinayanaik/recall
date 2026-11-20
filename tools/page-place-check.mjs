@@ -525,7 +525,10 @@ try {
     return result;
   }`);
   check("Ctrl+V of words onto the page makes a Block holding them", words.taken && words.count === 1 && words.md.includes("First line") && words.md.includes("second") && words.shown && !words.editing, JSON.stringify(words));
-  check("...with its top-left corner where the mouse is, wider for a long line", Math.abs(words.x - 100) <= 2 && Math.abs(words.top - 600) <= 2 && words.w > 240, JSON.stringify(words));
+  // On a Canvas the words are balanced (◐ Canvas → Blocks → Block width): a
+  // line longer than a comfortable one wraps at it rather than running on —
+  // so wider than a Block's start, not as wide as its longest line.
+  check("...with its top-left corner where the mouse is, wider for a long line", Math.abs(words.x - 100) <= 2 && Math.abs(words.top - 600) <= 2 && words.w > 160 && words.w <= 368, JSON.stringify(words));
   check("...but not this app's own clipboard token, and not a paste into a Block's editor", words.tokenIgnored && words.editorKeeps, JSON.stringify(words));
 
   // ── 8. The middle button grabs the page and moves it ────────────────────
