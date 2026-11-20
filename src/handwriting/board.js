@@ -45,7 +45,7 @@
 // Neither needed lifting — both are already inside #documentStage. What is left
 // in this file is what a press MEANS.
 
-import { addNotebookPage, deleteNotebookPage, duplicateNotebookPage, ensureNotebookDocument, hasNotebook, moveNotebookPage, notebookPageCount, notebookPageHasOwnSetup, notebookPageNumbers, notebookPageSetup, setNotebookPageNumbers } from "../documents/notebook.js?v=__BUILD__";
+import { addNotebookPage, deleteNotebookPage, duplicateNotebookPage, ensureNotebookDocument, hasNotebook, moveNotebookPage, notebookPageCount, notebookPageHasOwnSetup, notebookPageNumbers, notebookPageSetup, notebookPagesGrow, setNotebookPageNumbers, setNotebookPagesGrow } from "../documents/notebook.js?v=__BUILD__";
 import { sheetSetupSummary } from "../documents/canvas-setup.js?v=__BUILD__";
 import { openCanvasSetupDialog } from "../documents/canvas-setup-dialog.js?v=__BUILD__";
 import { notebookPaperPreference, notebookSetupPreference } from "../storage/ink-prefs.js?v=__BUILD__";
@@ -124,6 +124,10 @@ export function paintHandwritingControls() {
   const numbers = notebookPageNumbers();
   pageRow("hw-page-numbers")?.setAttribute("aria-pressed", ready && numbers ? "true" : "false");
   pageRow("hw-page-numbers")?.toggleAttribute("disabled", !ready);
+  // Pages grow as needed: on while any page grows (every page does unless set
+  // to its size, src/documents/canvas-extent.js).
+  pageRow("hw-pages-grow")?.setAttribute("aria-pressed", ready && notebookPagesGrow() ? "true" : "false");
+  pageRow("hw-pages-grow")?.toggleAttribute("disabled", !ready);
   document.body.classList.toggle("canvas-page-numbers-off", !numbers);
   paintPasteBlocksRow();
   const tearOut = el.documentMoreMenu?.querySelector('[data-document-action="hw-tear-out"]');
@@ -214,6 +218,14 @@ export function runHandwritingMenuAction(action) {
   if (action === "hw-page-down") { movePage(1); return true; }
   if (action === "hw-page-numbers") {
     setNotebookPageNumbers(!notebookPageNumbers()).then(() => paintHandwritingControls());
+    return true;
+  }
+  if (action === "hw-pages-grow") {
+    const on = !notebookPagesGrow();
+    setNotebookPagesGrow(on).then((done) => {
+      paintHandwritingControls();
+      if (done) showToast(on ? "Pages grow as needed — go past an edge and the page follows" : "Every page is its set size again");
+    });
     return true;
   }
   // The page in view's size, paper and lines — or every page's

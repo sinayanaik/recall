@@ -523,6 +523,7 @@ const APP_SHELL = [
   `./src/documents/view-only.js?v=${STAMP}`,
   `./src/documents/canvas-setup.js?v=${STAMP}`,
   `./src/documents/canvas-extent.js?v=${STAMP}`,
+  `./src/documents/page-grow-preview.js?v=${STAMP}`,
   `./src/documents/canvas-setup-dialog.js?v=${STAMP}`,
   `./src/documents/canvas-feed.js?v=${STAMP}`,
   `./src/documents/canvas-feed-dialog.js?v=${STAMP}`,

@@ -66,6 +66,7 @@ import { inkEraseTarget, inkPaperBg, inkTool, isInkArmed, pushInkHistoryAction, 
 import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { edgeScroller, mapPointBetweenPages, pageUnderPointer, pointOnPage } from "./page-handoff.js?v=__BUILD__";
+import { endPageGrowthPreview, previewPageGrowth } from "./page-grow-preview.js?v=__BUILD__";
 import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 import { setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
@@ -1457,6 +1458,12 @@ function onShapePointerMove(event) {
   const shape = pressShape(drag, event);
   drag.preview = shape;
   if (drag.mode === "move") drag.edgeScroll?.update(event);
+  // The page grows past the edge it is carried over, or the page it is carried
+  // onto is outlined (src/documents/page-grow-preview.js).
+  if (shape && drag.mode !== "create") {
+    const bounds = shapeBounds(normalizeShape(shape));
+    previewPageGrowth({ page: drag.page, target: drag.mode === "move" ? (drag.targetPage || drag.page) : drag.page, rects: bounds ? [bounds] : [] });
+  }
   if (!shape) { paintDocumentShapes(drag.page); paintCarriedGhost(drag, null); return; }
   if (drag.mode === "move" && carriedAway(drag)) {
     // Drawn on both pages, each clipped to its own paper, so a shape across
@@ -1524,6 +1531,7 @@ function dropShapeMove(drag, dropped) {
 function endShapePress() {
   const drag = shapePress;
   shapePress = null;
+  endPageGrowthPreview({ dropped: Boolean(drag?.moved) });
   drag?.edgeScroll?.stop();
   setInkPenDown(false);
   el.documentView?.removeEventListener("touchmove", onShapeTouchMove, { passive: false });

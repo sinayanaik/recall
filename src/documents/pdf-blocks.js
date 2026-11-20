@@ -67,6 +67,7 @@ import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUI
 import { closeInlineBlockEditor, inlineBlockEditorHolds, inlineBlockEditorId, inlineBlockEditorValue, mountInlineBlockEditor, openInlineBlockEditor } from "./pdf-block-inline.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { edgeScroller, mapPointBetweenPages, pageUnderPointer, pointOnPage, setCarrying } from "./page-handoff.js?v=__BUILD__";
+import { endPageGrowthPreview, previewPageGrowth } from "./page-grow-preview.js?v=__BUILD__";
 import { resolveStorageImages } from "../cloud/storage-urls.js?v=__BUILD__";
 import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
@@ -380,11 +381,15 @@ function blockWidthCap(block, viewport = pdfPageViewport(block.page)) {
   if (!viewport) return Math.max(PDF_BLOCK_MIN_WIDTH, Number(block.w) || PDF_BLOCK_DEFAULT_WIDTH);
   // On a Canvas page that grows, or a Boundless one, the page's edge is wherever
   // what is on it has pushed it — so a Block growing to it would push it again.
-  // The page as it is set up is the measure instead, wherever the Block is.
+  // The edge of the page as it is set up is the one grown to instead; a Block
+  // that is past that edge already may be as wide as the page is set up.
   const record = state.meta?.notebook;
-  if (record && activeDocSlot() === DOC_SLOT_NOTEBOOK && sheetFit(sheetSetupForPage(record, Number(block.page) || 1)) !== "fixed") {
-    const [sx0, , sx1] = canvasMeasureBox(record, Number(block.page) || 1);
-    return Math.max(PDF_BLOCK_MIN_WIDTH, Math.floor(Math.abs(sx1 - sx0) - (2 * BLOCK_RIGHT_GUTTER)));
+  const page = Number(block.page) || pageOfViewport(viewport) || 1;
+  if (record && activeDocSlot() === DOC_SLOT_NOTEBOOK && sheetFit(sheetSetupForPage(record, page)) !== "set") {
+    const [sx0, , sx1] = canvasMeasureBox(record, page);
+    const room = Math.floor(Math.max(sx0, sx1) - BLOCK_RIGHT_GUTTER - (Number(block.x) || 0));
+    const whole = Math.floor(Math.abs(sx1 - sx0) - (2 * BLOCK_RIGHT_GUTTER));
+    return Math.max(PDF_BLOCK_MIN_WIDTH, room >= PDF_BLOCK_MIN_WIDTH * 2 ? room : whole);
   }
   const right = Math.max(viewport.viewBox[0], viewport.viewBox[2]);
   return Math.max(PDF_BLOCK_MIN_WIDTH, Math.floor(right - BLOCK_RIGHT_GUTTER - (Number(block.x) || 0)));
@@ -2453,6 +2458,10 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     const shown = shownAt(live);
     placeBlock(node, viewport, shown);
     setCarrying(sourcePage, targetPage !== sourcePage);
+    // Past the edge of a Canvas page that grows, the page shows how far it will
+    // reach; over another page, that page is outlined as where it lands — the
+    // pointer decides (src/documents/page-grow-preview.js).
+    previewPageGrowth({ page: sourcePage, target: mode === "drag" ? targetPage : sourcePage, rects: [blockPageBounds(live)] });
     liveGesture = { id, page: block.page, block: shown };
     gestureFrameHook(block.page, liveGesture);
     // ── The height follows the width WHILE the width is being dragged ────
@@ -2638,6 +2647,9 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       // drop writes the height the block had before the drag.
       apply();
     }
+    // A page shown growing grows now, its outline held until it has; let go
+    // over another page, that page's outline goes.
+    endPageGrowthPreview({ dropped: captured });
     // The gesture is over: nothing is being drawn where it is not stored any
     // more. Told BEFORE the write, so the repaint the write causes paints from
     // the record alone.

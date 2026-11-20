@@ -61,6 +61,7 @@ const API_SRC = `async () => {
     "/src/documents/canvas-setup.js?v=__BUILD__",
     "/src/documents/canvas-setup-dialog.js?v=__BUILD__",
     "/src/documents/canvas-extent.js?v=__BUILD__",
+    "/src/documents/page-grow-preview.js?v=__BUILD__",
     "/src/documents/pdf-shapes.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/export/run.js?v=__BUILD__",
@@ -305,6 +306,117 @@ try {
   check("an undo takes the room back", JSON.stringify(grow.boxUndone) === "[0,0,595,842]" && !grow.pageBoxesUndone, JSON.stringify(grow));
   check("a shape past the right edge makes it wider, and gone, narrow again", grow.shape && grow.boxWide[2] > 660 && grow.boxWide[0] === 0 && grow.boxWide[3] === 842 && JSON.stringify(grow.boxNarrow) === "[0,0,595,842]", JSON.stringify({ wide: grow.boxWide, narrow: grow.boxNarrow }));
   await shot("grown.png");
+
+  // ── 1b. By hand: the pointer decides — this page grows, or the next takes it
+  const hand = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const { painted, pageEl } = window.__h;
+    const out = {};
+    const view = document.getElementById("documentView");
+    // Every page grows unless set to its size: page 1 back to the default.
+    let sha = api.state.meta.notebook.sha256;
+    await api.setNotebookPageSetup({ ...api.notebookPageSetup(1), fit: undefined }, { all: true });
+    await painted(sha);
+    out.fit = api.notebookPageFit(1);
+    const b = api.addDocumentBlock(1, { x: 200, y: 140 }, { md: "Carried by hand", edit: false });
+    api.selectBlock?.(null);
+    await settle(300);
+    const node = () => document.querySelector('[data-pdf-block="' + b.id + '"]');
+    node().scrollIntoView({ block: "center" });
+    await settle(500);
+    const fire = (type, x, y, buttons = 1) => {
+      const target = type === "pointerdown" ? node() : (document.elementFromPoint(x, y) || view);
+      target.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, composed: true, pointerId: 11, pointerType: "mouse", isPrimary: true, altKey: true,
+        clientX: x, clientY: y, buttons, button: type === "pointermove" ? -1 : 0, pressure: buttons ? 0.5 : 0
+      }));
+    };
+    const carry = async (dx, dy, during) => {
+      const r = node().getBoundingClientRect();
+      const x0 = r.left + 10;
+      const y0 = r.top + 6;
+      fire("pointerdown", x0, y0);
+      for (let i = 1; i <= 14; i += 1) {
+        fire("pointermove", x0 + (dx * i) / 14, y0 + (dy * i) / 14);
+        await settle(20);
+      }
+      await settle(80);
+      const mid = during(x0 + dx, y0 + dy);
+      fire("pointerup", x0 + dx, y0 + dy, 0);
+      return mid;
+    };
+    // (a) The pointer stays on page 1, the Block hanging past its foot.
+    const p1 = pageEl(1).getBoundingClientRect();
+    const box0 = api.notebookPageBox(1);
+    sha = api.state.meta.notebook.sha256;
+    out.mid = await carry(0, Math.round(p1.bottom - 8 - (node().getBoundingClientRect().top + 6)), (x, y) => ({
+      pointerOnPage1: y < pageEl(1).getBoundingClientRect().bottom,
+      outline: Boolean(pageEl(1).querySelector(".canvas-grow-preview")),
+      outlineBelow: (() => { const o = pageEl(1).querySelector(".canvas-grow-preview"); return o ? Math.round(o.getBoundingClientRect().bottom - pageEl(1).getBoundingClientRect().bottom) : 0; })(),
+      growing: pageEl(1).classList.contains("is-growing"),
+      target2: pageEl(2).classList.contains("is-drop-target"),
+      state: api.pageGrowthPreviewState()
+    }));
+    const t0 = performance.now();
+    for (let i = 0; i < 60 && api.state.meta.notebook.sha256 === sha; i += 1) await settle(40);
+    out.grewMs = Math.round(performance.now() - t0);
+    await settle(500);
+    out.box0 = box0;
+    out.box1 = api.notebookPageBox(1);
+    out.onPage = api.documentBlocks().find((x) => x.id === b.id)?.page;
+    out.outlineAfter = Boolean(document.querySelector(".canvas-grow-preview"));
+    // (b) Carried on until the pointer is over page 2: it goes there, and
+    // page 1 is not made any longer for it.
+    node().scrollIntoView({ block: "center" });
+    await settle(400);
+    const before = api.notebookPageBox(1);
+    const p2 = pageEl(2).getBoundingClientRect();
+    const start = node().getBoundingClientRect();
+    out.mid2 = await carry(0, Math.round(p2.top + 60 - (start.top + 6)), () => ({
+      target2: pageEl(2).classList.contains("is-drop-target"),
+      outline1: Boolean(pageEl(1).querySelector(".canvas-grow-preview"))
+    }));
+    await settle(1200);
+    out.onPage2 = api.documentBlocks().find((x) => x.id === b.id)?.page;
+    out.box1After = api.notebookPageBox(1);
+    out.box1Before = before;
+    out.targetCleared = !document.querySelector(".pdf-page.is-drop-target");
+    return out;
+  }`);
+  check("every page grows unless set to its size", hand.fit === "grow", JSON.stringify(hand));
+  check("dragged past the foot with the pointer on the page: the page shows it growing, live", hand.mid.pointerOnPage1 && hand.mid.outline && hand.mid.growing && hand.mid.outlineBelow > 20 && !hand.mid.target2, JSON.stringify(hand.mid));
+  check("...let go, the page grows at once, the Block on it", hand.box1[1] < hand.box0[1] && hand.onPage === 1 && hand.grewMs < 1500 && !hand.outlineAfter, JSON.stringify(hand));
+  check("carried until the pointer is over the next page: that page is outlined, this one does not grow", hand.mid2.target2 && !hand.mid2.outline1, JSON.stringify(hand.mid2));
+  check("...let go, it is on the next page, and the page it left is not made longer for it", hand.onPage2 === 2 && hand.box1After[1] >= hand.box1Before[1] && hand.targetCleared, JSON.stringify(hand));
+  await shot("by-hand.png");
+  if (SHOTS) {
+    // A picture of the page mid-drag, growing.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const { pageEl } = window.__h;
+      const b = api.addDocumentBlock(2, { x: 200, y: 160 }, { md: "Dragged past the foot", edit: false });
+      api.selectBlock?.(null);
+      await settle(300);
+      const node = document.querySelector('[data-pdf-block="' + b.id + '"]');
+      pageEl(2).scrollIntoView({ block: "end" });
+      await settle(400);
+      const r = node.getBoundingClientRect();
+      const x0 = r.left + 10;
+      const y0 = r.top + 6;
+      const fire = (type, x, y, target) => (target || document.elementFromPoint(x, y) || document.body).dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, composed: true, pointerId: 12, pointerType: "mouse", isPrimary: true, altKey: true,
+        clientX: x, clientY: y, buttons: 1, button: type === "pointermove" ? -1 : 0, pressure: 0.5
+      }));
+      fire("pointerdown", x0, y0, node);
+      const dy = Math.round(pageEl(2).getBoundingClientRect().bottom - 10 - y0);
+      for (let i = 1; i <= 14; i += 1) { fire("pointermove", x0 + i * 3, y0 + (dy * i) / 14); await settle(20); }
+      await settle(200);
+      window.__dragEnd = () => fire("pointerup", x0 + 42, y0 + dy);
+    }`);
+    await shot("mid-drag.png");
+    await page.evaluate(`async () => { window.__dragEnd(); await window.__recall.settle(1200); }`);
+    await shot("after-drop.png");
+  }
 
   // ── 2. Boundless: left and up, nothing on screen moves ───────────────
   const free = await page.evaluate(`async () => {

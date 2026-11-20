@@ -845,7 +845,9 @@ try {
     api.setCanvasBlockWidthMode("longest");
     const settleLong = async () => { for (let i = 0; i < 20; i += 1) await settle(60); };
     const read = (id) => api.documentBlocks().find((b) => b.id === id);
-    const [vx0, , vx1] = api.pdfPageViewport(1).viewBox;
+    // The page as it is set up: a page that has grown wider (every Canvas
+    // page grows as needed) is measured by its set width, not its reach.
+    const [vx0, , vx1] = api.notebookPageMeasureBox ? api.notebookPageMeasureBox(1) : api.pdfPageViewport(1).viewBox;
     const pageW = vx1 - vx0;
     const prose = "A pasted paragraph is a single long line of words, and it should wrap at a comfortable reading width rather than stretching across the whole page from the place it landed to the far edge of the paper. ".repeat(2).trim();
     const pasted = api.addHandwritingTextBlock(prose, { page: 1, x: 40, y: 120 });

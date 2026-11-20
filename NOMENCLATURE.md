@@ -62,27 +62,43 @@ exactly as before. A page of any size keeps its top-left corner at user point
 (0, 842) and its lines on a lattice from (0, 0), so nothing written on a page
 moves when it is resized.
 
-A page's size can also follow what is on it (`setup.fit`, absent for a page of
-a set size). **Grows as needed** (`"grow"`, a switch under the size) makes a
-page longer or wider by just enough — an inch past what is on it, in inch
-steps — when what is written, typed or dragged reaches its right edge or its
-foot, never smaller than its size, and back again when that is gone; its
-top-left corner never moves. **Boundless** (`"boundless"`, beside Portrait and
-Landscape) is a page with no size: what is on it with room round it on every
-side, its setup's size only where it starts; it has no page number, no margins
-and no Cornell paper, and its PDF page (and its web page) is cut to what is on
-it. Say "Boundless", not "infinite canvas", "sizeless" or "whiteboard"; say
-"grows as needed", not "auto-extend". Where each page reaches is
-`meta.notebook.pageBoxes` (`{ "<page>": [x0, y0, x1, y1] }`, only for a page
-past its set size), worked out from what is on it, so an undo takes the room
-back and two devices draw the same file; `meta.notebook.boxSha` is the hash of
-the bytes drawn knowing those boxes. A page that grows is redrawn in place —
-only that page, the reader held still (`swapOpenCanvasBytes` in
-`src/documents/pdf-view.js`) — and the Canvas is fitted to the screen by each
-page's set width, so growing never zooms it out. Code: `src/documents/
-canvas-extent.js` (the numbers, pure), `fitCanvasPageExtents` /
-`scheduleCanvasExtentFit` in `notebook.js`; a page too big for one picture is
-exported in tiles (`canvasExportTiles` in `src/documents/pdf-export.js`). Code: `src/documents/canvas-setup.js` (the numbers,
+A page's size follows what is on it (`setup.fit`). Every page **grows as
+needed** (`"grow"`, and what a page with no `fit` does — a `"fixed"` written by
+one early build too): longer or wider by just enough — an inch past what is on
+it, in inch steps — when what is written, typed or dragged reaches its right
+edge or its foot, never smaller than its size, and back again when that is
+gone; its top-left corner never moves, and it changes no byte of the page
+until it has grown. Switched off (Page setup's **Grows as needed**, or ⋯ →
+Canvas pages → **Pages grow as needed** for every page) a page is **set to its
+size** (`"set"`). **Boundless** (`"boundless"`, beside Portrait and Landscape)
+is a page with no size: what is on it with room round it on every side, its
+setup's size only where it starts; it has no page number, no margins and no
+Cornell paper, and its PDF page (and its web page) is cut to what is on it.
+Say "Boundless", not "infinite canvas", "sizeless" or "whiteboard"; say "grows
+as needed", not "auto-extend".
+
+While something is dragged past the edge of a page that grows, the page shows
+where it will reach — its paper carried on to a dashed edge, **Page grows** at
+the corner (`src/documents/page-grow-preview.js`) — and grows the moment it is
+let go. **The pointer decides the page**: with the pointer still on the page,
+what hangs past its foot makes it longer; carried on until the pointer is over
+the next page, it goes there, and that page is outlined as where it lands
+(`is-drop-target`). Nothing moves the next page while a drag is on, so it can
+always be reached.
+
+Where each page reaches is `meta.notebook.pageBoxes` (`{ "<page>": [x0, y0, x1,
+y1] }`, only for a page past its set size), worked out from what is on it, so
+an undo takes the room back and two devices draw the same file; only a page
+something was done to since the Canvas was opened is fitted, so a page written
+to its foot before pages grew is not grown by opening it.
+`meta.notebook.boxSha` is the hash of the bytes drawn knowing those boxes. A
+page that grows is redrawn in place — only that page, the reader held still
+(`swapOpenCanvasBytes` in `src/documents/pdf-view.js`) — and the Canvas is
+fitted to the screen by each page's set width, so growing never zooms it out.
+Code: `src/documents/canvas-extent.js` (the numbers, pure),
+`applyCanvasPageExtents` / `scheduleCanvasExtentFit` / `setNotebookPagesGrow` in
+`notebook.js`; a page too big for one picture is exported in tiles
+(`canvasExportTiles` in `src/documents/pdf-export.js`). Code: `src/documents/canvas-setup.js` (the numbers,
 pure), `src/documents/canvas-setup-dialog.js` (the dialog),
 `setNotebookPageSetup` in `src/documents/notebook.js`, `buildBlankPdf` in
 `src/documents/blank-pdf.js`. Picked-up Blocks are **copied** (or cut) from

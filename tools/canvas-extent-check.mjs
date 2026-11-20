@@ -7,6 +7,8 @@
 //
 // What has to hold, and why each is asked:
 //
+//   • every page grows unless set to its size, and growing changes no byte of a
+//     page until it has grown;
 //   • a page that grows is never smaller than it was set up at, grows right and
 //     down only, by just enough room past what is on it, in whole steps, and
 //     shrinks back when what pushed it is gone — so an undo takes the room back;
@@ -62,9 +64,15 @@ const FREE = { pattern: "dots", fit: "boundless" };
 const A4 = [0, 0, 595, 842];
 const { EXTENT_ROOM, EXTENT_ROOM_MIN, EXTENT_STEP, EXTENT_MAX, BOUNDLESS_ROOM, EXPORT_PAD } = ext;
 
-await must("a fixed page is its size, whatever is on it", () => {
-  const box = ext.neededPageBox({ pattern: "grid" }, [[-500, -500, 4000, 4000]]);
+await must("a page set to its size is that size, whatever is on it", () => {
+  const box = ext.neededPageBox({ pattern: "grid", fit: "set" }, [[-500, -500, 4000, 4000]]);
   return same(box, A4) || box;
+});
+
+await must("every page grows unless set to its size — a page with no fit, and an old \"fixed\", too", () => {
+  const fits = [setup.sheetFit({}), setup.sheetFit({ fit: "fixed" }), setup.sheetFit(null), setup.sheetFit({ fit: "set" }), setup.sheetFit({ fit: "boundless" })];
+  const legacy = ext.neededPageBox(setup.legacySheetSetup("ruled"), [[100, -40, 300, 20]]);
+  return (same(fits, ["grow", "grow", "grow", "set", "boundless"]) && legacy[1] < 0) || { fits, legacy };
 });
 
 await must("a page that grows, with nothing near its edges, is its size", () => {
@@ -136,28 +144,29 @@ await must("a Boundless page's PDF is cut to what is on it, with a little room",
 });
 
 await must("a drag goes past only the edges a page grows by", () => {
-  const fixed = ext.canvasDragLimits("fixed", A4);
+  const fixed = ext.canvasDragLimits("set", A4);
   const grow = ext.canvasDragLimits("grow", A4);
   const free = ext.canvasDragLimits("boundless", A4);
   const ok = same(fixed, A4)
     && grow[0] === 0 && grow[3] === 842 && grow[2] > 595 && grow[1] < 0
     && free[0] < 0 && free[3] > 842 && free[2] > 595 && free[1] < 0;
-  const record = { pages: 2, setup: { pattern: "grid" }, pageSetups: { 2: GROW } };
+  const record = { pages: 2, setup: { pattern: "grid", fit: "set" }, pageSetups: { 2: GROW } };
   const byPage = ext.pageDragLimits(record, 1, A4);
   const byPage2 = ext.pageDragLimits(record, 2, A4);
   return (ok && same(byPage, A4) && byPage2[2] > 595) || { fixed, grow, free, byPage, byPage2 };
 });
 
-await must("fit survives normalisation, is in the draw key, and a Boundless page has no margins or Cornell", () => {
+await must("fit survives normalisation; growing is not drawn until it grows; a Boundless page has no margins or Cornell", () => {
   const g = setup.normalizeSheetSetup(GROW);
   const b = setup.normalizeSheetSetup({ pattern: "cornell", fit: "boundless", margins: { top: 40, left: 40, right: 0, bottom: 0 } });
-  const fixedKey = setup.sheetDrawKey({ pattern: "grid" });
+  const setKey = setup.sheetDrawKey({ pattern: "grid", fit: "set" });
   const growKey = setup.sheetDrawKey(GROW);
+  const freeKey = setup.sheetDrawKey({ pattern: "grid", fit: "boundless" });
   const ok = g.fit === "grow" && b.fit === "boundless" && b.pattern === "ruled"
     && Object.values(b.margins).every((v) => v === 0)
-    && fixedKey !== growKey && !/fixed/.test(fixedKey)
-    && setup.sheetLegacyKind(GROW) === null && setup.sheetLegacyKind({ pattern: "grid" }) === "grid";
-  return ok || { g, b, fixedKey, growKey };
+    && setKey === growKey && freeKey !== growKey
+    && setup.sheetLegacyKind(GROW) === "grid" && setup.sheetLegacyKind({ pattern: "grid", fit: "boundless" }) === null;
+  return ok || { g, b, setKey, growKey, freeKey };
 });
 
 await must("a grown page's lines are the same lattice, from its outer edges", () => {
@@ -183,10 +192,26 @@ await must("dots on a page that grows are a line a row, so a poster is not a meg
   return ok || { big: big.length, rows, fixed: fixed.length, small: small.length };
 });
 
-await must("a Canvas whose pages are all fixed is byte-for-byte what it was", () => {
-  const before = blank.buildBlankPdf({ pages: 3, paper: "grid", setup: { ...setup.legacySheetSetup("grid"), line: "#1f5fd1" } });
-  const withBoxes = blank.buildBlankPdf({ pages: 3, paper: "grid", setup: { ...setup.legacySheetSetup("grid"), line: "#1f5fd1" }, pageBoxes: { 2: [0, -400, 700, 842] } });
-  return Buffer.compare(Buffer.from(before), Buffer.from(withBoxes)) === 0 || "a stored box changed a fixed page's bytes";
+await must("pages that have not grown are byte-for-byte what they were; a page set to its size ignores a stored box", () => {
+  const plain = blank.buildBlankPdf({ pages: 2, paper: "grid" });
+  const growing = blank.buildBlankPdf({ pages: 2, paper: "grid", pageBoxes: {} });
+  const setSize = { ...setup.legacySheetSetup("grid"), line: "#1f5fd1", fit: "set" };
+  const before = blank.buildBlankPdf({ pages: 3, paper: "grid", setup: setSize });
+  const withBoxes = blank.buildBlankPdf({ pages: 3, paper: "grid", setup: setSize, pageBoxes: { 2: [0, -400, 700, 842] } });
+  const same1 = Buffer.compare(Buffer.from(plain), Buffer.from(growing)) === 0;
+  const same2 = Buffer.compare(Buffer.from(before), Buffer.from(withBoxes)) === 0;
+  return (same1 && same2) || { same1, same2 };
+});
+
+await must("a never-set-up Canvas page that grows keeps its first paper's lines where they were", async () => {
+  if (!PDFDocument) return true;
+  const bytes = blank.buildBlankPdf({ pages: 2, paper: "ruled", pageBoxes: { 1: [0, -200, 595, 842] } });
+  const doc = await PDFDocument.load(bytes);
+  const boxes = doc.getPages().map((p) => { const b = p.getMediaBox(); return [b.x, b.y, b.x + b.width, b.y + b.height].map(Math.round); });
+  const grownRules = setup.sheetOps(setup.legacySheetSetup("ruled"), [0, -200, 595, 842]).groups[0].segs.map((seg) => seg[1]);
+  const firstRules = setup.sheetOps(setup.legacySheetSetup("ruled")).groups[0].segs.map((seg) => seg[1]);
+  const kept = firstRules.every((y) => grownRules.includes(y));
+  return (same(boxes, [[0, -200, 595, 842], A4]) && kept) || { boxes, kept };
 });
 
 await must("a grown page's box is in the file; pages drawn alike still share a stream", async () => {
@@ -199,8 +224,8 @@ await must("a grown page's box is in the file; pages drawn alike still share a s
   return (same(boxes, [A4, [0, -400, 700, 842], A4]) && streams === 2) || { boxes, streams };
 });
 
-await must("a record's page box is read only for a page that grows", () => {
-  const record = { pages: 2, setup: { pattern: "grid" }, pageSetups: { 2: GROW }, pageBoxes: { 1: [0, -400, 595, 842], 2: [0, -400, 595, 842] } };
+await must("a record's page box is not read for a page set to its size", () => {
+  const record = { pages: 2, setup: { pattern: "grid", fit: "set" }, pageSetups: { 2: GROW }, pageBoxes: { 1: [0, -400, 595, 842], 2: [0, -400, 595, 842] } };
   const boxes = setup.canvasPageBoxes(record);
   const measure = setup.canvasMeasureBox(record, 2);
   return (same(boxes, [A4, [0, -400, 595, 842]]) && same(measure, A4)) || { boxes, measure };

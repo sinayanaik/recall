@@ -447,6 +447,10 @@ try {
     const out = { scope: q('[data-cs-scope="all"]').getAttribute("aria-checked") };
     click('[data-cs-scope="page"]');
     pick("a6");
+    // Set to its size: every page grows as needed otherwise, and a page that
+    // grows has nothing past its edge to ask about (see the case after this).
+    out.growOn = q('[data-cs-toggle="grow"]').getAttribute("aria-checked");
+    click('[data-cs-toggle="grow"]');
     click('[data-cs-action="apply"]');
     await settle(300);
     const confirm = document.getElementById("confirmModal");
@@ -469,6 +473,22 @@ try {
     await api.setNotebookPageSetup(api.legacySheetSetup("grid"), { page: 1 });
     await painted(null);
     out.restored = !ownSetups()?.["1"];
+    // Growing as needed (the default), the same smaller page asks nothing: it
+    // reaches down to what is past its foot.
+    await openFromMenu(1);
+    click('[data-cs-scope="page"]');
+    pick("a6");
+    const before = api.state.meta.notebook.sha256;
+    click('[data-cs-action="apply"]');
+    await settle(300);
+    const sure = document.getElementById("confirmModal");
+    out.askedGrowing = Boolean(sure && !sure.hidden);
+    if (out.askedGrowing) document.getElementById("confirmModalOkBtn").click();
+    await painted(before);
+    out.grownBox = api.notebookPageBox?.(1) || null;
+    await api.setNotebookPageSetup(api.legacySheetSetup("grid"), { page: 1 });
+    await painted(null);
+    out.restoredAgain = !ownSetups()?.["1"];
     api.deleteDocumentBlock?.(low.id);
     return out;
   }`, first.b1);
@@ -476,6 +496,7 @@ try {
   check("...and a cancel goes back to the dialog with nothing changed", shrink.backInDialog && shrink.unchanged, JSON.stringify(shrink));
   check("...a yes makes the page smaller and keeps the Block's record", shrink.own1?.size === "a6" && JSON.stringify(shrink.kept) === JSON.stringify(shrink.lowAt), JSON.stringify(shrink));
   check("...and back to A4 grid, page 1 follows the Canvas again", shrink.restored, JSON.stringify(shrink));
+  check("growing as needed (the default), a smaller page asks nothing and reaches what is past its foot", shrink.growOn === "true" && !shrink.askedGrowing && shrink.grownBox && shrink.grownBox[1] <= shrink.lowAt[1] && shrink.restoredAgain, JSON.stringify(shrink));
 
   // ── 5. Every page at once, and the Canvas PDF ─────────────────────────
   const every = await page.evaluate(`async () => {
