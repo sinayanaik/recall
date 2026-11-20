@@ -132,12 +132,18 @@ A Block that follows its words grows with its longest line only as far as the
 **widest a Block grows** — ◐ Canvas → Blocks, a share of the page's width (62%
 unless set; `canvasBlockMaxWidth`, held by `src/documents/block-measure.js`) —
 and wraps there; code may run to the page's edge. Pasted words keep to it too.
-Once its words run past one line, a Block on a Canvas is **balanced** (◐
-Canvas → Blocks → **Block width**, `canvasBlockWidthRule`: "auto" is Balanced,
-"longest" the old Longest line): laid out in a box near 3:2, widening with the
-square root of how much is in it rather than with its longest line, and drawn
-in to its widest line (`blockNaturalWidth` in `src/documents/pdf-blocks.js`;
-`BALANCED_BLOCK_ASPECT`, `balancedWidthGuess` in `block-measure.js`). Only a
+Once its words are longer than a comfortable line (about 16 ems, 30–35
+characters), a Block on a Canvas is **balanced** (◐ Canvas → Blocks → **Block
+width**, `canvasBlockWidthRule`: "auto" is Balanced, "longest" the old Longest
+line): wrapped at that line while the words are few, then laid out in a box near
+3:2, widening with the square root of how much is in it rather than with its
+longest line, up to the widest a Block grows, and drawn in to its widest line.
+A shorter line — a label — keeps its own width. It is the same while it is typed
+in: the box written in is the box put down, and once the words wrap its width
+moves only by more than an em at a time, so lines are not rewrapped at every key
+(`balancedWidthPx`, `BALANCED_MIN_LINE_EM`, `BALANCED_BLOCK_ASPECT`,
+`balancedWidthGuess` in `block-measure.js`; `blockNaturalWidth` and
+`blockTypingWidth` in `src/documents/pdf-blocks.js`). Only a
 Block made, pasted or typed in since — or fitted to its words again — is
 balanced (`wBal: true` on its record, with `wFit`), so a page laid out before
 keeps its widths. Say "balanced", not "auto-sized".

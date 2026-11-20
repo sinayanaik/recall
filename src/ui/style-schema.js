@@ -693,7 +693,7 @@ export const styleControlGroups = [
         key: "canvasBlockWidthRule", label: "Block width", type: "select",
         options: ["auto", "longest"],
         optionLabels: { auto: "Balanced — a box near 3:2", longest: "Longest line — a strip up to the widest" },
-        hint: "How a Block takes its width once its words run past one line. Balanced lays a paragraph out in a box about half again as wide as it is tall, growing with the words, and draws it in to its widest line; Longest line widens it with its longest line up to the widest a Block grows. A Block laid out before this keeps its width until it is typed in or fitted to its words again."
+        hint: "How a Block takes its width once its words are longer than a short line. Balanced wraps them at a comfortable line (about 30 characters) and, as there are more of them, lays them out in a box about half again as wide as it is tall, up to the widest a Block grows, drawn in to its widest line — while you type as well as once they are down; a short label keeps its own line. Longest line widens it with its longest line up to the widest a Block grows. A Block laid out before this keeps its width until it is typed in or fitted to its words again."
       },
       // Not variables: block-measure.js holds them beside the measure, for
       // what To the Canvas and a drop onto a Canvas page put down.

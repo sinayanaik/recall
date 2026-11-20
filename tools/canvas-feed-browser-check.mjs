@@ -204,6 +204,63 @@ try {
   check("a short line keeps its own width", (widths.short?.w || 999) < 140, `w=${widths.short?.w}`);
   check("Block width: Longest line keeps the old strip", (widths.old?.w || 0) >= widths.measure - 4, `w=${widths.old?.w}`);
 
+  // ── 1b. Typed in: balanced while it is written, not a strip till put down ─
+  const typed = await page.evaluate(`async (para) => {
+    const { api, settle } = window.__recall;
+    const vp = api.pdfPageViewport(1);
+    const scale = vp.scale || 1;
+    const out = {};
+    async function typeIn(label, text, y) {
+      const made = api.addDocumentBlock(1, { x: 80, y }, { anchor: "top-left", edit: true });
+      await settle(200);
+      const node = () => document.querySelector('[data-pdf-block="' + made.id + '"]');
+      const ta = node().querySelector(".pdf-block-inline textarea");
+      // How often the width moved once the words had wrapped: each move
+      // rewraps every line under the caret.
+      let changes = 0; let last = 0; let wrapped = false; let oneLine = 0;
+      for (let i = 1; i <= text.length; i += 1) {
+        ta.value = text.slice(0, i);
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+        const w = Math.round(node().getBoundingClientRect().width);
+        if (wrapped && w !== last) changes += 1;
+        last = w;
+        if (i === 1) oneLine = ta.scrollHeight;
+        if (!wrapped && ta.scrollHeight > oneLine + parseFloat(getComputedStyle(ta).lineHeight) / 2) wrapped = true;
+      }
+      await settle(150);
+      const typing = node().getBoundingClientRect().width / scale;
+      ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+      await settle(1200);
+      const rec = api.documentBlocks().find((b) => b.id === made.id);
+      out[label] = { typing: Math.round(typing), w: rec.w, h: rec.h, wBal: rec.wBal, changes, id: made.id };
+    }
+    await typeIn("para", para, 780);
+    await typeIn("sentence", "A sixty character sentence that fits under the measure.", 420);
+    await typeIn("label", "Retrieval practice", 300);
+    // Opened again: typed in at the width it has.
+    api.editBlock(out.para.id);
+    await settle(300);
+    const node = document.querySelector('[data-pdf-block="' + out.para.id + '"]');
+    out.reopened = Math.round(node.getBoundingClientRect().width / scale);
+    out.reopenedEditing = node.classList.contains("is-inline-editing");
+    node.querySelector(".pdf-block-inline textarea")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await settle(600);
+    out.afterReopen = api.documentBlocks().find((b) => b.id === out.para.id)?.w;
+    out.measure = api.canvasBlockMeasure(vp, "notebook");
+    api.writeDocumentBlocks(api.documentBlocks().filter((b) => ![out.para.id, out.sentence.id, out.label.id].includes(b.id)), { removed: [out.para.id, out.sentence.id, out.label.id] });
+    await settle(300);
+    return out;
+  }`, PARAGRAPH);
+  const em = 14;
+  check("a paragraph typed in is balanced while it is typed, not a strip the measure wide", typed.para.typing < typed.measure - 60, `typing=${typed.para.typing} measure=${typed.measure}`);
+  check("...within an em of the width it is put down at", Math.abs(typed.para.typing - typed.para.w) <= em, `typing=${typed.para.typing} put down=${typed.para.w}`);
+  check("...near 3:2 once down, and balanced (wBal)", typed.para.w / typed.para.h > 1.2 && typed.para.w / typed.para.h < 2.1 && typed.para.wBal === true, `w=${typed.para.w} h=${typed.para.h}`);
+  check("...its width moved only a few times once its words wrapped", typed.para.changes <= 12, `moves=${typed.para.changes} over ${PARAGRAPH.length} keys`);
+  check("a sentence shorter than the measure wraps at a comfortable line, not one strip", typed.sentence.w < typed.measure * 0.7 && typed.sentence.h > 40, `w=${typed.sentence.w} h=${typed.sentence.h}`);
+  check("...typed at about the width it is put down at", Math.abs(typed.sentence.typing - typed.sentence.w) <= em, `typing=${typed.sentence.typing} put down=${typed.sentence.w}`);
+  check("a short label keeps its own line", typed.label.w < 140 && typed.label.h < 40, `w=${typed.label.w} h=${typed.label.h}`);
+  check("a balanced Block opened again is typed in at its own width", typed.reopenedEditing && Math.abs(typed.reopened - typed.para.w) <= 1 && Math.abs(typed.afterReopen - typed.para.w) <= 1, `w=${typed.para.w} reopened=${typed.reopened} after=${typed.afterReopen}`);
+
   // ── 2. The Notes' highlights, the Cards and a PDF's, as items ──────────
   const items = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
