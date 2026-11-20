@@ -138,10 +138,10 @@ import { openSectionStyle, openSectionStyleFromPanel, setOpenAppStyleHandler, se
 import { styleCoarsePointerMedia, styleMobileMedia } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeSplitPartsMenu, closeViewExportMenu, currentViewStyleScope, initSplitPartsFocus, paintViewExportMenu, paintViewStyleButton, runSplitPartsAction, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, repaintDocumentPart, setViewMode, setViewSwitchHook, switchToPreviousView, toggleSplitPartsMenu } from "./ui/view-mode.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, applyDocumentRecordChanges, documentHighlightById, documentHighlightNote, documentHighlights, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, applyDocumentRecordChanges, documentHighlightById, documentHighlightNote, documentHighlights, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentHighlightsWrittenHook, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { CANVAS_REF_ID, pdfRegionRefForRecord, pdfRegionRefMarkdown, remapCanvasRefs } from "./documents/pdf-region-embed.js?v=__BUILD__";
-import { setCanvasPagesRemappedHook } from "./documents/notebook.js?v=__BUILD__";
+import { scheduleCanvasExtentFit, setCanvasGestureCheck, setCanvasPagesRemappedHook } from "./documents/notebook.js?v=__BUILD__";
 import { setPageAreaCardMaker } from "./documents/region-card.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
 import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUILD__";
@@ -1807,6 +1807,9 @@ onDomReady(() => {
   setBlocksChangedHandler(() => {
     lastDocumentEdit = "blocks";
     repaintDocumentBlocks();
+    // A Canvas page that grows as needed, or is Boundless, reaches as far as
+    // what is on it — asked once the hand is off the page.
+    scheduleCanvasExtentFit();
     refreshHandwritingBoard();
     // ↶ ↷ answer for both rings now (setDocumentUndoHandlers), so a block step
     // is a reason to repaint whether they can be pressed.
@@ -1818,6 +1821,11 @@ onDomReady(() => {
   // A diagram edit — blocks and shapes together — is one step on the blocks'
   // ring, and the shapes half is read and written through here
   // (runDiagramEdit, src/documents/pdf-blocks.js).
+  // ...and the same for a stroke, a shape or anything else written to the
+  // marks; a Block being dragged, resized or typed into holds the fit back
+  // until it is let go.
+  setDocumentHighlightsWrittenHook(() => scheduleCanvasExtentFit());
+  setCanvasGestureCheck(() => isEditingBlock() || liveBlockGesture());
   setDiagramShapeIO({
     read: () => documentHighlights().filter((record) => record?.kind === "shape"),
     write: (changes) => applyDocumentRecordChanges(changes)
@@ -1888,6 +1896,8 @@ onDomReady(() => {
       if (pagesMoved) {
         repaintOpenDocumentPages();
         notifyHighlightsChanged();
+        // What the sync brought onto a page that grows may reach past it.
+        scheduleCanvasExtentFit();
       }
       // The merge just wrote over meta.readingPositionPdf with whichever side's
       // copy carried the newer `at` — which can be a copy on-disk still made

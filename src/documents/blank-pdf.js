@@ -25,7 +25,7 @@
 // text, and the fixture's job is to be a stand-in for somebody else's document
 // while this one's is to be ours.
 
-import { normalizeSheetSetup, sheetBox, sheetDrawKey, sheetLegacyKind, sheetPdfStream } from "./canvas-setup.js?v=__BUILD__";
+import { normalizeSheetSetup, sheetBox, sheetDrawKey, sheetLegacyKind, sheetPdfStream, validPageBox } from "./canvas-setup.js?v=__BUILD__";
 
 // A4 in PDF points (72 per inch), which is the paper this app's print pipeline
 // already lays out for (installPdfPrintStyle), so a notebook page exported or
@@ -173,21 +173,30 @@ function pdfNumber(value) {
 // A setup that draws exactly as a first paper IS that paper here, so a Canvas
 // whose pages are all first papers is byte-for-byte the file it always was —
 // its hash is its identity on every device.
-function blankPageSheet(n, { kind, setup, pageSetups }) {
+//
+// A page that grows, or a Boundless page, may reach past the size it is set up
+// at (`pageBoxes`, src/documents/canvas-extent.js): its paper is drawn over the
+// box it reaches, and only pages that reach the same box share its stream.
+function blankPageSheet(n, { kind, setup, pageSetups, pageBoxes }) {
   const own = pageSetups && typeof pageSetups === "object" ? pageSetups[String(n)] : null;
   const raw = own || (setup && typeof setup === "object" ? setup : null);
   if (!raw) return { key: `paper:${kind}`, legacy: kind };
   const drawn = normalizeSheetSetup(raw);
   const legacy = sheetLegacyKind(drawn);
   if (legacy) return { key: `paper:${legacy}`, legacy };
-  return { key: sheetDrawKey(drawn), sheet: drawn };
+  const base = sheetBox(drawn);
+  const reach = drawn.fit !== "fixed" && pageBoxes && typeof pageBoxes === "object" ? validPageBox(pageBoxes[String(n)]) : null;
+  if (reach && reach.some((v, i) => Math.abs(v - base[i]) >= 0.01)) {
+    return { key: `${sheetDrawKey(drawn)}@${reach.join(",")}`, sheet: drawn, box: reach };
+  }
+  return { key: sheetDrawKey(drawn), sheet: drawn, box: base };
 }
 
 // `pages` blank pages of `paper` — or, page by page, of the setup each one has:
 // `setup` for every page, `pageSetups` ({ "<page>": setup }) for the ones set
 // up on their own. Returns the bytes as a Uint8Array, ready for a Blob or a
 // File.
-export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = "Canvas", setup = null, pageSetups = null } = {}) {
+export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = "Canvas", setup = null, pageSetups = null, pageBoxes = null } = {}) {
   const count = Math.max(1, Math.min(500, Math.round(pages)));
   const kind = normalizeBlankPaper(paper);
   const objects = [];
@@ -206,9 +215,9 @@ export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = 
   const sheets = [];
   const streams = new Map();
   for (let n = 1; n <= count; n += 1) {
-    const pageSheet = blankPageSheet(n, { kind, setup, pageSetups });
+    const pageSheet = blankPageSheet(n, { kind, setup, pageSetups, pageBoxes });
     if (!streams.has(pageSheet.key)) {
-      const stream = pageSheet.legacy ? paperStream(pageSheet.legacy) : sheetPdfStream(pageSheet.sheet);
+      const stream = pageSheet.legacy ? paperStream(pageSheet.legacy) : sheetPdfStream(pageSheet.sheet, pageSheet.box);
       streams.set(pageSheet.key, push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`));
     }
     sheets.push(pageSheet);
@@ -220,7 +229,7 @@ export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = 
     // page keeps its top-left corner at (0, 842) whatever its size.
     const box = pageSheet.legacy
       ? `0 0 ${BLANK_PAGE_WIDTH} ${BLANK_PAGE_HEIGHT} `
-      : `${sheetBox(pageSheet.sheet).map(pdfNumber).join(" ")} `;
+      : `${pageSheet.box.map(pdfNumber).join(" ")} `;
     pageIds.push(push(
       `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [${box}] `
       + `/Resources << >> /Contents ${streams.get(pageSheet.key)} 0 R >>`

@@ -845,15 +845,18 @@ const VIEW_EXPORT_MENUS = {
       ["hl:open", "Highlights…", "Every line you marked, with its note"]
     ]
   },
-  // One row. The Canvas is exported one way: every page, exactly as it looks
-  // on screen — its paper, its ink, its shapes and its Blocks where they are —
-  // as a PDF of its own pages (exportCanvasPdf, src/export/run.js). It used to
-  // carry the PDFs' six rows, and "the blank paper", "the notes on their own"
-  // and "with annotations" are not things a page you wrote on is asked for.
+  // Two rows. The Canvas is exported as it looks on screen — its paper, its
+  // ink, its shapes and its Blocks where they are — as a PDF of its own pages
+  // (exportCanvasPdf, src/export/run.js), or as one web page that opens in
+  // any browser, with its moving pictures moving (exportCanvasHtml,
+  // src/export/canvas-html.js). It used to carry the PDFs' six rows, and "the
+  // blank paper", "the notes on their own" and "with annotations" are not
+  // things a page you wrote on is asked for.
   handwriting: {
     head: "Export Canvas",
     rows: [
-      ["doc:pages-pdf", "PDF", "Every page, exactly as it looks"]
+      ["doc:pages-pdf", "PDF", "Every page, exactly as it looks"],
+      ["doc:canvas-html", "Web page (.html)", "One file that opens in any browser — moving pictures play"]
     ]
   }
   // Still no `highlights` entry keyed by view: there is no Highlights VIEW, and

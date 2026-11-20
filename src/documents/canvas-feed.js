@@ -40,7 +40,8 @@ import { cardArrowShape, readCardCanvasStyle } from "./card-canvas-style.js?v=__
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { BLOCK_FILLS, BLOCK_SHAPE_DEFAULT, compactBlockStyle } from "./block-style.js?v=__BUILD__";
 import { blockStylePreference } from "../storage/ink-prefs.js?v=__BUILD__";
-import { appendNotebookPages, hasNotebook, notebookPageCount, notebookPageSetup } from "./notebook.js?v=__BUILD__";
+import { appendNotebookPages, hasNotebook, notebookPageCount, notebookPageFit, notebookPageSetup } from "./notebook.js?v=__BUILD__";
+import { EXTENT_MAX } from "./canvas-extent.js?v=__BUILD__";
 import { sheetBox } from "./canvas-setup.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { newConnectorBase, newShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
@@ -321,9 +322,14 @@ async function measureFeedMarkdown(md, { cap, box, host, style, fixed = false, b
 }
 
 // The Canvas page things are measured for: the page dropped on, or the last.
+//
+// Measured by the page as it is set up, even when it has grown; one that grows
+// as needed, or is Boundless, says how far down it may go (`reach`), and is
+// flowed down rather than onto new pages (canvas-flow.js).
 export function canvasPageGeometry(page = Math.max(1, notebookPageCount())) {
   const setup = notebookPageSetup(page);
-  return { page, box: sheetBox(setup), margins: setup?.margins || {} };
+  const grows = notebookPageFit(page) !== "fixed";
+  return { page, box: sheetBox(setup), margins: setup?.margins || {}, ...(grows ? { reach: EXTENT_MAX } : {}) };
 }
 
 // Each item measured for Canvas page `page` as it will be drawn there:

@@ -396,6 +396,15 @@ const checks = [
   // share a stream; a page's setup follows it through add, move and tear-out.
   // pdf-lib from disk, no browser.
   ["canvas-setup  ", ["node", ["tools/canvas-setup-check.mjs"], ROOT]],
+  // Canvas pages that grow as needed, and Boundless pages (src/documents/
+  // canvas-extent.js): a page that grows is never smaller than it was set up
+  // at, grows right and down by just enough room in whole steps, holds rather
+  // than changing at every stroke, and shrinks back when what pushed it is
+  // gone; a Boundless page grows every way; nothing passes EXTENT_MAX; a
+  // Boundless page's PDF is cut to what is on it; the paper keeps its lattice
+  // and draws dots a row at a time; a fixed page's bytes are what they were.
+  // pdf-lib from disk, no browser.
+  ["canvas-extent ", ["node", ["tools/canvas-extent-check.mjs"], ROOT]],
   // To the Canvas (src/documents/canvas-flow.js): Blocks from the Notes, a
   // PDF or the Cards go under what is on the last page, stacked without
   // overlapping, onto new pages when it is full; a card is one row with room
@@ -761,6 +770,14 @@ const checks = [
     // pages' own, the Canvas PDF keeps each size, plain grid again is the very
     // same file, View only hides the row, and a Canvas can start from it.
     ["canvas-setup-ui", ["node", ["tools/canvas-setup-browser-check.mjs"], ROOT]],
+    // Pages that grow, in the app: a Block past the foot of a page that grows
+    // makes it longer IN PLACE — no reopen, the other pages' canvases kept,
+    // the reader not moved — and an undo takes the room back; a Boundless page
+    // grows left and up with what is on it staying put on screen; the Canvas
+    // PDF has the grown page whole and the Boundless one cut to what is on it,
+    // drawn in tiles, unnumbered; and the web page export is one file with its
+    // GIF in it byte for byte, that lays itself out on its own.
+    ["canvas-extent-ui", ["node", ["tools/canvas-extent-browser-check.mjs"], ROOT]],
     // Things put on a page where the mouse is: a pasted picture or pasted
     // words, a Block with T or B or a mouse double-click (never a
     // pen's), and a picture copied after ink or Blocks still pasting as one.

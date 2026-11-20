@@ -52,7 +52,7 @@ const PRINT_RECOLOR = paperRecolor(PAPER_WHITE);
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
-import { activePdfId } from "./pdf-multi.js?v=__BUILD__";
+import { activePdfId, recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 import { exportThemeClass } from "../export/themes.js?v=__BUILD__";
 import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { currentPaperTone, currentPdfDocument, currentPdfPageCount, currentPdfScale, pdfOpenToken, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
@@ -61,6 +61,8 @@ import { regionImageRect, renderRegionImage } from "./pdf-region-embed.js?v=__BU
 import { rasterPlacement, rasterWordSize } from "./pdf-region-download.js?v=__BUILD__";
 import { createInvisibleTextLayer } from "./pdf-text-layer.js?v=__BUILD__";
 import { drawRegionBlocks, highlightHex, paintRegionMarks, rasteriseRegionBlocks, regionBlocksInBox, regionMarksOnPage, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
+import { sheetFit, sheetSetupForPage } from "./canvas-setup.js?v=__BUILD__";
+import { exportPageBox, pageContentRects } from "./canvas-extent.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
 // 14mm margins (installPdfPrintStyle) is ~182mm of content, and the page is
@@ -464,52 +466,99 @@ function canvasLabelFont() {
 // carries Noto and JetBrains Mono, and nothing else), so a number in Caveat is
 // pixels: the one trade-off is that it is not selectable. In Helvetica — the
 // default — it is still vector text, written by buildCanvasPdfBytes.
-function paintPageNumber(context, viewport, label, colour, fontFamily) {
+//
+// At the foot of `box` (the part of the page the file is), through `viewport` —
+// which may be one tile of a page drawn in several (renderCanvasPageExact).
+function paintPageNumber(context, viewport, label, colour, fontFamily, box) {
   const scale = viewport.scale || 1;
-  const height = viewport.height;
+  const [x, y] = viewport.convertToViewportPoint((box[0] + box[2]) / 2, box[1] + CANVAS_NUMBER_BASELINE);
   context.save();
   context.fillStyle = colour;
   context.font = `${CANVAS_NUMBER_SIZE * scale}px ${fontFamily}`;
   context.textAlign = "center";
   context.textBaseline = "alphabetic";
-  context.fillText(label, viewport.width / 2, height - (CANVAS_NUMBER_BASELINE * scale));
+  context.fillText(label, x, y);
   context.restore();
+}
+
+// ── Pages bigger than one picture ──────────────────────────────────────────
+//
+// A page that grows as needed, or a Boundless page (src/documents/
+// canvas-extent.js), can be many sheets long. Drawn at the export's ~300dpi as
+// one picture it is a canvas no browser will make (a phone's limit is about
+// 16 million pixels), so a page past CANVAS_TILE_MAX_PIXELS is drawn in tiles
+// of CANVAS_TILE_SIDE: each its own canvas through a viewport offset to it,
+// with the paper, the marks and the Blocks drawn through that same viewport,
+// laid side by side on the one PDF page with a pixel's overlap so no seam
+// shows. And the whole page is held to CANVAS_EXPORT_MAX_PIXELS — a poster is
+// drawn a little softer rather than not at all. A page of any of the sizes the
+// Canvas is set up at is one picture, exactly as before.
+export const CANVAS_TILE_MAX_PIXELS = 4096 * 4096;
+export const CANVAS_TILE_SIDE = 2048;
+export const CANVAS_EXPORT_MAX_PIXELS = 40_000_000;
+
+// Pixels per point for a part of a page `w` × `h` points.
+export function canvasExportScale(w, h) {
+  const sharp = Math.min(CANVAS_EXPORT_WIDTH / CANVAS_EXPORT_A4_WIDTH, (CANVAS_EXPORT_WIDTH * 2) / Math.max(1, w));
+  return Math.min(sharp, Math.sqrt(CANVAS_EXPORT_MAX_PIXELS / Math.max(1, w * h)));
+}
+
+// The tiles a part of a page `pxW` × `pxH` pixels is drawn in: one, when it
+// fits a canvas; otherwise a grid, each tile a pixel wider and taller than its
+// step so neighbours overlap.
+export function canvasExportTiles(pxW, pxH) {
+  if (pxW * pxH <= CANVAS_TILE_MAX_PIXELS && pxW <= 8192 && pxH <= 8192) return [{ x: 0, y: 0, w: pxW, h: pxH, whole: true }];
+  const tiles = [];
+  for (let y = 0; y < pxH; y += CANVAS_TILE_SIDE) {
+    for (let x = 0; x < pxW; x += CANVAS_TILE_SIDE) {
+      tiles.push({ x, y, w: Math.min(CANVAS_TILE_SIDE + 1, pxW - x), h: Math.min(CANVAS_TILE_SIDE + 1, pxH - y), whole: false });
+    }
+  }
+  return tiles;
+}
+
+// The Canvas's own marks and Blocks on page `n`, for where a Boundless page's
+// PDF is cut (exportPageBox).
+function canvasPageRects(pageNumber) {
+  const onPage = (record) => Number(record?.page) === Number(pageNumber);
+  return pageContentRects(
+    recordsForSurface(state.meta?.pdfHighlights, DOC_SLOT_NOTEBOOK, null).filter(onPage),
+    recordsForSurface(state.meta?.pdfBlocks, DOC_SLOT_NOTEBOOK, null).filter(onPage)
+  );
 }
 
 // One Canvas page as the screen shows it, at CANVAS_EXPORT_WIDTH. `number` is
 // the "k / n" to draw into the picture when the labels face is one pdf-lib
 // cannot write (paintPageNumber); null otherwise.
-async function renderCanvasPageExact(pageNumber, { number = null } = {}) {
+async function renderCanvasPageExact(pageNumber, { number = null, box = null, onTile = null } = {}) {
   const doc = currentPdfDocument();
   if (!doc) return null;
   const token = pdfOpenToken;
   const page = await doc.getPage(pageNumber);
   if (token !== pdfOpenToken) return null;
-  const unit = page.getViewport({ scale: 1 });
+  // The part of the page the file is: all of it, or the part a Boundless page
+  // is cut to (exportPageBox). Its size in points, and where it sits on the
+  // page in pixels at the export's scale.
+  const view = Array.isArray(page.view) ? page.view.map(Number) : [0, 0, 595, 842];
+  const part = Array.isArray(box) ? box : view;
+  const partW = part[2] - part[0];
+  const partH = part[3] - part[1];
   // A Canvas page can be any size now (src/documents/canvas-setup.js): drawn at
   // the same ~300dpi as an A4 sheet, and no wider than twice that, so an A3
   // page is as sharp as an A4 one and a poster does not take the tab's memory.
-  const exportWidth = Math.min(CANVAS_EXPORT_WIDTH * 2, CANVAS_EXPORT_WIDTH * (unit.width / CANVAS_EXPORT_A4_WIDTH));
-  const viewport = page.getViewport({ scale: exportWidth / unit.width });
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
-  const context = canvas.getContext("2d", { alpha: false });
-  // White first: `alpha: false` starts a canvas black, and the page paints
-  // only its own lines. The tone goes on after, as it does on screen.
-  context.fillStyle = PAPER_WHITE;
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: context, viewport }).promise;
-  if (token !== pdfOpenToken) return null;
+  const scale = canvasExportScale(partW, partH);
+  const left = (part[0] - view[0]) * scale;
+  const top = (view[3] - part[3]) * scale;
+  const pxW = Math.ceil(partW * scale);
+  const pxH = Math.ceil(partH * scale);
   const tone = currentPaperTone();
-  paintPaperTone(context, canvas, { dark: Boolean(tone?.dark), tint: tone?.tint || null });
 
   const source = stagePaperSource();
-  // Rasterised before any marks go down, so the shape-text ids are known; laid
-  // out at the page's on-screen zoom and drawn at this viewport's scale. Every
-  // word on each is measured as it goes (`words`), for the text layer the
-  // file lays over the page.
-  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, page.view, viewport.scale, {
+  // Rasterised once for the whole page, before any marks go down, so the
+  // shape-text ids are known; laid out at the page's on-screen zoom and drawn
+  // at the export's scale. Every word on each is measured as it goes
+  // (`words`), for the text layer the file lays over the page.
+  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, page.view, scale, {
     paper: "theme",
     layoutScale: seenScale(pageNumber),
     words: true
@@ -526,20 +575,57 @@ async function renderCanvasPageExact(pageNumber, { number = null } = {}) {
     await Promise.all([document.fonts.load(`${12}px ${labelFont}`), document.fonts.load(`700 ${12}px ${labelFont}`)]).catch(() => {});
     if (token !== pdfOpenToken) return null;
   }
-  paintRegionMarks(context, viewport, marks, {
-    paper: tone?.key || "light",
-    skipTextIds: shapeTextRasterIds(rasters),
-    fontFamily: labelFont || undefined
-  });
-  drawRegionBlocks(context, viewport, rasters, { only: "block" });
-  drawRegionBlocks(context, viewport, rasters, { only: "shape-text" });
-  if (number && labelFont) paintPageNumber(context, viewport, number, paperNumberColor(tone || {}), labelFont);
+  const skipTextIds = shapeTextRasterIds(rasters);
+  const tiles = [];
+  for (const tile of canvasExportTiles(pxW, pxH)) {
+    // The page through a viewport whose (0, 0) is this tile's corner — the
+    // whole page, unshifted, when the part is the page and fits one canvas.
+    const viewport = tile.whole && !left && !top
+      ? page.getViewport({ scale })
+      : page.getViewport({ scale, offsetX: -(left + tile.x), offsetY: -(top + tile.y) });
+    const canvas = document.createElement("canvas");
+    canvas.width = tile.whole && !left && !top ? Math.ceil(viewport.width) : tile.w;
+    canvas.height = tile.whole && !left && !top ? Math.ceil(viewport.height) : tile.h;
+    const context = canvas.getContext("2d", { alpha: false });
+    // White first: `alpha: false` starts a canvas black, and the page paints
+    // only its own lines. The tone goes on after, as it does on screen.
+    context.fillStyle = PAPER_WHITE;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    // eslint-disable-next-line no-await-in-loop
+    await page.render({ canvasContext: context, viewport }).promise;
+    if (token !== pdfOpenToken) return null;
+    paintPaperTone(context, canvas, { dark: Boolean(tone?.dark), tint: tone?.tint || null });
+    paintRegionMarks(context, viewport, marks, {
+      paper: tone?.key || "light",
+      skipTextIds,
+      fontFamily: labelFont || undefined
+    });
+    drawRegionBlocks(context, viewport, rasters, { only: "block" });
+    drawRegionBlocks(context, viewport, rasters, { only: "shape-text" });
+    if (number && labelFont) paintPageNumber(context, viewport, number, paperNumberColor(tone || {}), labelFont, part);
+    const placed = {
+      canvas,
+      // Where it goes on the page, in points: its corner from the part's
+      // top-left, and its size.
+      x: part[0] + (tile.x / scale),
+      y: part[3] - ((tile.y + canvas.height) / scale),
+      w: canvas.width / scale,
+      h: canvas.height / scale,
+      whole: tile.whole
+    };
+    if (onTile) {
+      // Handed on and let go at once: a poster's tiles are not all held.
+      // eslint-disable-next-line no-await-in-loop
+      await onTile(placed);
+      canvas.width = 0;
+    } else tiles.push(placed);
+  }
   // The words without the pixels: all the text layer needs, and small enough
   // to keep until every page is drawn.
   const words = rasters
     .filter((raster) => raster.words?.length)
     .map((raster) => ({ block: raster.block, words: raster.words, wordScale: raster.wordScale }));
-  return { canvas, tone, words };
+  return { tiles, tone, words, box: part };
 }
 
 // ── The words, selectable ───────────────────────────────────────────────────
@@ -605,17 +691,34 @@ export async function buildCanvasPdfBytes() {
     // corner at (0, 842), so its box does not start at the origin; the page
     // written here is given the same box, so the Block words laid over it
     // (rasterPlacement, in the source page's user space) land on their pictures.
-    const { width, height } = pdfPage.getViewport({ scale: 1 });
-    const [boxX = 0, boxY = 0] = Array.isArray(pdfPage.view) ? pdfPage.view : [];
-    const drawn = await renderCanvasPageExact(pageNumber, { number: numbersInPicture ? `${pageNumber} / ${total}` : null });
-    if (!drawn || token !== pdfOpenToken) return null;
-    const image = await out.embedJpg(await canvasJpegBytes(drawn.canvas));
-    /* eslint-enable no-await-in-loop */
-    drawn.canvas.width = 0; // let the pixels go before the next page renders
+    //
+    // ...and a Boundless page is cut to what is on it (exportPageBox,
+    // src/documents/canvas-extent.js): the file's page is that part of it, in
+    // the same user space, unnumbered — it has no foot of its own.
+    const setup = sheetSetupForPage(state.meta?.notebook, pageNumber);
+    const boundless = sheetFit(setup) === "boundless";
+    const view = Array.isArray(pdfPage.view) ? pdfPage.view.map(Number) : [0, 0, 595, 842];
+    const part = boundless ? exportPageBox(setup, view, canvasPageRects(pageNumber)) : view;
+    const [boxX, boxY] = part;
+    const width = part[2] - part[0];
+    const height = part[3] - part[1];
+    const label = numbered && !boundless ? `${pageNumber} / ${total}` : null;
     const page = out.addPage([width, height]);
     if (boxX || boxY) page.setMediaBox(boxX, boxY, width, height);
-    page.drawImage(image, { x: boxX, y: boxY, width, height });
-    drawnPages.push({ page, pdfPage, pageNumber, width, boxX, boxY, tone: drawn.tone });
+    const drawn = await renderCanvasPageExact(pageNumber, {
+      number: numbersInPicture ? label : null,
+      box: part,
+      onTile: async (tile) => {
+        const image = await out.embedJpg(await canvasJpegBytes(tile.canvas));
+        // One picture of the whole page goes exactly over it, as it always
+        // has; tiles each at their own place.
+        if (tile.whole) page.drawImage(image, { x: boxX, y: boxY, width, height });
+        else page.drawImage(image, { x: tile.x, y: tile.y, width: tile.w, height: tile.h });
+      }
+    });
+    if (!drawn || token !== pdfOpenToken) return null;
+    /* eslint-enable no-await-in-loop */
+    drawnPages.push({ page, pdfPage, pageNumber, width, boxX, boxY, tone: drawn.tone, label });
     if (drawn.words.length) wordsByPage.push({ page, pdfPage, words: drawn.words });
   }
   await writeCanvasWords(out, wordsByPage);
@@ -623,11 +726,12 @@ export async function buildCanvasPdfBytes() {
   // The numbers after the words, so copying a page gives what is written on
   // it first and its number last, the order it is read in.
   if (numbered && !numbersInPicture) {
-    drawnPages.forEach(({ page, pageNumber, width, boxX, boxY, tone }) => {
+    drawnPages.forEach(({ page, width, boxX, boxY, tone, label }) => {
       // Of every page in the Canvas: "3 / 12", as it is on screen. In the
       // screen's colour for it (styles/53-handwriting.css): the paper's own
       // words at 60% on the paper — the grey it has always been on White.
-      const label = `${pageNumber} / ${total}`;
+      // None on a Boundless page.
+      if (!label) return;
       const labelWidth = font.widthOfTextAtSize(label, CANVAS_NUMBER_SIZE);
       const [r, g, b] = parseHex(paperNumberColor(tone || {})) || [115, 115, 115];
       page.drawText(label, {

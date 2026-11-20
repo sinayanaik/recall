@@ -53,6 +53,7 @@ import {
   setNotebookPageSetup
 } from "./notebook.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK } from "./doc-slot.js?v=__BUILD__";
+import { canvasDragLimits } from "./canvas-extent.js?v=__BUILD__";
 import { marksOffPage } from "./pdf-margins.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 import { notebookPaperPreference, notebookSetupPreference, writeNotebookSetupPreference } from "../storage/ink-prefs.js?v=__BUILD__";
@@ -125,11 +126,12 @@ function setupFromUnit(text) {
 }
 
 function setupSizeNote(setup) {
+  if (setup.fit === "boundless") return "No size · as far as what is on it reaches";
   const w = setup.w / SHEET_PT_PER_MM;
   const h = setup.h / SHEET_PT_PER_MM;
   const inches = `${Math.round((setup.w / 72) * 100) / 100} × ${Math.round((setup.h / 72) * 100) / 100} in`;
   const turn = setup.w > setup.h ? "Landscape" : (setup.w === setup.h ? "Square" : "Portrait");
-  return `${Math.round(w)} × ${Math.round(h)} mm · ${inches} · ${turn}`;
+  return `${Math.round(w)} × ${Math.round(h)} mm · ${inches} · ${turn}${setup.fit === "grow" ? " · grows" : ""}`;
 }
 
 // ── Building ───────────────────────────────────────────────────────────────
@@ -198,13 +200,16 @@ function buildCanvasSetupDialog() {
           <p class="canvas-setup-own" data-cs-own hidden>This page has its own setup. <button type="button" class="canvas-setup-link" data-cs-action="follow">Use the Canvas's setup</button></p>
           <fieldset class="canvas-setup-group">
             <legend>Size</legend>
-            <label class="canvas-setup-field is-wide"><span>Page size</span>
+            <label class="canvas-setup-field is-wide" data-cs-sized><span>Page size</span>
               <select class="prompt-modal-input" data-cs-size>${sizes}</select></label>
             <div class="canvas-setup-seg" role="radiogroup" aria-label="Orientation">
               <button type="button" role="radio" aria-checked="false" data-cs-orient="portrait">Portrait</button>
               <button type="button" role="radio" aria-checked="false" data-cs-orient="landscape">Landscape</button>
+              <button type="button" role="radio" aria-checked="false" data-cs-orient="boundless" title="No size: the page reaches as far as what is on it">Boundless</button>
             </div>
-            <div class="canvas-setup-dims">
+            <p class="canvas-setup-hint" data-cs-boundless-note hidden>No edges — the page is as big as what is on it, with room around it to keep going, in every direction. Its PDF is cut to what is on it.</p>
+            ${setupSwitchRow("grow", "Grows as needed", "Longer or wider when what is on it reaches the edge — never smaller than this size", " data-cs-sized")}
+            <div class="canvas-setup-dims" data-cs-sized>
               ${setupLengthField("w", "Width")}
               <span class="canvas-setup-times" aria-hidden="true">×</span>
               ${setupLengthField("h", "Height")}
@@ -248,7 +253,7 @@ function buildCanvasSetupDialog() {
               <div data-cs-margin-colors>${setupSwatchRow("margin", SHEET_MARGIN_COLORS, "Margin line colour")}</div>
             </div>
           </fieldset>
-          <fieldset class="canvas-setup-group" data-cs-for="ruled grid dots cornell">
+          <fieldset class="canvas-setup-group" data-cs-for="ruled grid dots cornell" data-cs-sized>
             <legend>Margins</legend>
             <div class="canvas-setup-margins">${margins}</div>
             <p class="canvas-setup-hint" data-cs-margin-note></p>
@@ -342,10 +347,20 @@ function paintCanvasSetupDialog() {
   const own = !setupModel.create && setupModel.scope === "page" && notebookPageHasOwnSetup(setupModel.page);
   setupDialog.querySelector("[data-cs-own]").hidden = !own;
 
-  // Which parts apply to this paper.
+  // Which parts apply to this paper — and to a page with a size: a Boundless
+  // page has no size to choose, no margins and no Cornell layout (its foot
+  // and its top are wherever what is on it reaches).
+  const boundless = s.fit === "boundless";
   setupDialog.querySelectorAll("[data-cs-for]").forEach((node) => {
     node.hidden = !node.dataset.csFor.split(" ").includes(pattern);
   });
+  setupDialog.querySelectorAll("[data-cs-sized]").forEach((node) => {
+    if (boundless) node.hidden = true;
+    else if (!node.dataset.csFor) node.hidden = false;
+  });
+  setupDialog.querySelector("[data-cs-boundless-note]").hidden = !boundless;
+  setupDialog.querySelectorAll('[data-cs-pattern="cornell"]').forEach((node) => { node.hidden = boundless; });
+  setupSetPressed('[data-cs-toggle="grow"]', () => s.fit === "grow");
   setupDialog.querySelectorAll("[data-cs-needs-major]").forEach((node) => {
     if (!node.hidden) node.hidden = !s.majorEvery;
   });
@@ -355,7 +370,11 @@ function paintCanvasSetupDialog() {
   // Size.
   const sizeSelect = setupDialog.querySelector("[data-cs-size]");
   setupSetValue(sizeSelect, s.size);
-  setupSetPressed("[data-cs-orient]", (node) => (s.w === s.h ? false : (node.dataset.csOrient === "landscape") === (s.w > s.h)));
+  setupSetPressed("[data-cs-orient]", (node) => {
+    if (node.dataset.csOrient === "boundless") return boundless;
+    if (boundless || s.w === s.h) return false;
+    return (node.dataset.csOrient === "landscape") === (s.w > s.h);
+  });
   setupSetPressed("[data-cs-unit]", (node) => node.dataset.csUnit === setupLengthUnit);
   setupDialog.querySelectorAll("[data-cs-unit-label]").forEach((node) => { node.textContent = setupLengthUnit; });
   const len = (key) => setupDialog.querySelector(`[data-cs-len="${key}"]`);
@@ -428,7 +447,7 @@ function setSetupLength(key, typed) {
 // A pattern's own lines, at the page's size and on its paper.
 function setupForPattern(pattern) {
   const s = setupModel.setup;
-  return { ...sheetPatternDefaults(pattern), w: s.w, h: s.h, paper: s.paper, line: s.line, dash: s.dash };
+  return { ...sheetPatternDefaults(pattern), w: s.w, h: s.h, paper: s.paper, line: s.line, dash: s.dash, fit: s.fit };
 }
 
 function onCanvasSetupClick(event) {
@@ -443,10 +462,22 @@ function onCanvasSetupClick(event) {
     // Every page starts from the Canvas's setup; one page from its own.
     setupModel.remember = setupModel.scope === "all";
     paintCanvasSetupDialog();
+  } else if (d.csOrient === "boundless") {
+    if (setupModel.setup.fit !== "boundless") {
+      // What the switch said, kept for coming back to a size.
+      setupModel.growChoice = setupModel.setup.fit === "grow";
+      changeSetup({ fit: "boundless" });
+    }
   } else if (d.csOrient) {
     const { w, h } = setupModel.setup;
     const landscape = d.csOrient === "landscape";
-    if ((w > h) !== landscape && w !== h) changeSetup({ w: h, h: w });
+    // Back from Boundless to a page with a size: as it was set up before, and
+    // growing if it was.
+    const fit = setupModel.setup.fit === "boundless" ? (setupModel.growChoice ? "grow" : "fixed") : setupModel.setup.fit;
+    if ((w > h) !== landscape && w !== h) changeSetup({ w: h, h: w, fit });
+    else if (fit !== setupModel.setup.fit) changeSetup({ fit });
+  } else if (d.csToggle === "grow") {
+    changeSetup({ fit: setupModel.setup.fit === "grow" ? "fixed" : "grow" });
   } else if (d.csUnit) {
     setupLengthUnit = d.csUnit === "in" ? "in" : "mm";
     setupDialog.querySelectorAll("[data-cs-len]").forEach((input) => { if (document.activeElement === input) input.blur(); });
@@ -476,7 +507,7 @@ function onCanvasSetupClick(event) {
     paintCanvasSetupDialog();
   } else if (d.csAction === "reset") {
     const s = setupModel.setup;
-    changeSetup({ ...sheetPatternDefaults(s.pattern), w: s.w, h: s.h, paper: s.paper });
+    changeSetup({ ...sheetPatternDefaults(s.pattern), w: s.w, h: s.h, paper: s.paper, fit: s.fit });
   } else if (d.csAction === "cancel") {
     closeCanvasSetupDialog();
   } else if (d.csAction === "apply") {
@@ -578,7 +609,11 @@ async function applyCanvasSetupDialog() {
   }
   if (!hasNotebook()) { closeCanvasSetupDialog(); return; }
   const all = chosen.scope === "all" || notebookPageCount() < 2;
-  const boxes = notebookPageBoxes().map((box, index) => ((all || index + 1 === chosen.page) ? sheetBox(setup) : box));
+  // A page that grows reaches whatever is right of it and under it, and a
+  // Boundless page reaches everything: only what one cannot reach is asked
+  // about (canvasDragLimits — how far it may grow to).
+  const reach = canvasDragLimits(setup.fit, sheetBox(setup));
+  const boxes = notebookPageBoxes().map((box, index) => ((all || index + 1 === chosen.page) ? reach : box));
   const off = canvasNewlyOffPage(boxes);
   hideCanvasSetupDialog();
   if (off && !(await confirmCanvasOffEdge(off))) {

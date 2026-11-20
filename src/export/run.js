@@ -25,6 +25,7 @@ import { buildCornellFlatDocument, buildCornellPrintDocument, buildHighlightsExp
 import { collectDeckHighlightsForExport } from "../panels/highlights-panel.js?v=__BUILD__";
 import { preloadRegionImages } from "../documents/pdf-region-embed.js?v=__BUILD__";
 import { exportSql } from "./sql.js?v=__BUILD__";
+import { buildCanvasHtml } from "./canvas-html.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
@@ -858,6 +859,45 @@ export async function exportCanvasPdf() {
   }
 }
 
+// The Canvas as one web page (buildCanvasHtml, src/export/canvas-html.js):
+// vector paper and ink, real words, and every picture in the file as itself,
+// so a GIF moves. Downloaded, like the PDF.
+export async function exportCanvasHtml() {
+  const blocked = documentExportUnavailableReason();
+  if (blocked) {
+    setStatus(blocked, "error");
+    return;
+  }
+  setStatus("Preparing the Canvas web page…");
+  setExportBusy(true);
+  try {
+    const result = await buildCanvasHtml({
+      onProgress: (step, done, total) => {
+        if (step === "pictures" && total) setStatus(`Preparing the Canvas web page — picture ${done} of ${total}…`);
+      }
+    });
+    if (!result) {
+      setStatus(documentExportEmptyMessage(), "error");
+      return;
+    }
+    const url = URL.createObjectURL(new Blob([result.html], { type: "text/html;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = result.name;
+    (el.app || document.body).appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+    const missed = result.missing ? ` ${result.missing} picture${result.missing === 1 ? "" : "s"} could not be read and keep their web address.` : "";
+    setStatus(`Exported ${result.pages} Canvas page${result.pages === 1 ? "" : "s"} as one web page.${missed}`);
+  } catch (error) {
+    console.error("Canvas web page export failed", error);
+    setStatus("Could not export the Canvas as a web page.", "error");
+  } finally {
+    setExportBusy(false);
+  }
+}
+
 // The notes with no pages under them: every annotated highlight, grouped by the
 // page it is on. Straight through the highlights pipeline with annotatedOnly
 // and groupByPage — one call site, one option object, so the menu row cannot
@@ -875,9 +915,10 @@ export function exportDocumentNotesPdf({ theme } = {}) {
 
 export function handleExportDocumentAction(action, { theme } = {}) {
   if (el.viewExportMenu) el.viewExportMenu.hidden = true;
-  // The Canvas has one export, whichever row reached here.
+  // The Canvas has two exports: the web page, and the PDF for every other row.
   if (onCanvasSlot()) {
-    exportCanvasPdf();
+    if (action === "canvas-html") exportCanvasHtml();
+    else exportCanvasPdf();
     return;
   }
   if (action === "original") {
