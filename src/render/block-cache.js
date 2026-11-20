@@ -1915,15 +1915,30 @@ export function placeBlockNodes(parent, groups, { beforeRemove = null } = {}) {
 // anything that split or merged blocks has no honest pairing to offer.
 function placeAndCarry(parent, groups, fresh, isEdit) {
   const snapshots = new Map();
+  const depths = new Map();
   const removed = placeBlockNodes(parent, groups, {
     beforeRemove: isEdit ? (node) => {
       const saved = scrollSnapshot(node);
       if (saved) snapshots.set(node, saved);
+      if (node.dataset?.outlineDepth !== undefined) depths.set(node, node.dataset.outlineDepth);
     } : null
   });
-  if (!isEdit || !snapshots.size) return [];
+  if (!isEdit) return [];
   const freshElements = fresh.filter((node) => node.nodeType === 1);
   if (freshElements.length !== removed.length) return [];
+  // The section-line step (src/notes/section-lines.js) the replaced block was
+  // set in, carried onto its replacement as it goes in. It is otherwise written
+  // by applyNotesFoldState from finalizeRenderedSurface, a frame or two AFTER
+  // enhancement — so a highlight made in a paragraph, a table or a code block
+  // under a heading drew the rebuilt block one step to the left (and its line
+  // gone) for ~200ms, then put it back: the words jumped sideways and down.
+  // A block whose depth really changed (a heading was edited) is corrected by
+  // that same pass, as before.
+  removed.forEach((node, i) => {
+    const depth = depths.get(node);
+    if (depth !== undefined && freshElements[i].dataset.outlineDepth === undefined) freshElements[i].dataset.outlineDepth = depth;
+  });
+  if (!snapshots.size) return [];
   const carry = [];
   removed.forEach((node, i) => {
     const saved = snapshots.get(node);

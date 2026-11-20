@@ -29,6 +29,7 @@
 //                   Canvas — never deck, notebook or flashcard? (NOMENCLATURE.md)
 //   help-coverage   does the Help guide tell of every feature a person needs
 //                   told about, and of none that has gone?
+//   selector-audit  is every control a browser check presses still in the app?
 //   vendor          are the vendored libraries on disk, unmodified, and
 //                   precached? (a hole here is a blank page offline, not a
 //                   missing feature — they are blocking tags before main.js)
@@ -346,6 +347,12 @@ const checks = [
   // the names they own. Nothing checked the manual before, and seven features
   // in thirty commits had reached the code and not the guide.
   ["help-coverage ", ["node", ["tools/help-coverage-check.mjs"], ROOT]],
+  // Does every control a browser check presses still exist? A check that
+  // presses a button that moved throws and ends with no tally, taking every
+  // case after it along — handwriting-check ran none of its last four thousand
+  // lines for days that way. This reads the checks' selectors and finds each
+  // in the app, with no browser, in a second.
+  ["selector-audit", ["node", ["tools/selector-audit.mjs"], ROOT]],
   ["vendor        ", ["node", ["tools/vendor-sync.mjs", "--check"], ROOT]],
   ["precache      ", ["node", ["tools/precache-check.mjs"], ROOT]],
   // Needs no browser and no network — it loads the vendored marked directly and

@@ -100,13 +100,17 @@ const PROBE = async (cases) => {
   await settle(300);
 
   const para = (i) => `Para ${i} alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo.`;
-  const lines = ["# Repaint stability", ""];
+  // A title, then sections: every block below is in a section's step
+  // (src/notes/section-lines.js), which is what the per-frame step check needs.
+  const lines = ["# Repaint stability", "", "## Prose and code", ""];
   for (let i = 0; i < 60; i += 1) lines.push(para(i), "");
   // Tall, with lines far wider than any viewport: the block that jumped.
   lines.push("```js");
   for (let i = 0; i < 60; i += 1) lines.push(`const value${i} = compute(${i}); // QQ${i}QQ ${"x".repeat(i % 3 === 0 ? 220 : 10)} TAIL${i}`);
   lines.push("```", "");
   for (let i = 60; i < 90; i += 1) lines.push(para(i), "");
+  // Under a section of its own, so the table is two steps in, not one.
+  lines.push("## A wide table", "");
   lines.push(`| ${Array.from({ length: 14 }, (_, c) => `Head${c}`).join(" | ")} |`, `|${" --- |".repeat(14)}`);
   for (let r = 0; r < 40; r += 1) lines.push(`| ${Array.from({ length: 14 }, (_, c) => `TT${r}x${c}TT wide cell`).join(" | ")} |`);
   lines.push("");
@@ -191,6 +195,26 @@ const PROBE = async (cases) => {
     });
     observer.observe(view, { childList: true });
 
+    // The section-line step the edited block is set in (src/notes/section-
+    // lines.js): the rebuilt block — a table's scroller included — must be in
+    // it on every frame, not only once the next full pass writes it again.
+    // That was d81b270's regression: one step left and back, ~200ms after.
+    const depthOf = () => topLevelOf(textRange(needle)?.startContainer)?.dataset?.outlineDepth || "";
+    const depthBefore = depthOf();
+    // Watched as each block goes IN, not frame by frame. The rebuilt block (or
+    // a table's new scroller) used to be inserted without its step, laid out
+    // that way by the scroll anchoring and the sideways-scroll carry inside the
+    // same task, and given its step back ~200ms later: no frame ever showed a
+    // block without one, but the view had already been moved for the narrower
+    // layout. A MutationObserver runs before the task ends, so it sees the
+    // block as it went in.
+    let depthLost = 0;
+    const stepWatch = new MutationObserver((records) => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node.nodeType === 1 && node.parentElement === view && !/^H1$/.test(node.tagName) && !node.dataset.outlineDepth) depthLost += 1;
+      }
+    });
+    stepWatch.observe(view, { childList: true });
     let worst = { dx: 0, dy: 0, t: 0 };
     let stop = false;
     const t0 = performance.now();
@@ -209,6 +233,7 @@ const PROBE = async (cases) => {
     await settle(900);
     stop = true;
     observer.disconnect();
+    stepWatch.disconnect();
     results.push({
       name,
       action: outcome?.action || null,
@@ -218,7 +243,10 @@ const PROBE = async (cases) => {
       sideways: Boolean(sideways),
       followers: followers.length,
       followersRemoved,
-      freshLeft: view.querySelectorAll("[data-fresh-block]").length
+      freshLeft: view.querySelectorAll("[data-fresh-block]").length,
+      depthBefore,
+      depthAfter: depthOf(),
+      depthLost
     });
   }
   return results;
@@ -406,6 +434,9 @@ async function run() {
         check(r.followers > 0 && r.followersRemoved === 0, `${label}: the blocks after it are not moved`,
           `${r.followersRemoved} of ${r.followers} detached`);
         check(r.freshLeft === 0, `${label}: no block is left marked fresh`, `${r.freshLeft} still marked`);
+        check(r.depthBefore === "1" && r.depthAfter === r.depthBefore && r.depthLost === 0,
+          `${label}: the rebuilt block goes in already in its section's step`,
+          `depth ${r.depthBefore || "none"} → ${r.depthAfter || "none"}; ${r.depthLost} block(s) went in without their step`);
       }
       await page.close();
     }

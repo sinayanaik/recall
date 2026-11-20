@@ -989,17 +989,20 @@ try {
   // disagreeing is exactly the failure — meta says three pages, the file has two.
   const pages = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    // The page group is on the pen's RAIL now, not in the tab row: that row is a
-    // nowrap line and five more controls in it clipped the tab labels mid-word.
-    // Pressed with pointerdown, which is what the rail listens for.
-    const board = document.getElementById("documentInkRail");
-    const press = (sel) => board.querySelector(sel).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 31, cancelable: true }));
+    // Adding a page is ＋□ beside the page number now (f179cd2 took the page
+    // group off the pen's rail; ⋯ → Canvas pages and the ＋ Page pill are the
+    // other two ways, asserted after this case). This pressed a rail button
+    // that no longer existed, threw, and took every case below it with it —
+    // tools/selector-audit.mjs now catches a selector like that statically.
+    const addPageBtn = document.getElementById("documentAddPageBtn");
     const inkOn = (n) => (api.state.meta.pdfHighlights || [])
       .filter((r) => r.kind === "ink" && Number(r.page) === n).length;
 
     const before = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
-    press('[data-hw-action="add-page"]');
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(150);
+    addPageBtn.click();
     for (let i = 0; i < 60 && api.currentPdfPageCount() < before.doc + 1; i += 1) await settle(100);
     const added = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
@@ -1105,6 +1108,55 @@ try {
     `stored ink on page(s): ${pages.savedInkPages.join(", ") || "none"}`);
   check("...and the library row knows it is a notebook", pages.pageCount === pages.afterMeta,
     `pageCount = ${pages.pageCount}`);
+
+  // The other two ways to add a Canvas page: ⋯ → Canvas pages → Add a page at
+  // the end, and the ＋ Page pill in the gap under a page, which puts a blank
+  // page BETWEEN that page and the next — so what was on the next page moves
+  // down one with it. Both torn out again afterwards, so the cases below see
+  // the Canvas this one found.
+  const morePages = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const inkOn = (n) => (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink" && Number(r.page) === n).length;
+    const count = () => ({ meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount() });
+    const waitFor = async (n) => { for (let i = 0; i < 60 && api.currentPdfPageCount() !== n; i += 1) await settle(100); await settle(200); };
+    const tearOut = async (n) => {
+      api.scrollToDocumentPage(n, 0, { smooth: false });
+      await settle(250);
+      document.querySelector('#documentMoreMenu [data-document-action="hw-tear-out"]').click();
+      await settle(200);
+      document.getElementById("confirmModalOkBtn").click();
+    };
+    const start = count();
+    const inkStart = inkOn(1);
+    const endRow = document.querySelector('#documentMoreMenu [data-document-action="hw-page-end"]');
+    endRow?.click();
+    await waitFor(start.doc + 1);
+    const atEnd = count();
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(300);
+    const pill = document.querySelector('#documentStage .canvas-page-insert[data-insert-after="1"]');
+    const pillShown = Boolean(pill && pill.getBoundingClientRect().height > 0);
+    pill?.click();
+    await waitFor(start.doc + 2);
+    const between = count();
+    const inkAfterPill = { one: inkOn(1), two: inkOn(2) };
+    // Put the Canvas back: the blank page the pill made (2), then the one at the end.
+    await tearOut(2);
+    await waitFor(start.doc + 1);
+    await tearOut(api.currentPdfPageCount());
+    await waitFor(start.doc);
+    return { start, inkStart, endRow: Boolean(endRow), atEnd, pillShown, between, inkAfterPill, back: count(), inkBack: inkOn(1) };
+  }`);
+  check("⋯ → Add a page at the end adds one, to the document as well as the record",
+    morePages.endRow && morePages.atEnd.meta === morePages.start.meta + 1 && morePages.atEnd.doc === morePages.start.doc + 1,
+    JSON.stringify({ row: morePages.endRow, start: morePages.start, atEnd: morePages.atEnd }));
+  check("the ＋ Page pill under a page puts a blank page right after it",
+    morePages.pillShown && morePages.between.doc === morePages.start.doc + 2 && morePages.between.meta === morePages.start.meta + 2
+      && morePages.inkAfterPill.one === morePages.inkStart && morePages.inkAfterPill.two === 0,
+    JSON.stringify({ shown: morePages.pillShown, between: morePages.between, ink: morePages.inkAfterPill }));
+  check("...and tearing both out again leaves the Canvas as it was",
+    morePages.back.doc === morePages.start.doc && morePages.back.meta === morePages.start.meta && morePages.inkBack === morePages.inkStart,
+    JSON.stringify({ back: morePages.back, ink: morePages.inkBack }));
 
   // ── 5. A markdown block, moved, and a second device ─────────────────────
   //
@@ -1468,6 +1520,14 @@ try {
     api.writeBlockStyle(made.id, { fit: true });
     await settle(700);
     const afterFit = record(made.id);
+    // Following its words again, a Block is as wide as its longest line (up to
+    // the Canvas's reading width, ddb4c31/d81b270) and as tall as the lines at
+    // that width — so it may come out wider and SHORTER than the hand-set box
+    // the words had grown. What must hold is that none of them is cut off.
+    const overflowingAfterFit = (() => {
+      const body = node().querySelector(".pdf-block-body");
+      return body.scrollHeight > body.clientHeight + 2;
+    })();
 
     // ── Picked up, deleted, and put back ─────────────────────────────────
     api.selectBlock(made.id);
@@ -1531,7 +1591,7 @@ try {
       spotFound: Boolean(spot), made: Boolean(made), openedOnIt, rowInSheet,
       madeBox: made ? { w: made.w, h: made.h } : null,
       plain, painted, styledRecord: styledRecord.style || null, storedStyle, untouched, bare,
-      overflowing, setBox: { h: setBox.h, y: setBox.y }, beforeFit: { h: beforeFit.h, y: beforeFit.y }, afterFit: { h: afterFit.h, y: afterFit.y },
+      overflowing, overflowingAfterFit, setBox: { h: setBox.h, y: setBox.y, w: setBox.w }, beforeFit: { h: beforeFit.h, y: beforeFit.y, w: beforeFit.w }, afterFit: { h: afterFit.h, y: afterFit.y, w: afterFit.w },
       ring, gone, buried, backAgain: Boolean(backAgain), stillBuried,
       nudgedBy: nudged.x - (backAgain ? backAgain.x : 0), copies, copyOffset: copy ? copy.x - nudged.x : null,
       zWas, zNow, inkDrawn, blocksBeforeUndo, afterUndo, afterRedoY,
@@ -1576,8 +1636,12 @@ try {
   // A height set by hand is the least the block can be, never a box its words
   // are cut off in: it grows to hold them all the same.
   check("a block whose height was set by hand still grows to hold its words",
-    !styling.overflowing && styling.beforeFit.h > styling.setBox.h && styling.afterFit.h >= styling.beforeFit.h - 1,
-    `${styling.setBox.h} → ${styling.beforeFit.h} → ${styling.afterFit.h} points, overflowing=${styling.overflowing}`);
+    !styling.overflowing && styling.beforeFit.h > styling.setBox.h,
+    `${styling.setBox.h} → ${styling.beforeFit.h} points, overflowing=${styling.overflowing}`);
+  check("...and set to follow its words again, it fits them: none cut off, no wider than the reading width allows",
+    !styling.overflowingAfterFit && styling.afterFit.w >= styling.beforeFit.w - 1
+      && (styling.afterFit.w > styling.beforeFit.w + 1 ? styling.afterFit.h < styling.beforeFit.h : Math.abs(styling.afterFit.h - styling.beforeFit.h) <= 2),
+    `${styling.beforeFit.w}x${styling.beforeFit.h} → ${styling.afterFit.w}x${styling.afterFit.h} points, overflowing=${styling.overflowingAfterFit}`);
   check("...growing downward, with its top edge held still",
     styling.beforeFit.y === styling.setBox.y - (styling.beforeFit.h - styling.setBox.h),
     `y ${styling.setBox.y} → ${styling.beforeFit.y} as the height went `
@@ -1745,10 +1809,15 @@ try {
       errs: window.__errs.slice(0, 4)
     };
   }`);
-  // The width is the reader's: it used to be pulled in to the first words,
-  // and a block then had to be dragged wide again for the next sentence.
-  check("a block keeps the width it was given, whatever its first words",
-    hugging.labelled.w === 240, `${hugging.labelled.w}pt wide for "A short label", against the 240pt default`);
+  // A Block hugs its words (4d63a88, 7a610f7): put down at the default width,
+  // it is drawn in to "A short label" — it used to keep 240pt of empty card.
+  // A width dragged by hand is the reader's, and says so on the record (wHand),
+  // which is what keeps it when the words are typed again.
+  check("a new block is drawn in to its first words",
+    hugging.labelled.w < 240 && hugging.labelled.w >= 40, `${hugging.labelled.w}pt wide for "A short label", against the 240pt default`);
+  check("...and a width dragged by hand is kept as the reader's",
+    hugging.widened.wHand === true && hugging.widened.w > hugging.labelled.w + 100,
+    `${hugging.labelled.w} → ${hugging.widened.w}pt, wHand=${hugging.widened.wHand}`);
   // The top edge and its corners joined them for diagrams (src/documents/
   // pdf-blocks.js, RESIZE_EDGES): a box in a flowchart is sized from whichever
   // side the next box is on.
@@ -5292,6 +5361,13 @@ try {
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,
     [...sheet.errs, ...picture.errs].join(" | "));
+} catch (error) {
+  // A case that throws ends the run, and everything after it goes unasked. It
+  // used to end it with no tally at all ("no result line"), naming nothing: a
+  // button the check pressed had moved, and four thousand lines of cases had
+  // not run for days before anyone could tell. Now it is a failure with its
+  // own name and where it came from.
+  check("the check ran to the end", false, String(error?.stack || error).split("\n").slice(0, 3).join(" · "));
 } finally {
   clearTimeout(watchdog);
   try { client.close(); } catch (_) { /* already gone */ }

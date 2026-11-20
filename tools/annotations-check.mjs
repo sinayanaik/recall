@@ -976,13 +976,35 @@ sections.push(async () => {
     const node = document.querySelector('[data-pdf-block="' + made.id + '"]');
     const area = node?.querySelector(".pdf-block-inline textarea");
     const focused = Boolean(area) && document.activeElement === area;
-    const short = node.getBoundingClientRect().height;
-    const wide = node.getBoundingClientRect().width;
-    area.value = "a first line\\nand a second\\nand a third";
-    area.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle(30);
-    const tall = node.getBoundingClientRect().height;
-    const sameWidth = Math.abs(node.getBoundingClientRect().width - wide) < 1;
+    // A Block hugs its words (4d63a88, 7a610f7, ddb4c31): a new one is drawn
+    // in, opens out with its longest line as it is typed, and is drawn in again
+    // when the words are cut — on a PDF never past the page's right edge. So
+    // the width follows the LONGEST line and the height follows the lines:
+    // shorter lines typed under the first make it taller and not wider.
+    const rect = () => node.getBoundingClientRect();
+    const type = async (text) => {
+      area.value = text;
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle(60);
+      return rect();
+    };
+    const empty = rect();
+    const first = await type("a first line, the longest of the three");
+    const short = first.height;
+    const lines = await type("a first line, the longest of the three\\nand a second\\nand a third");
+    const tall = lines.height;
+    // Not wider: the longest line is still the first. (A pixel or two narrower
+    // is the caret's own room at the end of a line it is no longer on.)
+    const sameWidth = lines.width <= first.width + 1 && lines.width >= first.width - 12;
+    // A Block is put down at a default width and drawn in to its words.
+    const opened = first.width <= empty.width + 1 && first.width > 40;
+    const longer = await type("a first line, the longest of the three\\nand a second\\nand then a third line that is a good deal longer than the first one was");
+    const widened = longer.width > first.width + 10;
+    const pageBox = document.querySelector('#documentStage .pdf-page[data-page-number="4"]')?.getBoundingClientRect();
+    const huge = await type("w".repeat(400));
+    const insidePage = Boolean(pageBox) && huge.right <= pageBox.right + 1;
+    const cut = await type("a first line\\nand a second\\nand a third");
+    const drawnIn = cut.width < longer.width - 10;
     api.commitBlockEdit();
     await settle(300);
     const putAway = !api.isInlineBlockEditorOpen() && !api.isBlockPlacementArmed() && button.getAttribute("aria-pressed") === "false";
@@ -994,11 +1016,16 @@ sections.push(async () => {
     await settle(60);
     const offAgain = !api.isBlockPlacementArmed() && button.getAttribute("aria-pressed") === "false" && api.inkTool() === "pen";
     api.selectBlock(null);
-    return { visible, flyoutText, armed, lit, penKept, made: api.documentBlocks().length - before, focused, grew: tall > short + 10, sameWidth, putAway, md, offAgain };
+    return { visible, flyoutText, armed, lit, penKept, made: api.documentBlocks().length - before, focused, grew: tall > short + 10, sameWidth, opened, widened, insidePage, drawnIn,
+      widths: { empty: Math.round(empty.width), first: Math.round(first.width), lines: Math.round(lines.width), longer: Math.round(longer.width), huge: Math.round(huge.width), cut: Math.round(cut.width) },
+      putAway, md, offAgain };
   }`);
   check("Insert is in the top row, where Text was; the Shapes list has no Text", placed.visible && !placed.flyoutText, JSON.stringify(placed));
   check("one press arms a block, lit, and leaves the pen as it was", placed.armed && placed.lit && placed.penKept, JSON.stringify(placed));
-  check("a tap (a mouse's too) puts it there, open in place, and it grows taller, not wider, as lines are typed", placed.made === 1 && placed.focused && placed.grew && placed.sameWidth, JSON.stringify(placed));
+  check("a tap (a mouse's too) puts it there, open in place, and it grows taller, not wider, as shorter lines are typed", placed.made === 1 && placed.focused && placed.grew && placed.sameWidth, JSON.stringify(placed));
+  check("...it is drawn in to its first line, and opens out for a longer one", placed.opened && placed.widened, JSON.stringify(placed.widths));
+  check("...never past the page's right edge, however long the line", placed.insidePage, JSON.stringify(placed.widths));
+  check("...and is drawn in again when the words are cut back", placed.drawnIn, JSON.stringify(placed.widths));
   check("putting the words down keeps them and Insert goes out; armed and pressed again it places nothing", placed.putAway && placed.md === "a first line\nand a second\nand a third" && placed.offAgain, JSON.stringify(placed));
 
   // Words typed with the old Text tool: still there, still typed in. Made by
