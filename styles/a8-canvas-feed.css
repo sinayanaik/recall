@@ -193,60 +193,51 @@
 }
 
 /* ...and the Block it will be, where it will land (src/documents/canvas-drop.js):
-   the size the Canvas gives it, following the pointer. Dashed while its size
-   is only a guess (something from another app, or not measured yet). */
+   the Block itself, drawn by the page's own renderer in the look it will
+   have, following the pointer. For the moment it is being measured, only its
+   outline; for something from another app, which says what it is only when it
+   is let go, a dashed box the size its kind will land at. */
 .canvas-drop-ghost {
   position: absolute;
   z-index: 40;
   box-sizing: border-box;
   padding: 4px 6px;
   overflow: hidden;
-  border: 2px solid var(--accent);
+  border: 2px dashed var(--accent);
   border-radius: 6px;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--text);
   font-size: 0.72rem;
   line-height: 1.3;
   pointer-events: none;
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
-.canvas-drop-ghost.is-guess {
-  border-style: dashed;
+.canvas-drop-ghost.is-outline {
+  border-style: solid;
+  border-width: 1px;
+  background: none;
 }
 
-.canvas-drop-ghost.is-pair {
+.canvas-drop-ghost.is-rendered {
   padding: 0;
   overflow: visible;
   border: 0;
+  border-radius: 0;
   background: none;
-  box-shadow: none;
+  opacity: 0.92;
+  filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--accent) 28%, transparent));
 }
 
-.canvas-drop-ghost-part {
-  position: absolute;
-  box-sizing: border-box;
-  padding: 4px 6px;
-  overflow: hidden;
-  border: 2px solid var(--accent);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
-.canvas-drop-ghost.is-guess .canvas-drop-ghost-part {
-  border-style: dashed;
+.canvas-drop-ghost .pdf-block {
+  pointer-events: none;
 }
 
 .canvas-drop-ghost-arrow {
   position: absolute;
-  height: 0;
-  border-top: 2px solid var(--accent);
-}
-
-.canvas-drop-ghost-arrow.is-down {
-  width: 0;
-  border-top: 0;
-  border-left: 2px solid var(--accent);
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
 }
 
 /* The grip beside a whole picture, listing, table or heading of the Notes,
@@ -408,4 +399,51 @@
 
 .quiz-panel.is-parts-split:is([data-split-left="handwriting"], [data-split-right="handwriting"]):is([data-split-left="cards"], [data-split-right="cards"]) .card-canvas-grip {
   display: inline-flex;
+}
+
+/* Where a value in the Cards' Style comes from: chosen here, or followed. */
+.cf-src {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+button.cf-src.is-set {
+  border-color: var(--accent);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.canvas-feed-check .cf-src {
+  margin-left: 4px;
+}
+
+/* In the Style's panel each row is its label, with where the value comes from
+   under it, and its choices beside them. */
+.cf-style-panel .cf-style-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  align-items: start;
+  gap: 4px 10px;
+}
+
+.cf-style-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding-top: 4px;
+}
+
+.cf-style-head .cf-src {
+  margin-left: 0;
+  white-space: normal;
+  text-align: left;
 }

@@ -38,14 +38,15 @@ import { canvasBlockMeasurePercent, canvasBlockWidthMode, canvasDropWidthPercent
 import { canvasItemKind, canvasSizedMarkdown, escapePlainMarkdown } from "./canvas-sizing.js?v=__BUILD__";
 import { cardArrowShape, readCardCanvasStyle } from "./card-canvas-style.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
-import { BLOCK_FILLS } from "./block-style.js?v=__BUILD__";
+import { BLOCK_FILLS, BLOCK_SHAPE_DEFAULT, compactBlockStyle } from "./block-style.js?v=__BUILD__";
+import { blockStylePreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { appendNotebookPages, hasNotebook, notebookPageCount, notebookPageSetup } from "./notebook.js?v=__BUILD__";
 import { sheetBox } from "./canvas-setup.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { newConnectorBase, newShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
 import { diagramNodes, resolveConnector } from "./pdf-connectors.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
-import { flowContentBox, flowOntoCanvas, flowWidths, lowestEdge, placeAtPoint } from "./canvas-flow.js?v=__BUILD__";
+import { flowContentBox, flowItemExtent, flowOntoCanvas, flowPlaceFromTopLeft, flowWidths, lowestEdge, placeAtPoint } from "./canvas-flow.js?v=__BUILD__";
 import { pdfPageElement, scrollToDocumentPage, whenDocumentPageReady } from "./pdf-view.js?v=__BUILD__";
 import { focusPart, openSplitPart, setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 import { isDocumentPartMode } from "../ui/split-parts.js?v=__BUILD__";
@@ -333,9 +334,11 @@ export function canvasPageGeometry(page = Math.max(1, notebookPageCount())) {
 // Its sizes from where it came are taken off first (canvasSizedMarkdown), and
 // its width comes from ◐ Canvas by its kind: words the measure, a picture
 // "Pictures land at", a table, a listing or a diagram "Tables and code land
-// at". A card takes the card style chosen in the Cards' picker. `colours`
-// keeps a highlight's colour as its Block's fill.
-export async function measureCanvasItems(items, { page, colours = true, cardStyle = readCardCanvasStyle() } = {}) {
+// at". Each takes the look of the last Block styled on the Canvas (`base`,
+// latestCanvasBlockStyle); a card's halves then what was chosen in the Cards'
+// picker's Style. `colours` (the picker's "Keep highlight colours") puts a
+// highlight's colour over the fill.
+export async function measureCanvasItems(items, { page, colours = false, cardStyle = readCardCanvasStyle(), base = latestCanvasBlockStyle() } = {}) {
   const list = (items || []).filter(Boolean);
   const geometry = canvasPageGeometry(page);
   const content = flowContentBox(geometry.box, geometry.margins);
@@ -353,7 +356,8 @@ export async function measureCanvasItems(items, { page, colours = true, cardStyl
         const halves = [];
         for (const [text, style] of [[item.q, cardStyle.q], [item.a, cardStyle.a]]) {
           const md = canvasSizedMarkdown(text || " ");
-          const bag = style && Object.keys(style).length ? { ...style } : null;
+          const merged = { ...base, ...(style || {}) };
+          const bag = Object.keys(merged).length ? merged : null;
           // eslint-disable-next-line no-await-in-loop
           const size = await measureFeedMarkdown(md, { cap, box: geometry.box, host, style: bag });
           halves.push({ md, style: bag, ...size });
@@ -364,7 +368,7 @@ export async function measureCanvasItems(items, { page, colours = true, cardStyl
       const fill = colours ? feedFillFor(item.color) : "";
       const md = item.kind === "ref" ? item.md : canvasSizedMarkdown(item.md);
       const kind = item.kind === "ref" ? "ref" : canvasItemKind(md);
-      const style = { ...(fill ? { fill } : {}), ...(kind === "picture" ? { imageWidth: 100 } : {}) };
+      const style = { ...base, ...(fill ? { fill } : {}), ...(kind === "picture" ? { imageWidth: 100 } : {}) };
       const bag = Object.keys(style).length ? style : null;
       let size;
       if (kind === "picture") {
@@ -385,6 +389,87 @@ export async function measureCanvasItems(items, { page, colours = true, cardStyl
     host.remove();
   }
   return { page: geometry.page, box: geometry.box, sized, cardStyle };
+}
+
+// The Block records (and, for a card, the arrow's two ends) one measured entry
+// becomes at `place` — what placeOnCanvas writes, and what the drop preview
+// draws before it is let go.
+export function canvasEntryRecords(entry, place, { newId = freshDocumentBlockId } = {}) {
+  const { item } = entry;
+  if (entry.pair) {
+    const group = freshFeedGroupId();
+    const qId = newId();
+    const aId = newId();
+    const [q, a] = entry.pair;
+    return {
+      blocks: [
+        feedBlockRecord({ id: qId, page: place.page, ...place.parts[0], w: q.w, h: q.h, md: q.md, style: q.style, from: item.from, group, keepWidth: true }),
+        feedBlockRecord({ id: aId, page: place.page, ...place.parts[1], w: a.w, h: a.h, md: a.md, style: a.style, from: item.from, group, keepWidth: true })
+      ],
+      arrow: { page: place.page, q: qId, a: aId, group, stacked: entry.stacked }
+    };
+  }
+  const id = newId();
+  return {
+    blocks: [feedBlockRecord({ id, page: place.page, x: place.x, y: place.y, w: entry.w, h: entry.h, md: entry.md, style: entry.style, from: item.from, keepWidth: entry.keepWidth })],
+    arrow: null
+  };
+}
+
+// The drop preview's own drawing of an entry: its Blocks as the page will draw
+// them — the same records, the same renderer (buildStaticBlock) — at the page's
+// scale, into `host`, its top-left corner at the host's. A card's arrow is a
+// straight stand-in for the connector the drop makes, in its colour, thickness
+// and dashes. Resolves to the host.
+export async function renderCanvasPreview(entry, scale, host, { arrowStyle = null } = {}) {
+  const item = flowItemFor(entry);
+  const { w, h } = flowItemExtent(item);
+  const place = flowPlaceFromTopLeft(item, 1, 0, h);
+  let n = 0;
+  const { blocks, arrow } = canvasEntryRecords(entry, place, { newId: () => `preview-${n += 1}` });
+  const viewport = {
+    scale,
+    viewBox: [0, 0, w, h],
+    width: w * scale,
+    height: h * scale,
+    convertToViewportPoint: (x, y) => [x * scale, (h - y) * scale],
+    convertToPdfPoint: (x, y) => [x / scale, h - y / scale]
+  };
+  host.replaceChildren();
+  for (const block of blocks) {
+    // eslint-disable-next-line no-await-in-loop
+    await buildStaticBlock(block, viewport, { mountIn: host });
+  }
+  if (arrow) {
+    const [q, a] = blocks;
+    const shape = cardArrowShape(newConnectorBase(), arrowStyle);
+    const from = entry.stacked ? [q.x + q.w / 2, q.y] : [q.x + q.w, q.y + q.h / 2];
+    const to = entry.stacked ? [a.x + a.w / 2, a.y + a.h] : [a.x, a.y + a.h / 2];
+    const [x1, y1] = viewport.convertToViewportPoint(...from);
+    const [x2, y2] = viewport.convertToViewportPoint(...to);
+    const width = Math.max(1, (Number(shape.width) || 1.6) * scale);
+    const dash = shape.dash === "dash" ? `${width * 3} ${width * 2}` : shape.dash === "dot" ? `${width} ${width * 1.6}` : "";
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "canvas-drop-ghost-arrow");
+    svg.setAttribute("width", String(w * scale));
+    svg.setAttribute("height", String(h * scale));
+    svg.innerHTML = `<defs><marker id="cdg-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="${shape.stroke}"/></marker></defs>`
+      + `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${shape.stroke}" stroke-width="${width}"${dash ? ` stroke-dasharray="${dash}"` : ""}${(shape.heads || [])[1] && shape.heads[1] !== "none" ? ' marker-end="url(#cdg-head)"' : ""}/>`;
+    host.appendChild(svg);
+  }
+  return host;
+}
+
+// The look of the last Block styled on this device (blockStylePreference,
+// src/storage/ink-prefs.js) — what a Block made from + Add or typed onto the
+// page starts with, and so what everything put on the Canvas from elsewhere
+// starts with too. Only what differs from a plain Block; its shape never
+// (a diagram's box is not a Block's look).
+export function latestCanvasBlockStyle() {
+  const bag = compactBlockStyle(blockStylePreference("text"));
+  delete bag.fit;
+  if (bag.shape && bag.shape !== BLOCK_SHAPE_DEFAULT) delete bag.shape;
+  return bag;
 }
 
 // What canvas-flow.js lays out for a measured entry.
@@ -431,11 +516,11 @@ function freshFeedGroupId() {
 
 // Put `items` on the Canvas. With `at` ({ page, x, y }, a drop — the top-left
 // corner the drop's preview showed) the one item goes there; without, every
-// item goes at the end. `colours` keeps each highlight's colour as its Block's
-// fill. `measured` is measureCanvasItems' answer when the caller has one
+// item goes at the end. Each takes the last Block's look; `colours` (the
+// picker's "Keep highlight colours") puts each highlight's colour over its fill. `measured` is measureCanvasItems' answer when the caller has one
 // already (a drop measured while it was dragged). Resolves to the ids made, or
 // null.
-export async function placeOnCanvas(items, { at = null, colours = true, quiet = false, measured = null } = {}) {
+export async function placeOnCanvas(items, { at = null, colours = false, quiet = false, measured = null } = {}) {
   const list = (items || []).filter(Boolean);
   if (!list.length) return null;
   if (!at && !(await bringCanvasUp())) {
@@ -483,21 +568,10 @@ export async function placeOnCanvas(items, { at = null, colours = true, quiet = 
     sized.forEach((entry, index) => {
       const place = places[index];
       if (!place) return;
-      const { item } = entry;
-      if (entry.pair) {
-        const group = freshFeedGroupId();
-        const qId = freshDocumentBlockId();
-        const aId = freshDocumentBlockId();
-        const [q, a] = entry.pair;
-        blocks.push(feedBlockRecord({ id: qId, page: place.page, ...place.parts[0], w: q.w, h: q.h, md: q.md, style: q.style, from: item.from, group, keepWidth: true }));
-        blocks.push(feedBlockRecord({ id: aId, page: place.page, ...place.parts[1], w: a.w, h: a.h, md: a.md, style: a.style, from: item.from, group, keepWidth: true }));
-        madeBlocks.push(qId, aId);
-        madeArrows.push({ page: place.page, q: qId, a: aId, group, stacked: entry.stacked });
-      } else {
-        const id = freshDocumentBlockId();
-        blocks.push(feedBlockRecord({ id, page: place.page, x: place.x, y: place.y, w: entry.w, h: entry.h, md: entry.md, style: entry.style, from: item.from, keepWidth: entry.keepWidth }));
-        madeBlocks.push(id);
-      }
+      const made = canvasEntryRecords(entry, place);
+      blocks.push(...made.blocks);
+      madeBlocks.push(...made.blocks.map((block) => block.id));
+      if (made.arrow) madeArrows.push(made.arrow);
     });
     writeDocumentBlocks([...documentBlocks(), ...blocks]);
     const arrows = madeArrows.map(({ page, q, a, group, stacked }) => {
