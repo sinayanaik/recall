@@ -1760,13 +1760,19 @@ try {
     await settle(300);
     const fromLeft = record(made.id);
 
-    // ── ...and no further than the paper ─────────────────────────────────
+    // ── ...and the paper goes with it ────────────────────────────────────
+    // Every Canvas page grows as needed (src/documents/canvas-extent.js): a
+    // resize past the edge used to stop there, so its handle stayed in reach;
+    // now the page grows out to it, which keeps the handle in reach the other
+    // way. Waited for: the page is redrawn at its new size a moment after.
     const east2 = middleOf(handle("e"));
     press(handle("e"), "pointerdown", east2);
     press(document, "pointermove", { x: east2.x + 6000, y: east2.y });
     press(document, "pointerup", { x: east2.x + 6000, y: east2.y });
     await settle(300);
     const wide = record(made.id);
+    for (let i = 0; i < 60 && api.pdfPageViewport(pageNumber).viewBox[2] < wide.x + wide.w; i += 1) await settle(80);
+    await settle(300);
     const pageRight = api.pdfPageViewport(pageNumber).viewBox[2];
 
     // ── A fixed height, dragged by its bottom edge, then fitted back ─────
@@ -1835,7 +1841,7 @@ try {
       && Math.abs((hugging.fromLeft.x + hugging.fromLeft.w) - (hugging.narrowed.x + hugging.narrowed.w)) <= 1,
     `right edge ${hugging.narrowed.x + hugging.narrowed.w} → ${hugging.fromLeft.x + hugging.fromLeft.w}, `
       + `width ${hugging.narrowed.w} → ${hugging.fromLeft.w}`);
-  check("a resize stops at the edge of the paper",
+  check("a resize past the edge of the paper takes the page with it, so its handle stays in reach",
     hugging.wide.x + hugging.wide.w <= hugging.pageRight + 1 && hugging.wide.w > hugging.fromLeft.w,
     `right edge at ${hugging.wide.x + hugging.wide.w}pt on a page ${hugging.pageRight}pt wide`);
   check("a fixed-height block is taller for a drag down its bottom edge",
