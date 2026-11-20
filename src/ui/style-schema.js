@@ -99,6 +99,11 @@ const sharedDefaults = {
   // Canvas — how a Block that follows its words takes its width once they are
   // more than a line: "balanced" (near 3:2) or "longest" (its longest line).
   canvasBlockWidthRule: "auto",
+  // Canvas — how wide a picture, and a table or a listing, lands when it is put
+  // on a Canvas from elsewhere (src/documents/block-measure.js), as a percent
+  // of the page. Its size in the Notes or on a website does not come with it.
+  canvasDropPictureWidth: "auto",
+  canvasDropWideWidth: "auto",
   // Canvas — the type of everything on a Canvas page. Every one of these is a
   // "follow" state by default (inherit / auto / the theme's ladder / the
   // paper), which writes nothing, so a Canvas nobody has styled reads exactly
@@ -689,7 +694,11 @@ export const styleControlGroups = [
         options: ["auto", "longest"],
         optionLabels: { auto: "Balanced — a box near 3:2", longest: "Longest line — a strip up to the widest" },
         hint: "How a Block takes its width once its words run past one line. Balanced lays a paragraph out in a box about half again as wide as it is tall, growing with the words, and draws it in to its widest line; Longest line widens it with its longest line up to the widest a Block grows. A Block laid out before this keeps its width until it is typed in or fitted to its words again."
-      }
+      },
+      // Not variables: block-measure.js holds them beside the measure, for
+      // what To the Canvas and a drop onto a Canvas page put down.
+      { key: "canvasDropPictureWidth", label: "Pictures land at", type: "text", probe: "number", auto: "40", hint: "How wide a picture is when it is put on a Canvas from the Notes, a PDF, a card or another app, as a percent of the page. The size it had where it came from does not come with it." },
+      { key: "canvasDropWideWidth", label: "Tables and code land at", type: "text", probe: "number", auto: "80", hint: "The widest a table, a code listing or a diagram is when it is put on a Canvas from elsewhere, as a percent of the page. A narrower one keeps its own width." }
     ]
   },
   {

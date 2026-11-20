@@ -13,13 +13,20 @@
 //     top of a page of its own;
 //   • a card is one row: its question at the left, its answer to its right
 //     with room for the arrow between, both tops level;
-//   • a drop puts the top-left corner where it was let go, kept on the page.
+//   • a drop puts the top-left corner where it was let go, kept on the page;
+//   • a card laid out "stacked" is its question above its answer;
+//   • what goes on the Canvas leaves its sizes behind (canvas-sizing.js) —
+//     a picture's width, a diagram's w=, a font size — and keeps its look;
+//   • words with no markup join their page's line ends, as a PDF's words do;
+//   • a card's style is kept to what it can be (card-canvas-style.js).
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const flow = await import(pathToFileURL(path.join(ROOT, "src/documents/canvas-flow.js")).href);
+const sizing = await import(pathToFileURL(path.join(ROOT, "src/documents/canvas-sizing.js")).href);
+const cardStyle = await import(pathToFileURL(path.join(ROOT, "src/documents/card-canvas-style.js")).href);
 
 let failures = 0;
 let ran = 0;
@@ -106,6 +113,68 @@ must("...and keeps it on the page", () => {
 
 must("the lowest edge of what is on a page", () => {
   return lowestEdge([[0, 500, 10, 520], [5, 480, 9, 700], [1, 900, 2, 950]]) === 480 && lowestEdge([]) === null;
+});
+
+must("a stacked card: the question on top, the answer under it, the arrow's room between", () => {
+  const { places } = flowOntoCanvas({ pages: [page(1)], items: [{ pair: [{ w: 120, h: 40 }, { w: 150, h: 70 }], stacked: true }, { w: 100, h: 20 }] });
+  const [card, next] = places;
+  const [q, a] = card.parts;
+  return (q.x === a.x && q.y - FLOW_PAIR_GAP === a.y + 70 && topOf(next, 20) === a.y - FLOW_GAP) || JSON.stringify(places);
+});
+
+must("a stacked card dropped keeps on the page by its whole height", () => {
+  const place = placeAtPoint({ box: A4, at: { page: 1, x: 100, y: 60 }, item: { pair: [{ w: 100, h: 40 }, { w: 100, h: 40 }], stacked: true } });
+  return place.parts[1].y >= 12 || JSON.stringify(place);
+});
+
+must("a picture's width in the Notes is not taken onto the Canvas", () => {
+  const md = sizing.canvasSizedMarkdown('Before <img src="https://x.org/a b.png" alt="A cat" class="has-custom-size" style="--notes-img-w:640px; width:640px"> after');
+  return md === "Before ![A cat](<https://x.org/a b.png>) after" || md;
+});
+
+must("...nor a diagram's w=, while its language stays", () => {
+  const md = sizing.canvasSizedMarkdown("```mermaid w=600\ngraph TD; A-->B\n```");
+  return md === "```mermaid\ngraph TD; A-->B\n```" || md;
+});
+
+must("...nor a font size; the colour stays", () => {
+  const md = sizing.canvasSizedMarkdown('<span style="color: red; font-size: 28px">big</span> and <span style="font-size:9px">small</span>');
+  return md === '<span style="color: red">big</span> and <span>small</span>' || md;
+});
+
+must("...and inside a listing nothing is touched", () => {
+  const src = "```html\n<img src=\"a.png\" style=\"width:10px\">\n```";
+  return sizing.canvasSizedMarkdown(src) === src || sizing.canvasSizedMarkdown(src);
+});
+
+must("what kind of thing it is, for its width", () => {
+  const k = sizing.canvasItemKind;
+  const got = [k("![](a.png)"), k("```js\nx\n```"), k("```mermaid\ngraph TD\n```"), k("| a | b |\n|---|---|\n| 1 | 2 |"), k("Some words"), k("Words and ![](a.png) with a long sentence that runs on and on well past a caption's length, so it is words.")];
+  return JSON.stringify(got) === JSON.stringify(["picture", "code", "diagram", "table", "text", "text"]) || JSON.stringify(got);
+});
+
+must("bare words: the page's line ends joined, a hyphen's word joined, paragraphs kept", () => {
+  const md = sizing.pdfPlainToMarkdown("The quick brown\nfox jumps over the exam-\nple dog.\n\nA *second* para-\ngraph");
+  return md === "The quick brown fox jumps over the example dog.\n\nA \\*second\\* paragraph" || JSON.stringify(md);
+});
+
+must("...a bullet starts its own line, and a link alone stays a link", () => {
+  const md = sizing.pdfPlainToMarkdown("• one\n• two\n\nhttps://example.org/x");
+  return md === "- one\n\n- two\n\n<https://example.org/x>" || JSON.stringify(md);
+});
+
+must("a card's style is kept to what it can be", () => {
+  const s = cardStyle.normalizeCardCanvasStyle({ q: { fill: "yellow", size: "14pt", nonsense: 1 }, a: { fill: "nope" }, arrow: { color: "red", width: "2.5", dash: "dash", head: "open", route: "curve" }, layout: "stacked" });
+  const bad = cardStyle.normalizeCardCanvasStyle({ arrow: { color: "#fff", width: -1, dash: "zig", head: "x", route: "loop" }, layout: "x" });
+  return (s.q.fill === "yellow" && s.q.size === 14 && !("nonsense" in s.q) && !("fill" in s.a) && s.arrow.width === 2.5 && s.layout === "stacked"
+    && bad.arrow.color === "" && bad.arrow.width === null && bad.arrow.dash === "" && bad.arrow.head === "" && bad.arrow.route === "" && bad.layout === "side") || JSON.stringify({ s, bad });
+});
+
+must("the arrow changes only what was chosen", () => {
+  const base = { type: "arrow", stroke: "#16181d", width: 1.6, dash: "solid", heads: ["none", "filled"], route: "elbow" };
+  const same = cardStyle.cardArrowShape(base, {});
+  const changed = cardStyle.cardArrowShape(base, { color: "red", dash: "dot", head: "open", route: "straight" });
+  return (JSON.stringify(same) === JSON.stringify(base) && changed.stroke === "#dc2626" && changed.dash === "dot" && changed.heads[1] === "open" && !("route" in changed) && changed.width === 1.6) || JSON.stringify({ same, changed });
 });
 
 console.log(`\ncanvas-feed-check: ${ran - failures}/${ran} passed`);

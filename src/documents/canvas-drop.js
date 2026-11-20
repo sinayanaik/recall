@@ -1,29 +1,49 @@
-// ── Dragged onto the Canvas from beside ───────────────────────────────────
+// ── Dragged onto the Canvas ───────────────────────────────────────────────
 //
-// With the Canvas side by side with the Notes, a PDF or the Cards, what is
-// dragged across and let go of over a Canvas page becomes Blocks there, its
-// top-left corner where it was let go (placeOnCanvas, ./canvas-feed.js):
+// What is dragged over a Canvas page and let go of there becomes Blocks, at
+// the place a preview showed while it was dragged (placeOnCanvas,
+// ./canvas-feed.js):
 //
 //   - a selection, from the Notes (as markdown, maths and code kept) or from a
-//     PDF's words — the browser's own drag of a selection;
+//     PDF's words (as words, the lines of the page joined);
 //   - a highlight, pressed and dragged: a <mark> of the Notes, a text run or a
 //     ▣ region of a PDF (a region goes as a live picture of its spot);
-//   - a card, by its ⠿ grip — its question, an arrow and its answer;
-//   - words or a picture from anywhere else (another app, a web page).
+//   - a card, by its ⠿ grip — its question, an arrow and its answer, in the
+//     card style chosen in the Cards' "To the Canvas" picker;
+//   - a whole picture, listing, table, diagram or heading of the Notes, by the
+//     ⠿ grip that comes up beside it (./notes-grip.js);
+//   - words, a selection or a picture from anywhere else — a web page, another
+//     PDF reader, another app — read the same way: a page's HTML as markdown
+//     (headings, lists, tables, code and pictures kept), bare words as a PDF's
+//     words, a picture file as a picture Block.
 //
-// HTML5 drag and drop, which a touch screen does not do: there, the selection
-// bar and a highlight's menu have "To the Canvas", which puts it at the end.
-// The data travels as CANVAS_ITEM_MIME (JSON of the item), with text/plain
-// beside it for anything else it is dropped on.
+// Whatever it is, it lands the size the Canvas gives its kind, not the size it
+// had where it came from (canvasSizedMarkdown, ./canvas-sizing.js; ◐ Canvas →
+// Blocks), and it lands where its preview was: the preview follows the
+// pointer at the size the Block will be, kept on the page and settling onto
+// the edges and middles of the Blocks already there (snapMove,
+// src/render/snap-guides.js).
+//
+// The parts beside the Canvas, or the Canvas in focus: a drop on a Canvas page
+// is read here either way. HTML5 drag and drop, which a touch screen does not
+// do: there, the selection bar and a highlight's menu have "To the Canvas",
+// which puts it at the end. An item travels as CANVAS_ITEM_MIME (JSON of the
+// item), with text/plain beside it for anything else it is dropped on.
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_NOTEBOOK } from "./doc-slot.js?v=__BUILD__";
-import { CANVAS_ITEM_MIME, cardItem, notesHighlightItemForMark, pdfHighlightItem, placeOnCanvas } from "./canvas-feed.js?v=__BUILD__";
+import { CANVAS_ITEM_MIME, cardItem, flowItemFor, measureCanvasItems, notesHighlightItemForMark, pdfHighlightItem, placeOnCanvas } from "./canvas-feed.js?v=__BUILD__";
+import { pdfPlainToMarkdown } from "./canvas-sizing.js?v=__BUILD__";
+import { canvasBlockMeasurePercent, canvasDropWidthPercent } from "./block-measure.js?v=__BUILD__";
+import { clampTopLeft, flowItemExtent, flowPlaceFromTopLeft, FLOW_PAIR_GAP } from "./canvas-flow.js?v=__BUILD__";
+import { blockPageBounds, blocksForPaper } from "./pdf-blocks.js?v=__BUILD__";
+import { snapMove } from "../render/snap-guides.js?v=__BUILD__";
 import { notebookPageSetup } from "./notebook.js?v=__BUILD__";
 import { sheetBox } from "./canvas-setup.js?v=__BUILD__";
 import { documentHighlightAtPoint } from "./pdf-highlights.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
+import { initNotesGrip, notesElementItem, notesGripTarget } from "./notes-grip.js?v=__BUILD__";
 import { isPartShown } from "../ui/split-parts.js?v=__BUILD__";
 import { focusPart } from "../ui/view-mode.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -46,18 +66,59 @@ function canvasIsBeside() {
   return Boolean(state.splitPart) && isPartShown("handwriting") && state.viewMode !== state.splitPart;
 }
 
-// A point over a Canvas page, in that page's own points — from the page's box
-// on screen and its setup, so the Canvas need not be the live paper to ask.
-function canvasDropPoint(pageEl, clientX, clientY) {
+// A Canvas page's box in its own points and its scale on screen, from the
+// page's box on screen and its setup — so the Canvas need not be the live
+// paper to ask.
+function canvasPageFrame(pageEl) {
   const page = Number(pageEl.dataset.pageNumber) || 1;
-  const [x0, y0, x1, y1] = sheetBox(notebookPageSetup(page));
+  const box = sheetBox(notebookPageSetup(page));
   const rect = pageEl.getBoundingClientRect();
   if (!rect.width || !rect.height) return null;
+  return { page, box, rect, scale: rect.width / (box[2] - box[0]) };
+}
+
+// A point over a Canvas page, in that page's own points.
+function canvasDropPoint(frame, clientX, clientY) {
+  const [x0, , , y1] = frame.box;
   return {
-    page,
-    x: x0 + ((clientX - rect.left) / rect.width) * (x1 - x0),
-    y: y1 - ((clientY - rect.top) / rect.height) * (y1 - y0)
+    page: frame.page,
+    x: x0 + (clientX - frame.rect.left) / frame.scale,
+    y: y1 - (clientY - frame.rect.top) / frame.scale
   };
+}
+
+// ── What is being dragged ─────────────────────────────────────────────────
+//
+// A drag that started in this page carries its item from its first moment, and
+// is measured for the page it is over while it is dragged, so the preview is
+// the Block's own size. One from another app or window can be read only when
+// it is let go; until then its preview is the size of its kind, from the
+// transfer's types.
+
+let dragItem = null;
+// A drag that started on a Canvas page itself (a picture's own drag): not
+// something to put on it again.
+let dragFromCanvas = false;
+// { key: page number, result } — measureCanvasItems' answer for that page.
+let dragMeasure = null;
+let dragMeasuring = null;
+
+function setDragItem(item) {
+  dragItem = item || null;
+  dragMeasure = null;
+  dragMeasuring = null;
+}
+
+function measureDragFor(page) {
+  if (!dragItem || dragMeasure?.key === page || dragMeasuring === page) return;
+  dragMeasuring = page;
+  const item = dragItem;
+  measureCanvasItems([item], { page }).then((result) => {
+    if (dragItem !== item) return;
+    dragMeasure = { key: page, result };
+    dragMeasuring = null;
+    if (ghostState?.frame?.page === page) paintGhost(ghostState.frame, ghostState.clientX, ghostState.clientY, ghostState.kind);
+  }).catch(() => { dragMeasuring = null; });
 }
 
 // ── Starting a drag ───────────────────────────────────────────────────────
@@ -108,35 +169,70 @@ function onCanvasDragPointerDown(event) {
   }
 }
 
+function carryCanvasItem(dt, item) {
+  dt.setData(CANVAS_ITEM_MIME, JSON.stringify(item));
+  dt.setData("text/plain", item.kind === "pair" ? `${item.q}\n\n${item.a}` : item.md || "");
+  dt.effectAllowed = "copy";
+  setDragItem(item);
+}
+
 function onCanvasDragStart(event) {
+  setDragItem(null);
   const dt = event.dataTransfer;
   if (!dt) return;
   const target = event.target?.nodeType === 1 ? event.target : event.target?.parentElement;
-  // A highlight armedSource by the press above, or a card's grip.
+  dragFromCanvas = Boolean(canvasDropPageAt(target));
+  if (dragFromCanvas) return;
+  // A highlight armed by the press above.
   const armedSource = target?.closest?.("[data-canvas-item]");
   if (armedSource) {
-    dt.setData(CANVAS_ITEM_MIME, armedSource.dataset.canvasItem);
     try {
-      const item = JSON.parse(armedSource.dataset.canvasItem);
-      dt.setData("text/plain", item.kind === "pair" ? `${item.q}\n\n${item.a}` : item.md || "");
-    } catch { /* the item alone */ }
-    dt.effectAllowed = "copy";
+      carryCanvasItem(dt, JSON.parse(armedSource.dataset.canvasItem));
+    } catch { /* not an item after all */ }
     return;
   }
-  const grip = target?.closest?.("#cardCanvasGripBtn");
-  if (grip) {
+  // A card's grip.
+  if (target?.closest?.("#cardCanvasGripBtn")) {
     const card = state.cards?.[state.current];
     const item = card ? cardItem(card.id) : null;
     if (!item) { event.preventDefault(); return; }
-    dt.setData(CANVAS_ITEM_MIME, JSON.stringify(item));
-    dt.setData("text/plain", `${item.q}\n\n${item.a}`);
-    dt.effectAllowed = "copy";
+    carryCanvasItem(dt, item);
+    return;
+  }
+  // The grip beside a whole thing of the Notes.
+  if (target?.closest?.(".notes-canvas-grip")) {
+    const thing = notesGripTarget();
+    const item = thing ? notesElementItem(thing) : null;
+    if (!item) { event.preventDefault(); return; }
+    carryCanvasItem(dt, item);
+    try { dt.setDragImage(thing, 12, 12); } catch { /* the grip's own image */ }
+    return;
+  }
+  if (!canvasIsBeside()) return;
+  // A picture of the Notes dragged by itself: what the Notes say it is, not
+  // the address the browser shows it from.
+  if (target?.matches?.("img") && el.notesView?.contains(target) && canvasDragSelectionEmpty()) {
+    const item = notesElementItem(target);
+    if (item) carryCanvasItem(dt, item);
     return;
   }
   // A selection of the Notes: its markdown, so maths and code survive.
   if (el.notesView?.contains(target) && !canvasDragSelectionEmpty()) {
     const md = String(currentNotesSelectionMarkdown() || "").trim();
-    if (md) dt.setData(CANVAS_ITEM_MIME, JSON.stringify({ kind: "text", md, from: "" }));
+    if (md) {
+      dt.setData(CANVAS_ITEM_MIME, JSON.stringify({ kind: "text", md, from: "" }));
+      setDragItem({ kind: "text", md, from: "" });
+    }
+    return;
+  }
+  // A selection of a PDF's words: the words, the page's line ends joined —
+  // as a PDF highlight goes, and as words from another PDF reader do.
+  if (target?.closest?.("#documentStage, #documentStageAlt")?.dataset.docSlot === "doc" && !canvasDragSelectionEmpty()) {
+    const md = pdfPlainToMarkdown(String(window.getSelection()));
+    if (md) {
+      dt.setData(CANVAS_ITEM_MIME, JSON.stringify({ kind: "text", md, from: "" }));
+      setDragItem({ kind: "text", md, from: "" });
+    }
   }
 }
 
@@ -149,6 +245,7 @@ function markCanvasDropPage(page) {
   canvasDropOverPage?.classList.remove("is-canvas-drop-target");
   canvasDropOverPage = page;
   canvasDropOverPage?.classList.add("is-canvas-drop-target");
+  if (!page) hideGhost();
 }
 
 function canvasDropCarries(dt) {
@@ -156,13 +253,128 @@ function canvasDropCarries(dt) {
   return types.includes(CANVAS_ITEM_MIME) || types.includes("text/plain") || types.includes("text/html") || dragContainsImage(dt);
 }
 
-// Only a drop the Canvas is not the part in focus for, or one carrying an
-// item or words: a picture dropped onto the Canvas in focus is the page's own
-// (src/main.js, handwritingImageDrop), as it always was.
+// Every drop of words, an item or a picture on a Canvas page is read here —
+// the Canvas beside another part or in focus — so each gets the preview and
+// the Canvas's sizes. Files that are not pictures are not ours.
 function canvasDropIsOurs(dt) {
+  if (dragFromCanvas) return false;
   const types = Array.from(dt?.types || []);
-  if (types.includes(CANVAS_ITEM_MIME) || types.includes("text/plain") || types.includes("text/html")) return !types.includes("Files") || types.includes(CANVAS_ITEM_MIME);
-  return dragContainsImage(dt) && state.viewMode !== "handwriting";
+  if (types.includes(CANVAS_ITEM_MIME)) return true;
+  if (dragContainsImage(dt)) return true;
+  if (types.includes("Files")) return false;
+  return types.includes("text/plain") || types.includes("text/html") || types.includes("text/uri-list");
+}
+
+// What an outside drag looks like it is, from its types alone.
+function outsideKind(dt) {
+  const types = Array.from(dt?.types || []);
+  if (types.includes("Files") || (dragContainsImage(dt) && !types.includes("text/html"))) return "picture";
+  return "text";
+}
+
+// ── The preview ───────────────────────────────────────────────────────────
+
+let canvasDropGhost = null;
+// { frame, clientX, clientY, kind, place: { page, left, top }, item }
+let ghostState = null;
+
+function ensureGhost() {
+  if (canvasDropGhost) return canvasDropGhost;
+  canvasDropGhost = document.createElement("div");
+  canvasDropGhost.className = "canvas-drop-ghost";
+  canvasDropGhost.setAttribute("aria-hidden", "true");
+  canvasDropGhost.dataset.pageChrome = "";
+  return canvasDropGhost;
+}
+
+function hideGhost() {
+  canvasDropGhost?.remove();
+  ghostState = null;
+}
+
+function previewLine(item) {
+  const raw = item?.kind === "pair" ? item.q : item?.md;
+  return String(raw || "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "▧ picture")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[#*_`>|\\[\]]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 90);
+}
+
+// The preview's item, in canvas-flow.js's terms: the measured item, or a box
+// the size its kind will be.
+function ghostFlowItem(frame, kind) {
+  if (dragItem && dragMeasure?.key === frame.page && dragMeasure.result?.sized?.[0]) {
+    return flowItemFor(dragMeasure.result.sized[0]);
+  }
+  const pageWidth = frame.box[2] - frame.box[0];
+  if (dragItem?.kind === "pair") {
+    const half = Math.max(80, Math.floor((pageWidth * 0.62 - FLOW_PAIR_GAP) / 2));
+    return { pair: [{ w: half, h: 48 }, { w: half, h: 48 }] };
+  }
+  if (kind === "picture") {
+    const w = Math.round(pageWidth * canvasDropWidthPercent("picture") / 100);
+    return { w, h: Math.round(w * 0.75) };
+  }
+  return { w: Math.round(Math.max(160, pageWidth * Math.min(40, canvasBlockMeasurePercent()) / 100)), h: 60 };
+}
+
+// Everything already on the page, as boxes — what the preview settles onto.
+function boxesOnCanvasPage(page) {
+  try {
+    return blocksForPaper(DOC_SLOT_NOTEBOOK, null, page).map(blockPageBounds);
+  } catch {
+    return [];
+  }
+}
+
+function paintGhost(frame, clientX, clientY, kind) {
+  const item = ghostFlowItem(frame, kind);
+  const { w, h } = flowItemExtent(item);
+  const at = canvasDropPoint(frame, clientX, clientY);
+  let { left, top } = clampTopLeft({ box: frame.box, at, item });
+  // Onto the edges and middles of the Blocks there, within 6 pixels on screen.
+  const snap = snapMove([left, top - h, left + w, top], boxesOnCanvasPage(frame.page), { threshold: 6 / frame.scale });
+  left += snap.dx;
+  top += snap.dy;
+  ({ left, top } = clampTopLeft({ box: frame.box, at: { x: left, y: top }, item }));
+  ghostState = { frame, clientX, clientY, kind, place: { page: frame.page, x: left, y: top }, item };
+  const node = ensureGhost();
+  const pageEl = canvasDropOverPage;
+  if (!pageEl) return;
+  if (node.parentNode !== pageEl) pageEl.appendChild(node);
+  const [x0, , , y1] = frame.box;
+  const px = (v) => `${Math.round(v * frame.scale)}px`;
+  node.style.left = px(left - x0);
+  node.style.top = px(y1 - top);
+  node.style.width = px(w);
+  node.style.height = px(h);
+  node.classList.toggle("is-guess", !(dragItem && dragMeasure?.key === frame.page));
+  const label = dragItem ? previewLine(dragItem) : kind === "picture" ? "Picture" : "Words";
+  if (item.pair) {
+    const place = flowPlaceFromTopLeft(item, frame.page, left, top);
+    const parts = place.parts.map((part, i) => {
+      const size = item.pair[i];
+      return `<span class="canvas-drop-ghost-part" style="left:${px(part.x - left)};top:${px(top - (part.y + size.h))};width:${px(size.w)};height:${px(size.h)}">${i === 0 ? label.replace(/</g, "&lt;") : "Answer"}</span>`;
+    });
+    node.innerHTML = `${parts.join("")}<span class="canvas-drop-ghost-arrow${item.stacked ? " is-down" : ""}"></span>`;
+    node.classList.add("is-pair");
+    const arrow = node.querySelector(".canvas-drop-ghost-arrow");
+    if (item.stacked) {
+      arrow.style.left = px(Math.min(item.pair[0].w, item.pair[1].w) / 2);
+      arrow.style.top = px(item.pair[0].h);
+      arrow.style.height = px(FLOW_PAIR_GAP);
+    } else {
+      arrow.style.left = px(item.pair[0].w);
+      arrow.style.top = px(Math.min(item.pair[0].h, item.pair[1].h) / 2);
+      arrow.style.width = px(FLOW_PAIR_GAP);
+    }
+  } else {
+    node.classList.remove("is-pair");
+    node.textContent = label;
+  }
 }
 
 function onCanvasDragOver(event) {
@@ -171,23 +383,56 @@ function onCanvasDragOver(event) {
   event.preventDefault();
   event.dataTransfer.dropEffect = "copy";
   markCanvasDropPage(page);
+  const frame = canvasPageFrame(page);
+  if (!frame) return;
+  measureDragFor(frame.page);
+  paintGhost(frame, event.clientX, event.clientY, dragItem ? "item" : outsideKind(event.dataTransfer));
 }
 
 function onCanvasDragLeave(event) {
   if (canvasDropOverPage && !canvasDropOverPage.contains(event.relatedTarget)) markCanvasDropPage(null);
 }
 
-function canvasItemFromTransfer(dt) {
-  const own = dt.getData(CANVAS_ITEM_MIME);
+// ── Reading what was let go ───────────────────────────────────────────────
+//
+// Everything is read off the transfer before anything awaits: it is emptied
+// once the event is over. The reading itself (HTML to markdown) may wait for
+// its converter, which is loaded on first use.
+
+function transferStrings(dt) {
+  const types = Array.from(dt.types || []);
+  return {
+    own: types.includes(CANVAS_ITEM_MIME) ? dt.getData(CANVAS_ITEM_MIME) : "",
+    html: types.includes("text/html") ? dt.getData("text/html") : "",
+    plain: types.includes("text/plain") ? dt.getData("text/plain") : "",
+    uri: types.includes("text/uri-list") ? dt.getData("text/uri-list") : ""
+  };
+}
+
+const IMAGE_URL_RE = /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#]\S*)?$/i;
+
+// A web page's HTML with nothing in it but markup round its words: what is
+// left once the tags are gone. A selection copied off a page carries a
+// <meta charset> and an empty <span> or two even when it is only words.
+function htmlHasStructure(html) {
+  return /<(?:h[1-6]|ul|ol|li|table|pre|code|img|blockquote|strong|b|em|i|a|br|p|div)\b/i.test(html);
+}
+
+export async function canvasItemFromStrings({ own, html, plain, uri }) {
   if (own) {
     try { return JSON.parse(own); } catch { /* fall through to the words */ }
   }
-  const plain = dt.getData("text/plain") || "";
-  const html = Array.from(dt.types || []).includes("text/html") ? dt.getData("text/html") : "";
   let md = "";
-  if (html && typeof TurndownService !== "undefined") md = htmlToMarkdown(html);
-  else if (html) ensureTurndown();
-  if (!md.trim()) md = plain;
+  if (html && htmlHasStructure(html)) {
+    if (typeof TurndownService === "undefined") await ensureTurndown();
+    if (typeof TurndownService !== "undefined") md = htmlToMarkdown(html);
+  }
+  if (!md.trim() && plain.trim()) md = pdfPlainToMarkdown(plain);
+  if (!md.trim()) {
+    const link = String(uri || "").split(/\r?\n/).find((line) => line && !line.startsWith("#"));
+    if (link && IMAGE_URL_RE.test(link.trim())) md = `![](${link.trim()})`;
+    else if (link) md = `<${link.trim()}>`;
+  }
   if (!md.trim()) return null;
   if (headingNumbersOn()) md = stripTypedHeadingNumbersFromMarkdown(md);
   return { kind: "text", md: md.trim(), from: "" };
@@ -206,29 +451,39 @@ async function makeCanvasLiveForDrop() {
 
 async function onCanvasDrop(event) {
   const page = canvasDropPageAt(event.target);
-  markCanvasDropPage(null);
-  disarmCanvasDrag();
   const dt = event.dataTransfer;
-  if (!page || !dt || !canvasDropIsOurs(dt)) return;
+  if (!page || !dt || !canvasDropIsOurs(dt)) { markCanvasDropPage(null); return; }
   event.preventDefault();
   event.stopPropagation();
+  // Where the preview was — painted for this very point, if it was not yet.
+  const frame = canvasPageFrame(page);
+  if (frame && canvasDropOverPage !== page) markCanvasDropPage(page);
+  if (frame) paintGhost(frame, event.clientX, event.clientY, dragItem ? "item" : outsideKind(dt));
+  const place = ghostState?.place || null;
+  const ghostItem = ghostState?.item || null;
+  const measured = dragItem && dragMeasure?.key === frame?.page ? dragMeasure.result : null;
+  const ownItem = dragItem;
+  markCanvasDropPage(null);
+  disarmCanvasDrag();
+  setDragItem(null);
   if (documentViewOnly(DOC_SLOT_NOTEBOOK)) {
     showToast("View only — press ✎ to add to the page", "info");
     return;
   }
-  // Read everything off the drag before anything awaits: the transfer is
-  // emptied once the event is over.
-  const at = canvasDropPoint(page, event.clientX, event.clientY);
-  const files = dragContainsImage(dt) && !Array.from(dt.types || []).includes(CANVAS_ITEM_MIME) ? Array.from(allImageFiles(dt) || []) : [];
-  const item = files.length ? null : canvasItemFromTransfer(dt);
-  if (!at || (!item && !files.length)) return;
+  if (!place || !frame) return;
+  const types = Array.from(dt.types || []);
+  const files = !types.includes(CANVAS_ITEM_MIME) && dragContainsImage(dt) ? Array.from(allImageFiles(dt) || []) : [];
+  const strings = files.length ? null : transferStrings(dt);
   if (!(await makeCanvasLiveForDrop())) return;
   if (files.length) {
     const { addHandwritingImages } = await import("../handwriting/board.js?v=__BUILD__");
-    addHandwritingImages(files, at);
+    const width = ghostItem && !ghostItem.pair ? ghostItem.w : (frame.box[2] - frame.box[0]) * canvasDropWidthPercent("picture") / 100;
+    addHandwritingImages(files, { page: place.page, x: place.x, y: place.y }, { width });
     return;
   }
-  await placeOnCanvas([item], { at });
+  const item = ownItem && strings.own ? ownItem : await canvasItemFromStrings(strings);
+  if (!item) return;
+  await placeOnCanvas([item], { at: place, measured: item === ownItem ? measured : null });
 }
 
 let canvasDropWired = false;
@@ -236,13 +491,14 @@ let canvasDropWired = false;
 export function initCanvasDrop() {
   if (canvasDropWired) return;
   canvasDropWired = true;
-  // Capture, ahead of the document's own image drop (src/main.js), which
-  // stands aside for a page of a Canvas that is not in focus.
+  initNotesGrip();
+  // Capture, ahead of the document's own picture drop (src/main.js), which a
+  // drop on a Canvas page never reaches.
   document.addEventListener("pointerdown", onCanvasDragPointerDown, true);
   document.addEventListener("dragstart", onCanvasDragStart, true);
   document.addEventListener("dragover", onCanvasDragOver, true);
   document.addEventListener("dragleave", onCanvasDragLeave, true);
   document.addEventListener("drop", onCanvasDrop, true);
-  document.addEventListener("dragend", () => { markCanvasDropPage(null); disarmCanvasDrag(); }, true);
+  document.addEventListener("dragend", () => { markCanvasDropPage(null); disarmCanvasDrag(); setDragItem(null); dragFromCanvas = false; }, true);
   document.addEventListener("pointerup", () => { if (canvasDragArmed) setTimeout(disarmCanvasDrag, 0); }, true);
 }

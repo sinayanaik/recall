@@ -466,7 +466,9 @@ function buildShapePalette() {
 // (`anchor: "corner"`, addDocumentImageBlock): "paste it where my mouse is"
 // means it starts there, not that it is centred on it and half of it hangs back
 // over whatever the reader was pointing past.
-export async function addHandwritingImages(files, at = null) {
+// `width`: each picture's width in points (a drop onto a Canvas, which takes
+// ◐ Canvas → Pictures land at), or null for the page's own rule.
+export async function addHandwritingImages(files, at = null, { width = null } = {}) {
   const list = Array.from(files || []).filter((file) => file && String(file.type || "").startsWith("image/"));
   if (!list.length) return [];
   const page = Number(at?.page) || currentDocumentPage();
@@ -478,7 +480,7 @@ export async function addHandwritingImages(files, at = null) {
   const added = [];
   for (const [index, item] of chosen.items.entries()) {
     const point = start ? { x: start.x + (index * IMAGE_DROP_CASCADE), y: start.y - (index * IMAGE_DROP_CASCADE) } : null;
-    const block = await addDocumentImageBlock(page, item.upload, point, { anchor });
+    const block = await addDocumentImageBlock(page, item.upload, point, { anchor, width });
     if (block) added.push(block);
   }
   if (added.length) paintHandwritingControls();

@@ -48,23 +48,50 @@
   border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
 }
 
+/* Colours: which highlight colours go. One or several, or all of them. */
 .canvas-feed-colours {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
-  margin-left: auto;
 }
 
-.canvas-feed-swatch {
-  width: 22px;
-  height: 22px;
-  border: 2px solid transparent;
-  border-radius: 50%;
-  background: var(--swatch);
-  cursor: pointer;
+.canvas-feed-colours[hidden] {
+  display: none;
 }
 
-.canvas-feed-swatch[aria-pressed="true"] {
-  border-color: var(--text);
+.canvas-feed-label {
+  flex: none;
+  min-width: 72px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.canvas-feed-colour-chips,
+.cf-style-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.canvas-feed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.canvas-feed-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--card));
+  font-weight: 700;
+}
+
+.canvas-feed-count {
+  font-size: 0.74rem;
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .canvas-feed-check {
@@ -159,10 +186,217 @@
   flex: 1 1 auto;
 }
 
-/* A Canvas page something from beside is being dragged over. */
+/* A Canvas page something is being dragged over. */
 .pdf-page.is-canvas-drop-target {
-  outline: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  outline: 2px dashed color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: 3px;
+}
+
+/* ...and the Block it will be, where it will land (src/documents/canvas-drop.js):
+   the size the Canvas gives it, following the pointer. Dashed while its size
+   is only a guess (something from another app, or not measured yet). */
+.canvas-drop-ghost {
+  position: absolute;
+  z-index: 40;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  overflow: hidden;
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1.3;
+  pointer-events: none;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.canvas-drop-ghost.is-guess {
+  border-style: dashed;
+}
+
+.canvas-drop-ghost.is-pair {
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.canvas-drop-ghost-part {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  overflow: hidden;
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.canvas-drop-ghost.is-guess .canvas-drop-ghost-part {
+  border-style: dashed;
+}
+
+.canvas-drop-ghost-arrow {
+  position: absolute;
+  height: 0;
+  border-top: 2px solid var(--accent);
+}
+
+.canvas-drop-ghost-arrow.is-down {
+  width: 0;
+  border-top: 0;
+  border-left: 2px solid var(--accent);
+}
+
+/* The grip beside a whole picture, listing, table or heading of the Notes,
+   while the Canvas is beside them (src/documents/notes-grip.js). */
+.notes-canvas-grip {
+  position: fixed;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: grab;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.12);
+}
+
+.notes-canvas-grip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.notes-canvas-grip[hidden] {
+  display: none;
+}
+
+/* The Cards' Style: how the question, the answer and the arrow look. */
+.canvas-feed-style {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.canvas-feed-style[hidden] {
+  display: none;
+}
+
+.canvas-feed-style > summary {
+  padding: 8px 12px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cf-style-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+  max-height: 46dvh;
+  overflow: auto;
+}
+
+.cf-style-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cf-style-tabs button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.cf-style-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.cf-style-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.cf-style-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.cf-style-reset {
+  margin-left: auto;
+}
+
+.cf-style-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.canvas-feed-modal .cf-style-field input[type="text"] {
+  width: 4.5em;
+  min-height: 28px;
+  padding: 2px 6px;
+}
+
+.canvas-feed-modal .cf-style-field select,
+.canvas-feed-modal .cf-style-chips select {
+  width: auto;
+  min-height: 28px;
+  padding: 2px 6px;
+}
+
+.cf-style-preview {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--paper, var(--bg));
+}
+
+.cf-style-preview.is-stacked {
+  flex-direction: column;
+}
+
+.cf-preview-block {
+  max-width: 180px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.cf-preview-arrow {
+  flex: none;
+  overflow: visible;
 }
 
 /* The grip a card is dragged onto the Canvas by — only while the Canvas is
