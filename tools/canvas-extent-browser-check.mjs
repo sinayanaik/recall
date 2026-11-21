@@ -19,7 +19,10 @@
 //      page growing wider does not zoom the Canvas out;
 //   4. the Canvas PDF has the grown page at its full size, and the Boundless
 //      page cut to what is on it, unnumbered — a large one drawn in tiles;
-//   5. the web page export is one file, with its pictures in it, byte for byte.
+//   5. the web page export is one file, with its pictures in it, byte for byte;
+//   6. a grown page shows its original size, dashed, and a Block taken back
+//      inside it, even by a little, puts the page back to its size;
+//   7. on Black paper the web page is the paper the reader sees, not white.
 
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -307,6 +310,58 @@ try {
   check("a shape past the right edge makes it wider, and gone, narrow again", grow.shape && grow.boxWide[2] > 660 && grow.boxWide[0] === 0 && grow.boxWide[3] === 842 && JSON.stringify(grow.boxNarrow) === "[0,0,595,842]", JSON.stringify({ wide: grow.boxWide, narrow: grow.boxNarrow }));
   await shot("grown.png");
 
+  // ── 1b. The original size: shown on a grown page, and the line it shrinks by ──
+  const moveBlockTo = `async (y) => {
+    const { api, settle } = window.__recall;
+    const id = window.__ids.grow;
+    const before = api.state.meta.notebook.sha256;
+    api.runDiagramEdit(() => {
+      api.writeDocumentBlocks(api.documentBlocks().map((x) => (x.id === id ? { ...x, y } : x)));
+    });
+    for (let i = 0; i < 60 && api.state.meta.notebook.sha256 === before; i += 1) await settle(80);
+    await settle(700);
+  }`;
+  const edgeOf = `(n) => {
+    const el = window.__h.pageEl(n);
+    const before = getComputedStyle(el, "::before");
+    return {
+      grown: el.classList.contains("is-grown"),
+      down: el.classList.contains("is-grown-down"),
+      right: el.classList.contains("is-grown-right"),
+      setH: el.style.getPropertyValue("--canvas-set-h"),
+      setW: el.style.getPropertyValue("--canvas-set-w"),
+      content: before.content,
+      foot: before.borderBottomStyle + " " + before.borderBottomWidth,
+      side: before.borderRightWidth,
+      shownH: Math.round(parseFloat(before.height)),
+      pageH: Math.round(el.getBoundingClientRect().height),
+      pageW: Math.round(el.getBoundingClientRect().width),
+      box: window.__recall.api.notebookPageBox(n)
+    };
+  }`;
+  const edgeAtSize = await page.evaluate(edgeOf, 1);
+  await page.evaluate(moveBlockTo, -40);
+  const edgeGrown = await page.evaluate(edgeOf, 1);
+  const edgeOther = await page.evaluate(edgeOf, 2);
+  await page.evaluate(`() => { window.__h.pageEl(1).scrollIntoView({ block: "end" }); }`);
+  await new Promise((r) => setTimeout(r, 500));
+  await shot("original-size.png");
+  // Taken back inside its original size by less than half an inch (the room a
+  // pen stroke asks for): the page is its size again, and the edge is gone.
+  await page.evaluate(moveBlockTo, 6);
+  const edgeBack = await page.evaluate(edgeOf, 1);
+  const wantH = edgeGrown.box ? 842 / (842 - edgeGrown.box[1]) : 0;
+  check("a page at its size shows no original-size edge", !edgeAtSize.grown && edgeAtSize.content === "none", JSON.stringify(edgeAtSize));
+  check("grown longer, it shows its original size: dashed at the old foot, in the corner, and only there",
+    edgeGrown.grown && edgeGrown.down && !edgeGrown.right && /Original size/.test(edgeGrown.content)
+      && /^dashed /.test(edgeGrown.foot) && edgeGrown.side === "0px"
+      && Math.abs(parseFloat(edgeGrown.setH) / 100 - wantH) < 0.002
+      && Math.abs(edgeGrown.shownH - edgeGrown.pageH * wantH) <= 2 && edgeGrown.setW === "100%",
+    JSON.stringify({ edgeGrown, wantH }));
+  check("...the page beside it, not grown, has none", !edgeOther.grown && edgeOther.content === "none", JSON.stringify(edgeOther));
+  check("a Block taken back inside the original size, even by a little, puts the page back to its size and the edge goes",
+    JSON.stringify(edgeBack.box) === "[0,0,595,842]" && !edgeBack.grown && edgeBack.content === "none", JSON.stringify(edgeBack));
+
   // ── 1b. By hand: the pointer decides — this page grows, or the next takes it
   const hand = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
@@ -576,6 +631,65 @@ try {
   check("...the words sized in the page's own points", web.fontPx > 0 && Math.abs(web.fontPx - (web.pageWidth / 595) * 11) < 2.5, JSON.stringify(web));
   await shot("web-page.png");
   await page.evaluate("() => { window.__frame?.remove(); }");
+
+  // ── 4b. ...on the paper it is seen on ─────────────────────────────────
+  const dark = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const out = {};
+    const toneWas = api.currentPaperTone().id;
+    api.setPaperTone("black");
+    await settle(400);
+    const tone = api.currentPaperTone();
+    out.tone = { id: tone.id, dark: tone.dark, bg: tone.bg };
+    // A shape in a near-black the reader picked on White: kept readable on Black.
+    const shape = api.addDocumentShape(1, { type: "rect", p: [[60, 700], [200, 780]], stroke: "#16181d", width: 2 });
+    await settle(500);
+    const built = await api.buildCanvasHtml({ tone });
+    out.htmlDark = /<html lang="en" class="cx-dark">/.test(built.html);
+    out.bodyDark = /<body class="cx-body is-dark">/.test(built.html);
+    out.tokens = /<main class="cx-pages paper-tokens is-dark-paper" style="[^"]*--paper-bg:#[0-9a-f]{6}/.test(built.html);
+    out.shapeStroke = (/stroke="(#[0-9a-f]{6})" stroke-width="2"/.exec(built.html) || [])[1] || "";
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "position:fixed;left:0;top:0;width:900px;height:700px;border:0;z-index:99999";
+    document.body.appendChild(frame);
+    frame.srcdoc = built.html;
+    await new Promise((resolve) => { frame.onload = resolve; setTimeout(resolve, 4000); });
+    await settle(400);
+    const doc = frame.contentDocument;
+    const rgb = (text) => (String(text).match(/\\d+(\\.\\d+)?/g) || []).slice(0, 3).map(Number);
+    const lum = (c) => (0.2126 * c[0]) + (0.7152 * c[1]) + (0.0722 * c[2]);
+    const pageEl = doc.querySelector(".cx-page");
+    out.pageBg = rgb(getComputedStyle(pageEl).backgroundColor);
+    out.paperFill = rgb(doc.querySelector(".viewer-paper rect")?.getAttribute("fill") || "");
+    out.lines = rgb(doc.querySelector(".viewer-paper path")?.getAttribute("stroke") || "");
+    out.bodyBg = rgb(getComputedStyle(doc.body).backgroundColor);
+    const block = [...doc.querySelectorAll(".cx-box")].find((n) => /Near the foot/.test(n.textContent));
+    out.words = block ? rgb(getComputedStyle(block.querySelector(".rendered p") || block).color) : [];
+    out.card = block ? rgb(getComputedStyle(block).backgroundColor) : [];
+    out.number = rgb(getComputedStyle(doc.querySelector(".cx-number")).color);
+    out.lum = { page: lum(out.pageBg), paper: lum(out.paperFill), lines: lum(out.lines), body: lum(out.bodyBg), words: lum(out.words), card: lum(out.card), number: lum(out.number) };
+    window.__frame = frame;
+    if (shape) api.applyDocumentRecordChanges({ remove: [shape.id] });
+    window.__toneWas = toneWas;
+    return out;
+  }`);
+  const hexRgb = (hex) => [1, 3, 5].map((i) => parseInt(String(hex).slice(i, i + 2), 16));
+  const bgRgb = dark.tone?.bg ? hexRgb(dark.tone.bg) : [255, 255, 255];
+  const closeTo = (a, b, slack = 2) => a.length === 3 && a.every((v, i) => Math.abs(v - b[i]) <= slack);
+  check("on Black paper the web page is the paper: the page and its sheet are the tone's own colour, and the page round them is dark",
+    dark.tone?.dark && dark.htmlDark && dark.bodyDark && closeTo(dark.pageBg, bgRgb) && closeTo(dark.paperFill, bgRgb) && dark.lum.body < 40,
+    JSON.stringify(dark));
+  check("...its lines lighter than the paper, its Block a card of the paper with light words, its number light",
+    dark.tokens && dark.lum.lines > dark.lum.paper + 20 && dark.lum.words > 180 && dark.lum.card < 60 && dark.lum.number > 80,
+    JSON.stringify(dark.lum));
+  check("...and a near-black shape picked on White is kept readable on it", /^#[0-9a-f]{6}$/.test(dark.shapeStroke) && dark.shapeStroke !== "#16181d" && hexRgb(dark.shapeStroke).every((v) => v > 120),
+    dark.shapeStroke);
+  await shot("web-page-dark.png");
+  await page.evaluate(`async () => {
+    window.__frame?.remove();
+    window.__recall.api.setPaperTone(window.__toneWas || "theme");
+    await window.__recall.settle(300);
+  }`);
 
   const errs = await page.evaluate("() => window.__errs");
   check("no page errors", !errs.length, errs.join(" | "));

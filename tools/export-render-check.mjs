@@ -638,6 +638,35 @@ try {
       return { mean: n ? sum / n : 0, light, dark };
     };
     const blackNumber = numberBand(onBlack);
+    // ...and where a 2D canvas has no \`filter\` (Safari before 18, so every
+    // browser on an iPhone or iPad before iOS 18): the page is still the
+    // paper, the same picture to within a few levels — the export used to come
+    // out white there, while the screen was dark.
+    const filterDesc = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, "filter");
+    let noFilterBytes = null;
+    if (filterDesc) {
+      delete CanvasRenderingContext2D.prototype.filter;
+      try {
+        noFilterBytes = await api.buildCanvasPdfBytes();
+      } finally {
+        Object.defineProperty(CanvasRenderingContext2D.prototype, "filter", filterDesc);
+      }
+    }
+    const noFilter = noFilterBytes ? await readBack(noFilterBytes) : null;
+    const noFilterCorner = noFilter ? px(noFilter, 10, 10) : null;
+    const filterDiff = { samples: 0, max: 0, over12: 0, sameSize: Boolean(noFilter) && noFilter.width === onBlack.width && noFilter.height === onBlack.height };
+    if (filterDiff.sameSize) {
+      for (let y = 5; y < onBlack.height; y += 7) {
+        for (let x = 5; x < onBlack.width; x += 7) {
+          const a = px(onBlack, x, y);
+          const b = px(noFilter, x, y);
+          const d = Math.max(...a.map((v, i) => Math.abs(v - b[i])));
+          filterDiff.samples += 1;
+          if (d > filterDiff.max) filterDiff.max = d;
+          if (d > 12) filterDiff.over12 += 1;
+        }
+      }
+    }
     // ◐ Canvas → Labels in a face pdf-lib has no file for: the number is drawn
     // into the page's picture in that face, not written as Helvetica text.
     api.setPaperTone("white");
@@ -673,6 +702,8 @@ try {
       blackBlock,
       blackPaperBg,
       blackNumber,
+      noFilterCorner,
+      filterDiff,
       labelledText: labelled.text,
       labelledNumber,
       pdfName: without.name,
@@ -714,6 +745,11 @@ try {
         near(canvas.blackCorner, canvas.blackPaperBg, 12), `${JSON.stringify(canvas.blackCorner)} for ${canvas.blackPaperBg}`);
       check("...and its page number is the paper's own words, a light grey, drawn on it",
         canvas.blackNumber.light > 10, JSON.stringify(canvas.blackNumber));
+      check("Canvas PDF: on Black paper with no canvas filter (Safari before 18), the page is still the paper — not white",
+        Array.isArray(canvas.noFilterCorner) && near(canvas.noFilterCorner, canvas.blackPaperBg, 12), `${JSON.stringify(canvas.noFilterCorner)} for ${canvas.blackPaperBg}`);
+      check("...and the same picture as with the filter, to within a few levels",
+        canvas.filterDiff.sameSize && canvas.filterDiff.samples > 1000 && canvas.filterDiff.over12 / canvas.filterDiff.samples < 0.01,
+        JSON.stringify(canvas.filterDiff));
       check("Canvas PDF: with ◐ Canvas → Labels set, the page number is drawn in that face into the page, not written in Helvetica",
         !/\d+ \/ \d+/.test(canvas.labelledText) && canvas.labelledNumber.dark > 10,
         `${JSON.stringify(canvas.labelledText)} · ${JSON.stringify(canvas.labelledNumber)}`);

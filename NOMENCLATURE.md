@@ -65,10 +65,17 @@ moves when it is resized.
 A page's size follows what is on it (`setup.fit`). Every page **grows as
 needed** (`"grow"`, and what a page with no `fit` does — a `"fixed"` written by
 one early build too): longer or wider by just enough — an inch past what is on
-it, in inch steps — when what is written, typed or dragged reaches its right
-edge or its foot, never smaller than its size, and back again when that is
-gone; its top-left corner never moves, and it changes no byte of the page
-until it has grown. Switched off (Page setup's **Grows as needed**, or ⋯ →
+it, in inch steps — when a Block, a shape or a picture is put past its right
+edge or its foot, or the pen writes near it (within half an inch: a pen cannot
+write past the paper), never smaller than its size; its top-left corner never
+moves, and it changes no byte of the page until it has grown. A page that has
+grown shows its **original size** — where it was set up to end, edged dashed in
+the accent on the sides it grew, "Original size" in the corner
+(`.pdf-page.is-grown::before` in `styles/53-handwriting.css`, set by
+`markCanvasPageGrowth` in `src/documents/pdf-view.js`) — and that edge is the
+line: everything taken back inside it, even by a little, and the page is its
+size again (the pen's half inch apart). Say "original size", not "boundary",
+"border" or "base size". Switched off (Page setup's **Grows as needed**, or ⋯ →
 Canvas pages → **Pages grow as needed** for every page) a page is **set to its
 size** (`"set"`). **Boundless** (`"boundless"`, beside Portrait and Landscape)
 is a page with no size: what is on it with room round it on every side, its
@@ -242,7 +249,11 @@ The Canvas is exported (⇓ beside the tabs) as a **PDF** of its pages, or as a
 **web page** — ⇓ → **Web page (.html)**: one `.html` file with every picture
 inside it as its own bytes, that opens offline in any browser on any device,
 with vector paper and ink, the Blocks' words as words, and moving pictures (a
-GIF, an animated WebP) moving, which a PDF cannot do. Say "web page", not "HTML
+GIF, an animated WebP) moving, which a PDF cannot do. Both are drawn on the
+**paper the Canvas is seen on** — Match theme, White, Sepia, Dim or Black
+(`currentPaperTone`): the PDF through `paintPaperTone` (by arithmetic where a
+browser's canvas has no `filter`, as on Safari before 18), the web page through
+`paperToneColor` and the paper's own tokens (`.paper-tokens`). Say "web page", not "HTML
 export" or "web export". Nothing is stored; the file is written and downloaded
 (`src/export/canvas-html.js`, `buildCanvasHtml`; drawn by `canvasPageDrawing`
 and `canvasPageMarkup` in `src/backup/viewer-pack.js`).

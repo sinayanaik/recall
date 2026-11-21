@@ -1040,6 +1040,55 @@ body.canvas-page-numbers-off :is(#documentStage, #documentStageAlt)[data-doc-slo
   outline-offset: 2px;
 }
 
+/* A page that has grown as needed shows its ORIGINAL SIZE — where it was set
+   up to end — edged dashed on the sides it grew past, "Original size" in the
+   corner (markCanvasPageGrowth, src/documents/pdf-view.js, which sets the two
+   shares). It is the line the page grows and shrinks by
+   (src/documents/canvas-extent.js): a Block put past it grows the page, and
+   everything taken back inside it puts the page back to its size. Over the
+   paper (the page's canvas is not positioned) and under everything on it: the
+   page's layers are z-index 1 and up and come after it in the tree. The edge
+   in the accent (made readable on the paper, 94-paper-tones.css), so it is not
+   taken for one of the paper's own lines; the words in the paper's; screen
+   only. */
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page.is-grown::before {
+  content: "Original size";
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  width: var(--canvas-set-w, 100%);
+  height: var(--canvas-set-h, 100%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 0 calc(var(--pdf-pt, 1px) * 6) calc(var(--pdf-pt, 1px) * 4) 0;
+  border: 0 dashed color-mix(in srgb, var(--accent, #0f766e) 80%, transparent);
+  font: 600 calc(var(--pdf-pt, 1px) * 8) / 1 var(--doc-label-font, var(--app-font-family, system-ui, sans-serif));
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--paper-text, #16181d) 55%, var(--paper-bg, #ffffff));
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page.is-grown-down::before {
+  border-bottom-width: 2px;
+}
+
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page.is-grown-right::before {
+  border-right-width: 2px;
+}
+
+/* Grown only wider: the corner on the foot is the page's own, where its number
+   is, so the words go at the top of the edge instead. */
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page.is-grown-right:not(.is-grown-down)::before {
+  align-items: flex-start;
+  padding-top: calc(var(--pdf-pt, 1px) * 4);
+  padding-bottom: 0;
+}
+
 /* A Boundless page has no foot to number: it reaches as far as what is on it
    (src/documents/canvas-extent.js), and its PDF is cut to that, unnumbered. */
 :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page.is-boundless::after {

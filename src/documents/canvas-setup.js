@@ -610,7 +610,7 @@ export function sheetPdfStream(setup, pageBox = null) {
 // user space to show instead of all of it; `minStroke` is the thinnest line
 // worth drawing, in user units, so a whole page shrunk to a thumbnail still
 // shows its lines rather than a blank.
-export function sheetSvg(setup, { crop = null, minStroke = 0, box: pageBox = null } = {}) {
+export function sheetSvg(setup, { crop = null, minStroke = 0, box: pageBox = null, recolor = null } = {}) {
   const { box, paper, groups } = sheetOps(setup, pageBox);
   const [x0, y0, x1, y1] = crop || box;
   const w = x1 - x0;
@@ -619,7 +619,9 @@ export function sheetSvg(setup, { crop = null, minStroke = 0, box: pageBox = nul
   // SVG's y runs down from the top, the page's up from the bottom.
   const px = (x) => n(x - x0);
   const py = (y) => n(y1 - y);
-  const rgb = (c) => `rgb(${c.map((v) => Math.round(v * 255)).join(",")})`;
+  // `recolor` takes and gives a colour as [r, g, b] in 0–1: the paper and its
+  // lines as a tone shows them (the Canvas's web page, src/backup/viewer-pack.js).
+  const rgb = (c) => `rgb(${(recolor ? recolor(c) : c).map((v) => Math.round(v * 255)).join(",")})`;
   const [bx0, by0, bx1, by1] = box;
   const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n(w)} ${n(h)}" preserveAspectRatio="xMidYMid meet">`,

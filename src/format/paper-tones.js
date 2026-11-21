@@ -283,15 +283,112 @@ export function paperKeyBg(key) {
 // the same steps, since it cannot import.
 export const PAPER_DARK_FILTER = "invert(1) hue-rotate(180deg)";
 
-export function paintPaperTone(ctx, canvas, { dark = false, tint = null } = {}) {
+// PAPER_DARK_FILTER as arithmetic, for where there is no filter to ask: invert,
+// then the hue-rotate(180deg) matrix of the Filter Effects spec (each row sums
+// to 1, so a grey stays a grey — white becomes black, black white). In 0–255,
+// clamped.
+function darkFlipChannels(r, g, b) {
+  const ir = 255 - r;
+  const ig = 255 - g;
+  const ib = 255 - b;
+  const clamp = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
+  return [
+    clamp((-0.574 * ir) + (1.43 * ig) + (0.144 * ib)),
+    clamp((0.426 * ir) + (0.43 * ig) + (0.144 * ib)),
+    clamp((0.426 * ir) + (1.43 * ig) - (0.856 * ib))
+  ];
+}
+
+// One colour through the steps paintPaperTone puts a page's pixels through — the
+// colour it is on the paper `{ dark, tint }` (a tone from resolvePaperTone).
+// For what is drawn as vectors rather than pixels: the Canvas's web page export
+// draws the paper and its lines in it (src/backup/viewer-pack.js,
+// canvasPageDrawing), so the page is the paper the reader saw. White on any
+// tone is that tone's `bg`.
+export function paperToneColor(hex, { dark = false, tint = null } = {}) {
+  const rgb = parseHex(hex);
+  if (!rgb) return hex;
+  if (dark) {
+    const floor = parseHex(tint) || parseHex(PAPER_DARK_FLOOR);
+    return rgbToHex(darkFlipChannels(...rgb).map((v, i) => Math.max(v, floor[i])));
+  }
+  const multiply = parseHex(tint);
+  if (!multiply) return rgbToHex(rgb);
+  return rgbToHex(rgb.map((v, i) => (v * multiply[i]) / 255));
+}
+
+// The invert-and-rotate done to the pixels themselves, a band of rows at a time
+// so a big page is never held twice — for a 2D context with no `filter` (Safari
+// before 18, and so every browser on an iPhone or iPad before iOS 18). The page
+// on screen has its CSS filter there (canBakeDarkPage, src/documents/
+// pdf-view.js); the Canvas PDF export had nothing, and came out white.
+const DARK_FLIP_BAND_ROWS = 256;
+
+function darkFlipPixels(ctx, canvas) {
+  const width = canvas.width;
+  for (let y = 0; y < canvas.height; y += DARK_FLIP_BAND_ROWS) {
+    const rows = Math.min(DARK_FLIP_BAND_ROWS, canvas.height - y);
+    const image = ctx.getImageData(0, y, width, rows);
+    const data = image.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const [r, g, b] = darkFlipChannels(data[i], data[i + 1], data[i + 2]);
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
+    }
+    ctx.putImageData(image, 0, y);
+  }
+}
+
+// Whether this kind of 2D context really does the dark filter. Asked of its
+// PROTOTYPE, not the context: pdf.js sets `ctx.filter` as it draws a page, and
+// on a browser without the property that leaves a plain property on the
+// context that answers "yes" and does nothing. Then once, on a pixel, for a
+// browser that has it and ignores it — as canBakeDarkPage does for the screen.
+let filterTest = null;
+
+function canvasFilterWorks(ctx, canvas) {
+  const proto = ctx ? Object.getPrototypeOf(ctx) : null;
+  if (!proto || !("filter" in proto)) return false;
+  if (filterTest && filterTest.proto === proto) return filterTest.works;
+  let works = false;
+  try {
+    const doc = canvas?.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const scratch = doc?.createElement ? doc.createElement("canvas") : null;
+    if (scratch) {
+      scratch.width = 1;
+      scratch.height = 1;
+      const test = scratch.getContext("2d", { willReadFrequently: true });
+      test.fillStyle = "#ffffff";
+      test.fillRect(0, 0, 1, 1);
+      test.filter = PAPER_DARK_FILTER;
+      test.globalCompositeOperation = "copy";
+      test.drawImage(scratch, 0, 0);
+      const [r, g, b] = test.getImageData(0, 0, 1, 1).data;
+      works = r < 16 && g < 16 && b < 16;
+    }
+  } catch (_) {
+    works = false;
+  }
+  filterTest = { proto, works };
+  return works;
+}
+
+// `filter` says whether to use the context's filter; the screen, which has
+// already asked (canBakeDarkPage), says so — anything else is asked here.
+export function paintPaperTone(ctx, canvas, { dark = false, tint = null, filter = null } = {}) {
   if (!dark && !tint) return;
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   if (dark) {
-    ctx.filter = PAPER_DARK_FILTER;
-    ctx.globalCompositeOperation = "copy";
-    ctx.drawImage(canvas, 0, 0);
-    ctx.filter = "none";
+    if (filter === null ? canvasFilterWorks(ctx, canvas) : filter) {
+      ctx.filter = PAPER_DARK_FILTER;
+      ctx.globalCompositeOperation = "copy";
+      ctx.drawImage(canvas, 0, 0);
+      ctx.filter = "none";
+    } else {
+      darkFlipPixels(ctx, canvas);
+    }
     ctx.globalCompositeOperation = "lighten";
     ctx.fillStyle = tint || PAPER_DARK_FLOOR;
   } else {

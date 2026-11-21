@@ -22,6 +22,18 @@
 // A page that grows, or a Boundless page (src/documents/canvas-extent.js), is
 // written at the size it reaches; a Boundless page is cut to what is on it, as
 // its PDF page is.
+//
+// ── On the paper it is seen on ────────────────────────────────────────────
+//
+// The Canvas is shown on a TONE — the theme's own colour, White, Sepia, Dim or
+// Black (src/format/paper-tones.js) — and the web page is drawn on the one the
+// reader is looking at, as the PDF is: the paper and its lines through the same
+// steps the page's pixels go through, the pen set of that paper, and every
+// Block a card of the paper with the theme's accents made readable on it — the
+// rebinding the page itself uses (styles/94-paper-tones.css, `.paper-tokens`,
+// handed the palette src/format/paper-palette.js works out). On a dark paper
+// the page round the pages is dark too. It used to be white whatever the
+// reader saw.
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
@@ -33,6 +45,7 @@ import { exportPageBox, pageContentRects } from "../documents/canvas-extent.js?v
 import { DOC_SLOT_NOTEBOOK } from "../documents/doc-slot.js?v=__BUILD__";
 import { recordsForSurface } from "../documents/pdf-multi.js?v=__BUILD__";
 import { sniffImageType } from "../images/compress.js?v=__BUILD__";
+import { paperPalette, readThemeTokens } from "../format/paper-palette.js?v=__BUILD__";
 
 // The page's own look: the Canvas pages, and a bar with the title and zoom.
 // Lengths on a page are in its points through --u, one point of the page on
@@ -42,6 +55,7 @@ import { sniffImageType } from "../images/compress.js?v=__BUILD__";
 // fallback, and the script below.
 export const CANVAS_HTML_CSS = `
 :root { color-scheme: light; }
+:root.cx-dark { color-scheme: dark; }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
@@ -55,14 +69,18 @@ body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -a
 .cx-pages { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 18px 16px 32px; overflow-x: auto; }
 .cx-page { position: relative; flex: 0 0 auto; width: min(100%, calc(var(--w) * 1.3333px * var(--zoom, 1)));
   container-type: inline-size; --u: calc(100cqw / var(--w));
-  box-shadow: 0 1px 4px rgb(0 0 0 / 0.25); overflow: hidden; color: #16181d; }
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.25); overflow: hidden; color: #16181d; color: var(--paper-text, #16181d);
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .cx-pages.is-zoomed { align-items: flex-start; }
 .cx-pages.is-zoomed .cx-page { width: calc(var(--w) * 1.3333px * var(--zoom, 1)); }
 @supports not (width: 1cqw) { .cx-page { --u: calc(1.3333px * var(--zoom, 1)); } }
 .cx-page > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.cx-box { position: absolute; overflow: hidden; transform-origin: 50% 50%; display: flex; flex-direction: column; color: #16181d; }
+.cx-box { position: absolute; overflow: hidden; transform-origin: 50% 50%; display: flex; flex-direction: column; color: #16181d; color: var(--paper-text, #16181d); }
 .cx-box.is-card { border: 1px solid rgb(0 0 0 / 0.18); border-radius: calc(var(--u) * 4); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
 .cx-box.is-outline { border: 1px solid rgb(0 0 0 / 0.45); }
+.paper-tokens { --cx-edge: color-mix(in srgb, var(--paper-text) 72%, var(--paper-bg)); }
+.paper-tokens .cx-box.is-card { border-color: color-mix(in srgb, var(--paper-text) 18%, transparent); }
+.paper-tokens .cx-box.is-outline { border-color: color-mix(in srgb, var(--paper-text) 45%, transparent); }
 .cx-box.is-shaped { border: 0; box-shadow: none; background: transparent !important; overflow: visible; }
 .cx-box.is-shaped > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .cx-box .rendered { position: relative; line-height: 1.35; font-size: inherit; }
@@ -76,6 +94,11 @@ body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -a
 .cx-number { position: absolute; left: 0; right: 0; bottom: calc(var(--u) * 14); text-align: center; color: #737477;
   font: calc(var(--u) * 9) / 1 Helvetica, Arial, sans-serif; pointer-events: none; }
 .cx-foot { color: #5f6670; font-size: 0.8rem; text-align: center; padding: 0 16px 28px; }
+body.cx-body.is-dark { background: #101215; color: #e8eaed; }
+body.cx-body.is-dark .cx-head { background: rgb(24 26 30 / 0.94); border-bottom-color: #2c3036; }
+body.cx-body.is-dark .cx-head p, body.cx-body.is-dark .cx-zoom output, body.cx-body.is-dark .cx-foot { color: #a3a9b3; }
+body.cx-body.is-dark .cx-zoom button { background: #1d2025; border-color: #3a3f47; color: #e8eaed; }
+body.cx-body.is-dark .cx-page { box-shadow: 0 1px 6px rgb(0 0 0 / 0.6); }
 @media print {
   body.cx-body { background: #fff; }
   .cx-head, .cx-foot { display: none; }
@@ -83,6 +106,11 @@ body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -a
   .cx-page { width: 100% !important; box-shadow: none; break-after: page; break-inside: avoid; }
 }
 `;
+
+// The app's own rebinding of a page's colours to its paper (`.paper-tokens`),
+// for a web page drawn on a tone — beside the stylesheets every Block's words
+// already take from the offline viewer's list.
+export const CANVAS_HTML_PAPER_STYLESHEETS = ["styles/94-paper-tones.css"];
 
 // Zoom, for a browser that runs scripts: − and + step it, and past 100% the
 // pages are their own size and scroll across. Without a script the page
@@ -182,9 +210,21 @@ function canvasHtmlName() {
   return `${title.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Canvas"} - canvas.html`;
 }
 
+// The paper's palette as inline custom properties, for the element that holds
+// the pages. Only hexes are written, so nothing in it can close the attribute.
+function paletteStyle(tone) {
+  if (!tone) return "";
+  const palette = paperPalette(tone, readThemeTokens());
+  return Object.entries(palette)
+    .filter(([property, value]) => /^--[\w-]+$/.test(property) && /^#[0-9a-f]{3,8}$/i.test(String(value || "")))
+    .map(([property, value]) => `${property}:${value}`)
+    .join(";");
+}
+
 // Resolves to { html, name, pages, pictures, missing }, or null when there is
-// no Canvas.
-export async function buildCanvasHtml({ onProgress = null } = {}) {
+// no Canvas. `tone` is the paper the Canvas is seen on (currentPaperTone,
+// src/documents/pdf-view.js); none is the pages on their own paper.
+export async function buildCanvasHtml({ onProgress = null, tone = null } = {}) {
   const record = state.meta?.notebook;
   const count = Math.max(0, Math.round(Number(record?.pages) || 0));
   if (!record || !count) return null;
@@ -204,7 +244,8 @@ export async function buildCanvasHtml({ onProgress = null } = {}) {
       ink: pageMarks.filter((rec) => rec?.kind === "ink"),
       shapes: pageMarks.filter((rec) => rec?.kind === "shape"),
       blocks: pageBlocks,
-      box
+      box,
+      tone
     }));
   }
   onProgress?.("words");
@@ -234,13 +275,16 @@ export async function buildCanvasHtml({ onProgress = null } = {}) {
   })).join("\n");
   const anyMath = /class="katex/.test(body);
   const [appCss, katexCss] = await Promise.all([
-    collectViewerAppCss().catch(() => ""),
+    collectViewerAppCss({ extra: tone ? CANVAS_HTML_PAPER_STYLESHEETS : [] }).catch(() => ""),
     anyMath ? inlineKatexCss() : Promise.resolve("")
   ]);
   const title = state.deckTitle || state.sourceTitle || "Canvas";
   const when = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  const dark = Boolean(tone?.dark);
+  const palette = paletteStyle(tone);
+  const pagesClass = tone ? ` paper-tokens${dark ? " is-dark-paper" : ""}` : "";
   const html = `<!doctype html>
-<html lang="en">
+<html lang="en"${dark ? ' class="cx-dark"' : ""}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -252,13 +296,13 @@ ${katexCss}
 ${CANVAS_HTML_CSS}
 </style>
 </head>
-<body class="cx-body">
+<body class="cx-body${dark ? " is-dark" : ""}">
 <header class="cx-head">
 <h1>${escapeHtml(title)}</h1>
 <p>Canvas · ${pages.length} page${pages.length === 1 ? "" : "s"} · ${escapeHtml(when)}</p>
 <div class="cx-zoom" role="group" aria-label="Zoom"><button type="button" data-cx-zoom="-0.25" aria-label="Zoom out">−</button><output>100%</output><button type="button" data-cx-zoom="0.25" aria-label="Zoom in">+</button></div>
 </header>
-<main class="cx-pages">
+<main class="cx-pages${pagesClass}"${palette ? ` style="${palette}"` : ""}>
 ${body}
 </main>
 <p class="cx-foot">Made with Recall. Everything is in this one file — it opens offline, in any browser.</p>

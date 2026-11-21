@@ -39,7 +39,7 @@
 
 import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, BLANK_PAPER_VERSION, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
 import { canvasMeasureBox, canvasPageBox, canvasPageBoxes, canvasSnapGridFor, canvasWideSheetSetup, nearestLegacyPaper, normalizeSheetSetup, remapPageSetups, sameSheet, sheetDrawKey, sheetFit, sheetLegacyKind, sheetPatternDefaults, sheetSetupForPage, validPageBox } from "./canvas-setup.js?v=__BUILD__";
-import { canvasDragLimits, neededPageBox, pageContentRects, samePageBox } from "./canvas-extent.js?v=__BUILD__";
+import { canvasDragLimits, neededPageBox, pageContentRects, pagePenRects, samePageBox } from "./canvas-extent.js?v=__BUILD__";
 import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey } from "./doc-slot.js?v=__BUILD__";
@@ -263,7 +263,7 @@ function neededNotebookPageBoxes(record = state.meta?.notebook, { only = null, b
     if (only && !only.has(n)) box = now;
     else {
       const on = byPage.get(n) || { marks: [], blocks: [] };
-      box = neededPageBox(setup, pageContentRects(on.marks, on.blocks), now, { past });
+      box = neededPageBox(setup, pageContentRects(on.marks, on.blocks), now, { past, pen: pagePenRects(on.marks) });
     }
     if (box && !samePageBox(box, canvasMeasureBox(record, n))) out[String(n)] = box;
   }
@@ -356,14 +356,24 @@ export function setCanvasGestureCheck(fn) {
   liveGestureCheck = typeof fn === "function" ? fn : () => false;
 }
 
+// Whether the fit waiting is one asked for at once. It is not put back by the
+// ordinary request that follows it — the drop that asked for it is followed, a
+// moment later, by the edit it made asking for the ordinary one — while the
+// ordinary ones still put each other back, so a hand writing is fitted only
+// once it pauses.
+let extentFitSoon = false;
+
 export function scheduleCanvasExtentFit({ soon = false } = {}) {
   if (!canvasHasGrowingPages()) return;
+  if (extentFitTimer && extentFitSoon && !soon) return;
   clearTimeout(extentFitTimer);
+  extentFitSoon = soon;
   extentFitTimer = setTimeout(runCanvasExtentFit, soon ? 60 : EXTENT_FIT_DELAY_MS);
 }
 
 function runCanvasExtentFit() {
   extentFitTimer = 0;
+  extentFitSoon = false;
   if (!canvasHasGrowingPages()) return;
   let busy = Boolean(extentFitRunning);
   try {

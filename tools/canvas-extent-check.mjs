@@ -12,6 +12,10 @@
 //   • a page that grows is never smaller than it was set up at, grows right and
 //     down only, by just enough room past what is on it, in whole steps, and
 //     shrinks back when what pushed it is gone — so an undo takes the room back;
+//   • its original size is the line: a Block, a shape or a picture past it
+//     grows the page, and everything back inside it, even by a little, is the
+//     page at its size; only the pen, which cannot write past the edge, asks
+//     for more page near it — and that never flips back and forth;
 //   • it does not change at every stroke: once grown it holds until what is on
 //     it comes within the smaller room of its edge again;
 //   • a Boundless page grows every way, and no page reaches past EXTENT_MAX;
@@ -93,10 +97,52 @@ await must("past its right edge it grows wider; never left or up", () => {
   return (box[0] === 0 && box[3] === 842 && box[2] === Math.ceil((640 + EXTENT_ROOM) / EXTENT_STEP) * EXTENT_STEP && box[1] === 0) || box;
 });
 
-await must("within the room of its edge it grows; just clear of it, it does not", () => {
-  const near = ext.neededPageBox(GROW, [[100, EXTENT_ROOM_MIN - 2, 200, 300]]);
-  const clear = ext.neededPageBox(GROW, [[100, EXTENT_ROOM_MIN + 2, 200, 300]]);
-  return (near[1] < 0 && same(clear, A4)) || { near, clear };
+await must("the pen near its foot makes it longer; just clear of it, it does not", () => {
+  const stroke = [100, EXTENT_ROOM_MIN - 2, 200, 300];
+  const clearStroke = [100, EXTENT_ROOM_MIN + 2, 200, 300];
+  const near = ext.neededPageBox(GROW, [stroke], null, { pen: [stroke] });
+  const clear = ext.neededPageBox(GROW, [clearStroke], null, { pen: [clearStroke] });
+  // ...and near its right edge, wider.
+  const side = [595 - EXTENT_ROOM_MIN + 2, 300, 595 - 4, 400];
+  const wide = ext.neededPageBox(GROW, [side], null, { pen: [side] });
+  return (near[1] < 0 && same(clear, A4) && wide[2] > 595) || { near, clear, wide };
+});
+
+await must("a Block, a shape or a picture near its edge, still inside its original size, does not grow it", () => {
+  const foot = ext.neededPageBox(GROW, [[100, 4, 200, 300]]);
+  const side = ext.neededPageBox(GROW, [[400, 300, 594, 400]]);
+  const touching = ext.neededPageBox(GROW, [[100, 0, 595, 300]]);
+  return (same(foot, A4) && same(side, A4) && same(touching, A4)) || { foot, side, touching };
+});
+
+await must("pulled back inside its original size, even by a little, it is its size again", () => {
+  const grown = ext.neededPageBox(GROW, [[100, -40, 300, 20], [500, 300, 640, 400]]);
+  const footBack = ext.neededPageBox(GROW, [[100, 6, 300, 66], [500, 300, 640, 400]], grown);
+  const allBack = ext.neededPageBox(GROW, [[100, 6, 300, 66], [440, 300, 590, 400]], footBack);
+  return (grown[1] < 0 && grown[2] > 595 && footBack[1] === 0 && footBack[2] === grown[2] && same(allBack, A4)) || { grown, footBack, allBack };
+});
+
+await must("the pen's room keeps a page grown at every fit after — it never grows at one and shrinks at the next", () => {
+  const stroke = [100, 20, 300, 60];
+  const grown = ext.neededPageBox(GROW, [stroke], null, { pen: [stroke] });
+  const again = ext.neededPageBox(GROW, [stroke, [100, 400, 200, 500]], grown, { pen: [stroke] });
+  const erased = ext.neededPageBox(GROW, [[100, 400, 200, 500]], again, { pen: [] });
+  return (grown[1] < 0 && same(again, grown) && same(erased, A4)) || { grown, again, erased };
+});
+
+await must("a page setup asks only what is past an edge: the pen near it does not grow the page", () => {
+  const stroke = [100, 10, 300, 60];
+  const box = ext.neededPageBox(GROW, [stroke], null, { pen: [stroke], past: true });
+  return same(box, A4) || box;
+});
+
+await must("only the pen's strokes are its pen rects", () => {
+  const rects = ext.pagePenRects([
+    { kind: "ink", quads: [{ page: 1, rect: [10, 10, 50, 50] }] },
+    { kind: "shape", shape: { type: "rect", p: [[0, 0], [20, 20]] }, quads: [{ page: 1, rect: [0, 0, 20, 20] }] },
+    { kind: "highlight", quads: [{ page: 1, rect: [0, 0, 5, 5] }] }
+  ]);
+  return same(rects, [[10, 10, 50, 50]]) || rects;
 });
 
 await must("once grown it holds while what is on it moves a little, not at every stroke", () => {
