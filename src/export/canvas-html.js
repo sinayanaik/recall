@@ -71,7 +71,6 @@ body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -a
 .cx-head { position: sticky; top: 0; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
   padding: 10px 16px; background: rgb(255 255 255 / 0.94); border-bottom: 1px solid #d5d7dc; }
 .cx-head h1 { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 1.05rem; overflow-wrap: anywhere; }
-.cx-head p { margin: 0; color: #5f6670; font-size: 0.85rem; }
 .cx-zoom { display: inline-flex; align-items: center; gap: 4px; }
 .cx-zoom button { min-width: 36px; height: 32px; border: 1px solid #c9ccd2; border-radius: 8px; background: #fff; font: inherit; cursor: pointer; }
 .cx-zoom output { min-width: 48px; text-align: center; color: #5f6670; font-size: 0.85rem; }
@@ -118,15 +117,14 @@ body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -a
 .cx-missing { display: block; padding: 4px; color: #6b7280; font-size: calc(var(--u) * 9); }
 .cx-number { position: absolute; left: 0; right: 0; bottom: calc(var(--u) * 14); text-align: center; color: #737477;
   font: calc(var(--u) * 9) / 1 Helvetica, Arial, sans-serif; pointer-events: none; }
-.cx-foot { color: #5f6670; font-size: 0.8rem; text-align: center; padding: 0 16px 28px; }
 body.cx-body.is-dark { background: #101215; color: #e8eaed; }
 body.cx-body.is-dark .cx-head { background: rgb(24 26 30 / 0.94); border-bottom-color: #2c3036; }
-body.cx-body.is-dark .cx-head p, body.cx-body.is-dark .cx-zoom output, body.cx-body.is-dark .cx-foot { color: #a3a9b3; }
+body.cx-body.is-dark .cx-zoom output { color: #a3a9b3; }
 body.cx-body.is-dark .cx-zoom button { background: #1d2025; border-color: #3a3f47; color: #e8eaed; }
 body.cx-body.is-dark .cx-page { box-shadow: 0 1px 6px rgb(0 0 0 / 0.6); }
 @media print {
   body.cx-body { background: #fff; }
-  .cx-head, .cx-foot { display: none; }
+  .cx-head { display: none; }
   .cx-pages { padding: 0; gap: 0; display: block; }
   .cx-page { width: 100% !important; box-shadow: none; break-after: page; break-inside: avoid; }
 }
@@ -721,7 +719,6 @@ export async function buildCanvasHtml({ onProgress = null, tone = null } = {}) {
 ${[...new Set(fonts.filter(Boolean))].join("\n")}
 ${setting ? `.cx-pages.cx-tokens { ${setting.tokens} }\n.cx-pages .cx-layer { ${setting.type} }` : ""}` : "";
   const title = state.deckTitle || state.sourceTitle || "Canvas";
-  const when = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
   const dark = Boolean(tone?.dark);
   const palette = paletteStyle(tone);
   const pagesClass = `${tone ? ` paper-tokens${dark ? " is-dark-paper" : ""}` : ""}${setting ? " cx-tokens" : ""}`;
@@ -742,13 +739,11 @@ ${CANVAS_HTML_CSS}
 <body class="cx-body${dark ? " is-dark" : ""}">
 <header class="cx-head">
 <h1>${escapeHtml(title)}</h1>
-<p>Canvas · ${pages.length} page${pages.length === 1 ? "" : "s"} · ${escapeHtml(when)}</p>
 <div class="cx-zoom" role="group" aria-label="Zoom"><button type="button" data-cx-zoom="-0.25" aria-label="Zoom out">−</button><output>100%</output><button type="button" data-cx-zoom="0.25" aria-label="Zoom in">+</button></div>
 </header>
 <main class="cx-pages${pagesClass}"${palette ? ` style="${palette}"` : ""}>
 ${body}
 </main>
-<p class="cx-foot">Made with Recall. Everything is in this one file — it opens offline, in any browser.</p>
 <script>${CANVAS_HTML_SCRIPT}</script>
 </body>
 </html>
