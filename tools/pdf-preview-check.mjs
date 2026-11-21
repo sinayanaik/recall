@@ -558,11 +558,11 @@ try {
     // Pages are ⋯'s.
     writeControls.addBoxed && writeControls.pageGroup === 13 && writeControls.pageGroupBoxed === 13,
     `Insert has a box=${writeControls.addBoxed}; ${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} rows with a box once it is open`);
-  // Nine: a heading of its own, five page rows (after this one, at the end,
+  // Ten: a heading of its own, five page rows (after this one, at the end,
   // duplicate, up, down), Page setup… (which replaced the three paper rows),
-  // page numbers and the tear-out.
+  // Pages grow as needed, page numbers and the tear-out.
   check("the ⋯ menu offers the notebook's rows and not the document's",
-    writeControls.menuRows === 9 && writeControls.menuRowsBoxed === 9 && writeControls.docRowsBoxed === 0,
+    writeControls.menuRows === 10 && writeControls.menuRowsBoxed === 10 && writeControls.docRowsBoxed === 0,
     `${writeControls.menuRowsBoxed}/${writeControls.menuRows} notebook row(s), ${writeControls.docRowsBoxed} document row(s)`);
   // The paper button came BACK: it was a dark page on/off, hidden here because
   // the pen followed the theme; it is a tone picker now (src/documents/
