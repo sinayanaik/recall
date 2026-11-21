@@ -39,12 +39,17 @@ you tap next (`src/documents/block-place.js`), and **Shapes** arms the Shapes
 tool and picks which one (`src/ui/ink-rail.js`). A Block opens to type in, in
 place (`src/documents/pdf-block-inline.js`), and a double-click or double-tap
 on a Block (or Enter on a picked-up one) opens it again; a single click only
-picks it up. A Canvas's pages are added, duplicated, moved and torn out from
-⋯ → Canvas pages, and ＋□ beside the page number adds one after the page in view
+picks it up. A Canvas's pages are added, duplicated, moved and deleted from
+⋯ → Canvas pages (which act on the page in view: the one under the middle of
+the screen, or the last page when scrolled to the end — `documentPageInFocus`),
+and ＋□ beside the page number adds one after the page in view
 (`src/documents/notebook.js`). **＋ Page**, the pill in the gap under every
 Canvas page, inserts a blank page right there, between that page and the next
 (`appendPageInsertButton` in `src/documents/pdf-view.js`; `data-page-chrome`
-keeps the page's tools off it). Each Canvas page shows its **page number**,
+keeps the page's tools off it). **Page k ⋯**, at the right of the same gap, is
+that page's own menu — Move up, Move down, Duplicate, Page setup…, Delete page
+(`appendPageMenuButton`; `src/documents/canvas-page-menu.js`). Say "delete a
+page", not "tear out" (the code keeps `tearOutNotebookPage` and `hw-tear-out`). Each Canvas page shows its **page number**,
 "k / n", at its foot, and the Canvas PDF export prints it in the same place;
 ⋯ → Canvas pages → Page numbers turns it off (`meta.notebook.pageNumbers:
 false`; `CANVAS_NUMBER_SIZE` / `CANVAS_NUMBER_BASELINE` in

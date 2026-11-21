@@ -1158,6 +1158,61 @@ try {
     morePages.back.doc === morePages.start.doc && morePages.back.meta === morePages.start.meta && morePages.inkBack === morePages.inkStart,
     JSON.stringify({ back: morePages.back, ink: morePages.inkBack }));
 
+  // "This page" is the page the reader is looking at. Reported: two pages,
+  // scrolled to page 2 with a sliver of page 1 still at the top, and ⋯ →
+  // Delete this page asked to delete page 1 — the reading position's "first
+  // page whose bottom is past the top" is not the page in view. And the page's
+  // own "Page k ⋯" menu, under each page, acts on that page and no other.
+  const pageMenu = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const inkOn = (n) => (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink" && Number(r.page) === n).length;
+    const waitFor = async (n) => { for (let i = 0; i < 60 && api.currentPdfPageCount() !== n; i += 1) await settle(100); await settle(200); };
+    const start = api.currentPdfPageCount();
+    const inkStart = inkOn(1);
+    document.querySelector('#documentMoreMenu [data-document-action="hw-page-end"]').click();
+    await waitFor(start + 1);
+    const total = api.currentPdfPageCount();
+    // Page 1's last 30px at the top of the view, the last page under the rest.
+    const view = document.getElementById("documentView");
+    const pageEl = (n) => view.querySelector('.pdf-page[data-page-number="' + n + '"]');
+    view.scrollTop += pageEl(total - 1).getBoundingClientRect().bottom - view.getBoundingClientRect().top - 30;
+    await settle(250);
+    document.querySelector('#documentMoreMenu [data-document-action="hw-tear-out"]').click();
+    await settle(150);
+    const rowAsks = document.getElementById("confirmModalMessage").textContent;
+    document.getElementById("confirmModalCancelBtn").click();
+    await settle(100);
+
+    // The last page's own menu.
+    const button = pageEl(total).querySelector(".canvas-page-menu-btn");
+    const buttonShown = Boolean(button && button.getBoundingClientRect().height > 0);
+    button?.click();
+    await settle(100);
+    const menu = document.querySelector(".canvas-page-menu");
+    const heading = menu?.querySelector(".canvas-page-menu-heading")?.textContent || "";
+    const downDisabled = Boolean(menu?.querySelector('[data-page-menu-action="down"]')?.disabled);
+    const upDisabled = Boolean(menu?.querySelector('[data-page-menu-action="up"]')?.disabled);
+    menu?.querySelector('[data-page-menu-action="delete"]')
+      ?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await settle(150);
+    const menuAsks = document.getElementById("confirmModalMessage").textContent;
+    const menuClosed = !document.querySelector(".canvas-page-menu");
+    document.getElementById("confirmModalOkBtn").click();
+    await waitFor(start);
+    return { start, total, rowAsks, buttonShown, heading, downDisabled, upDisabled, menuAsks, menuClosed, back: api.currentPdfPageCount(), inkStart, inkBack: inkOn(1) };
+  }`);
+  check("⋯ → Delete this page names the page in view, not the sliver above it",
+    pageMenu.rowAsks.startsWith(`Delete page ${pageMenu.total} of ${pageMenu.total}?`),
+    JSON.stringify({ total: pageMenu.total, asks: pageMenu.rowAsks }));
+  check("every Canvas page has its own Page k ⋯ menu, headed with that page",
+    pageMenu.buttonShown && pageMenu.heading === `Page ${pageMenu.total} of ${pageMenu.total}`
+      && pageMenu.downDisabled && !pageMenu.upDisabled,
+    JSON.stringify({ shown: pageMenu.buttonShown, heading: pageMenu.heading, down: pageMenu.downDisabled, up: pageMenu.upDisabled }));
+  check("...and its Delete page deletes that page and leaves the rest",
+    pageMenu.menuClosed && pageMenu.menuAsks.startsWith(`Delete page ${pageMenu.total} of`)
+      && pageMenu.back === pageMenu.start && pageMenu.inkBack === pageMenu.inkStart,
+    JSON.stringify({ asks: pageMenu.menuAsks, closed: pageMenu.menuClosed, back: pageMenu.back, start: pageMenu.start, ink: [pageMenu.inkStart, pageMenu.inkBack] }));
+
   // ── 5. A markdown block, moved, and a second device ─────────────────────
   //
   // A block is a rectangle in PDF POINTS, for the reason a highlight is: a

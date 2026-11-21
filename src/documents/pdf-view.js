@@ -1253,6 +1253,42 @@ function appendPageInsertButton(pageEl, pageNumber) {
     onInsertCanvasPage?.(Number(button.dataset.insertAfter) || pageNumber);
   });
   pageEl.appendChild(button);
+  appendPageMenuButton(pageEl, pageNumber);
+}
+
+// ── "Page k ⋯", in the same gap, at the page's right edge ─────────────────
+//
+// The page's own verbs (move up, move down, duplicate, page setup, delete),
+// on the page they act on. ⋯ → Canvas pages has the same rows, but a menu at
+// the top of the screen has to guess which page "this page" is; a button under
+// the page does not. Registered, as the insert handler is, so this module does
+// not import src/handwriting/board.js.
+let onCanvasPageMenu = null;
+
+export function setCanvasPageMenuHandler(fn) {
+  onCanvasPageMenu = typeof fn === "function" ? fn : null;
+}
+
+function appendPageMenuButton(pageEl, pageNumber) {
+  if (!pageEl || openPdf?.slot !== DOC_SLOT_NOTEBOOK) return;
+  if (pageEl.querySelector(":scope > .canvas-page-menu-btn")) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "canvas-page-menu-btn";
+  button.dataset.pageChrome = "";
+  button.dataset.pageMenuFor = String(pageNumber);
+  const label = `Page ${pageNumber} — move, duplicate, set up or delete this page`;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-haspopup", "menu");
+  button.innerHTML = `Page ${pageNumber} <span aria-hidden="true">&#8943;</span>`;
+  button.addEventListener("pointerdown", (event) => { event.stopPropagation(); });
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onCanvasPageMenu?.(Number(button.dataset.pageMenuFor) || pageNumber, button);
+  });
+  pageEl.appendChild(button);
 }
 
 function renderStartNotebookPrompt() {
@@ -7223,6 +7259,37 @@ export function currentDocumentPage() {
   lastPageGeneration = documentLayoutGeneration;
   lastPageAt = performance.now();
   return answer;
+}
+
+// The page the reader is LOOKING AT, for a verb that acts on "this page" (⋯ →
+// Canvas pages: delete, duplicate, move, page setup, add after).
+//
+// currentDocumentPage is the wrong question for those: it answers "the first
+// page whose bottom is past the top of the view", which is right for a reading
+// position and wrong the moment the last page is short. Two pages on a tall
+// window, scrolled to the end with page 2 filling the screen and a sliver of
+// page 1 still above it, is "page 1" to it — and "Delete this page" then asked
+// to delete page 1. So: at the very end, the last page; at the very top, the
+// first; otherwise the page under the middle of the view (a gap between two
+// pages counts as the page below it).
+export function documentPageInFocus() {
+  const view = el.documentView;
+  if (!view || !openPdf) return 1;
+  const count = openPdf.pageCount || 1;
+  const first = openPdf.pages.get(1);
+  if (first && !first.el.isConnected) return lastPageAnswer || 1;
+  if (documentSurfaceHidden()) return hiddenDocumentPlace().page;
+  const top = view.scrollTop;
+  const height = view.clientHeight;
+  if (top <= 4) return 1;
+  if (top + height >= view.scrollHeight - 4) return count;
+  const bottoms = documentPageGeometry()?.bottoms;
+  if (!bottoms) return currentDocumentPage();
+  const middle = top + height / 2;
+  for (let n = 1; n <= count; n += 1) {
+    if (bottoms[n - 1] > middle) return n;
+  }
+  return count;
 }
 
 // Dropped when the document is torn down: the next paper's page 1 is not this

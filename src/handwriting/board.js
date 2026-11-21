@@ -54,7 +54,8 @@ import { balancedWidthGuess, canvasBlockWidthMode, CANVAS_BLOCK_WIDTH_BALANCED }
 import { BLOCK_SHAPES, BLOCK_SHAPE_LABEL, blockShapePatch, normalizeBlockShape } from "../documents/block-style.js?v=__BUILD__";
 import { blockShapeIconSvg } from "../documents/block-style-bar.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
-import { currentDocumentPage, openDocumentView, pdfPageViewport, scrollToDocumentPage, setCanvasPageInsertHandler } from "../documents/pdf-view.js?v=__BUILD__";
+import { currentDocumentPage, documentPageInFocus, openDocumentView, pdfPageViewport, scrollToDocumentPage, setCanvasPageInsertHandler, setCanvasPageMenuHandler } from "../documents/pdf-view.js?v=__BUILD__";
+import { openCanvasPageMenu } from "../documents/canvas-page-menu.js?v=__BUILD__";
 import { hasObjectClipboard, pastePicked } from "../documents/canvas-selection.js?v=__BUILD__";
 import { documentViewOnly } from "../documents/view-only.js?v=__BUILD__";
 import { bindInkRailActivation } from "./rail.js?v=__BUILD__";
@@ -99,7 +100,7 @@ export function paintHandwritingControls() {
 
   // The page rows: each refused where it cannot act, never hidden (see below).
   const total = notebookPageCount();
-  const here = currentDocumentPage() || 1;
+  const here = documentPageInFocus() || 1;
   const pageRow = (action) => el.documentMoreMenu?.querySelector(`[data-document-action="${action}"]`);
   // Page setup… says what the page in view is set up as, so the menu answers
   // "what paper is this?" without opening anything.
@@ -138,7 +139,7 @@ export function paintHandwritingControls() {
   tearOut?.setAttribute(
     "title",
     ready && notebookPageCount() > 1
-      ? `Tear out page ${currentDocumentPage() || 1} — everything written on it goes with it`
+      ? `Delete page ${here} — everything on it goes with it`
       : "A canvas keeps at least one page"
   );
 }
@@ -211,7 +212,7 @@ export function startHandwritingNotebook({ chooseSetup = false } = {}) {
 // second place for the close-the-menu rules to be got wrong.
 export function runHandwritingMenuAction(action) {
   if (action === "hw-tear-out") { tearOutPage(); return true; }
-  if (action === "hw-page-after") { addPage({ after: currentDocumentPage() || notebookPageCount() }); return true; }
+  if (action === "hw-page-after") { addPage({ after: documentPageInFocus() || notebookPageCount() }); return true; }
   if (action === "hw-page-end") { addPage(); return true; }
   if (action === "hw-page-duplicate") { duplicatePage(); return true; }
   if (action === "hw-page-up") { movePage(-1); return true; }
@@ -232,7 +233,7 @@ export function runHandwritingMenuAction(action) {
   // (src/documents/canvas-setup-dialog.js). The grid / ruled / blank rows it
   // replaced changed every page at once and nothing else.
   if (action === "hw-page-setup") {
-    openCanvasSetupDialog({ page: currentDocumentPage() || 1, onApplied: paintHandwritingControls });
+    openCanvasSetupDialog({ page: documentPageInFocus() || 1, onApplied: paintHandwritingControls });
     return true;
   }
   return false;
@@ -293,9 +294,25 @@ function wire() {
     addPage({ after });
   });
 
+  // "Page k ⋯" in the same gap: page k's own verbs, on page k — no guessing
+  // which page "this page" means from where the view happens to be scrolled.
+  setCanvasPageMenuHandler((page, anchor) => {
+    if (documentViewOnly()) return;
+    openCanvasPageMenu({
+      anchor,
+      page,
+      total: notebookPageCount(),
+      onPageUp: () => movePage(-1, page),
+      onPageDown: () => movePage(1, page),
+      onDuplicate: () => duplicatePage(page),
+      onSetup: () => openCanvasSetupDialog({ page, onApplied: paintHandwritingControls }),
+      onDelete: () => tearOutPage(page)
+    });
+  });
+
   // The pager's own +: a page straight after the one in view.
   el.documentAddPageBtn?.addEventListener("click", () => {
-    addPage({ after: currentDocumentPage() || notebookPageCount() });
+    addPage({ after: documentPageInFocus() || notebookPageCount() });
   });
 }
 
@@ -322,15 +339,15 @@ function paintPasteBlocksRow() {
   if (row) row.toggleAttribute("disabled", !hasObjectClipboard());
 }
 
-async function duplicatePage() {
-  const page = currentDocumentPage() || 1;
+// `page` is the page a "Page k ⋯" menu was opened on; without one, the page in
+// view (⋯ → Canvas pages).
+async function duplicatePage(page = documentPageInFocus() || 1) {
   if (!(await duplicateNotebookPage(page))) return;
   paintHandwritingControls();
   setTimeout(() => scrollToDocumentPage(page + 1, 0, { smooth: true }), 60);
 }
 
-async function movePage(delta) {
-  const page = currentDocumentPage() || 1;
+async function movePage(delta, page = documentPageInFocus() || 1) {
   if (!(await moveNotebookPage(page, delta))) return;
   paintHandwritingControls();
   // The page goes where it was moved, and so does the reader: they moved it
@@ -338,14 +355,13 @@ async function movePage(delta) {
   setTimeout(() => scrollToDocumentPage(page + Math.sign(delta), 0, { smooth: true }), 30);
 }
 
-function tearOutPage() {
-  const page = currentDocumentPage();
+function tearOutPage(page = documentPageInFocus() || 1) {
   const total = notebookPageCount();
   if (total < 2) { showToast("A canvas keeps at least one page", "info"); return; }
   showConfirmModal(
-    `Tear out page ${page}? Everything written on it goes with it.`,
+    `Delete page ${page} of ${total}? Everything on it goes with it.`,
     () => { deleteNotebookPage(page).then(() => paintHandwritingControls()); },
-    { confirmLabel: "Tear it out", danger: true }
+    { confirmLabel: "Delete page", danger: true }
   );
 }
 
