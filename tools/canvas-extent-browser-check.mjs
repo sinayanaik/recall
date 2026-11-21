@@ -750,19 +750,23 @@ try {
       const pt = (parseFloat(getComputedStyle(shown).fontSize) * layerScale) / (shownWidth / 595);
       return { words, shown: true, pt: Math.round(pt * 100) / 100, livePt: live ? Math.round((parseFloat(getComputedStyle(live).fontSize) / liveScale) * 100) / 100 : null, bold: Boolean(shown.querySelector("strong")), code: Boolean(shown.querySelector("code")) };
     });
-    // The same at another zoom: the layer scales as one, so nothing in a
-    // Block moves against it.
-    const button = doc.querySelector('[data-cx-zoom="0.25"]');
+    // The same at another width (as the browser's own zoom or a narrower
+    // screen shows it — the viewport kept, so the app's own breakpoints are
+    // not what is tested): the layer scales as one, so nothing in a Block
+    // moves against it.
     const before = doc.querySelector('.cx-layer [data-pdf-block="' + ids.mixed + '"]');
     const snap = (node) => measure(node).map((x) => x.rect);
     const a = snap(before);
-    button.click(); button.click();
+    const sheet = before.closest(".cx-page");
+    const pageWidthWas = sheet.getBoundingClientRect().width;
+    sheet.style.width = Math.round(pageWidthWas * 0.6) + "px";
     await settle(300);
+    out.narrowed = sheet.getBoundingClientRect().width < pageWidthWas - 1;
     const b = snap(before);
     out.zoomRect = Math.round(Math.max(0, ...a.map((r, i) => Math.max(...r.map((v, k) => Math.abs(v - (b[i] || r)[k]))))) * 1000) / 1000;
     out.leaves = (built.html.match(/(?:src|href)="(?:blob:|https?:)[^"]*"/g) || []).slice(0, 5);
-    button.parentElement.querySelector('[data-cx-zoom="-0.25"]').click();
-    button.parentElement.querySelector('[data-cx-zoom="-0.25"]').click();
+    out.extras = [...doc.querySelectorAll(".cx-zoom, [data-cx-zoom], .cx-foot, .cx-head p")].map((n) => n.outerHTML.slice(0, 80));
+    sheet.style.width = "";
     await settle(200);
     before.scrollIntoView({ block: "center" });
     window.__frame = frame;
@@ -784,7 +788,8 @@ try {
     fidelity.texts.length === 2 && fidelity.texts.every((t) => t.shown && (t.livePt === null || Math.abs(t.pt - t.livePt) < 0.1))
       && Math.abs(fidelity.texts[0].pt - 9) < 0.1 && Math.abs(fidelity.texts[1].pt - 11) < 0.1 && fidelity.texts[0].bold && fidelity.texts[0].code,
     JSON.stringify(fidelity.texts));
-  check("...and zoomed in, nothing in a Block moves against it", fidelity.zoomRect < 0.005, String(fidelity.zoomRect));
+  check("...and at another width, nothing in a Block moves against it", fidelity.narrowed && fidelity.zoomRect < 0.005, JSON.stringify({ narrowed: fidelity.narrowed, rect: fidelity.zoomRect }));
+  check("...and nothing on the web page but its title and pages: no zoom control, no footer, no subtitle", !fidelity.extras.length, JSON.stringify(fidelity.extras));
   check("...with no address in the file that leaves it", !fidelity.leaves.length, JSON.stringify(fidelity.leaves));
   await shot("web-page-blocks.png");
   await page.evaluate("() => { window.__frame?.remove(); }");

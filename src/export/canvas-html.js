@@ -19,7 +19,7 @@
 //     a GIF, an animated WebP or an APNG moves exactly as it does on the page;
 //   • it lays itself out with no script (container units — see the stylesheet
 //     below), so it reads the same in a phone's file preview, an email
-//     attachment's preview and a browser; a few lines of script add zoom.
+//     attachment's preview and a browser.
 //
 // A page that grows, or a Boundless page (src/documents/canvas-extent.js), is
 // written at the size it reaches; a Boundless page is cut to what is on it, as
@@ -56,12 +56,12 @@ import { ensureHtmlToImage } from "../core/lib-loader.js?v=__BUILD__";
 import { CANONICAL_SRC_ATTR } from "../cloud/storage-urls.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME } from "../images/outbox.js?v=__BUILD__";
 
-// The page's own look: the Canvas pages, and a bar with the title and zoom.
+// The page's own look: the Canvas pages, and a bar with the title.
 // Lengths on a page are in its points through --u, one point of the page on
 // screen: the page's width over its width in points, from container units, so
 // no script has to measure anything. A browser too old for container units
 // gets the page at its own size (4/3 of a pixel to the point) from the
-// fallback, and the script below.
+// fallback.
 export const CANVAS_HTML_CSS = `
 :root { color-scheme: light; }
 :root.cx-dark { color-scheme: dark; }
@@ -71,17 +71,12 @@ body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -a
 .cx-head { position: sticky; top: 0; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
   padding: 10px 16px; background: rgb(255 255 255 / 0.94); border-bottom: 1px solid #d5d7dc; }
 .cx-head h1 { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 1.05rem; overflow-wrap: anywhere; }
-.cx-zoom { display: inline-flex; align-items: center; gap: 4px; }
-.cx-zoom button { min-width: 36px; height: 32px; border: 1px solid #c9ccd2; border-radius: 8px; background: #fff; font: inherit; cursor: pointer; }
-.cx-zoom output { min-width: 48px; text-align: center; color: #5f6670; font-size: 0.85rem; }
 .cx-pages { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 18px 16px 32px; overflow-x: auto; }
-.cx-page { position: relative; flex: 0 0 auto; width: min(100%, calc(var(--w) * 1.3333px * var(--zoom, 1)));
+.cx-page { position: relative; flex: 0 0 auto; width: min(100%, calc(var(--w) * 1.3333px));
   container-type: inline-size; --u: calc(100cqw / var(--w));
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.25); overflow: hidden; color: #16181d; color: var(--paper-text, #16181d);
   -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-.cx-pages.is-zoomed { align-items: flex-start; }
-.cx-pages.is-zoomed .cx-page { width: calc(var(--w) * 1.3333px * var(--zoom, 1)); }
-@supports not (width: 1cqw) { .cx-page { --u: calc(1.3333px * var(--zoom, 1)); } }
+@supports not (width: 1cqw) { .cx-page { --u: 1.3333px; } }
 .cx-page > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .cx-box { position: absolute; overflow: hidden; transform-origin: 50% 50%; display: flex; flex-direction: column; color: #16181d; color: var(--paper-text, #16181d); }
 .cx-box.is-card { border: 1px solid rgb(0 0 0 / 0.18); border-radius: calc(var(--u) * 4); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
@@ -108,7 +103,7 @@ body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -a
   --cx-s: tan(atan2(100cqw, calc(var(--w) * var(--cx-l, 1) * 1px)));
   transform: scale(var(--cx-s)); background: transparent !important; box-shadow: none !important; border: 0 !important; }
 @supports not ((width: 1cqw) and (width: calc(1px * tan(atan2(1px, 1px))))) {
-  .cx-layer { --cx-s: calc(1.3333 * var(--zoom, 1) / var(--cx-l, 1)); }
+  .cx-layer { --cx-s: calc(1.3333 / var(--cx-l, 1)); }
 }
 /* A Block on the web page is read, not picked up: its words select. */
 .cx-layer, .cx-layer * { -webkit-user-select: text !important; user-select: text !important; touch-action: auto !important; cursor: auto; }
@@ -119,8 +114,6 @@ body.cx-body { background: #e6e7ea; color: #16181d; font: 16px/1.5 system-ui, -a
   font: calc(var(--u) * 9) / 1 Helvetica, Arial, sans-serif; pointer-events: none; }
 body.cx-body.is-dark { background: #101215; color: #e8eaed; }
 body.cx-body.is-dark .cx-head { background: rgb(24 26 30 / 0.94); border-bottom-color: #2c3036; }
-body.cx-body.is-dark .cx-zoom output { color: #a3a9b3; }
-body.cx-body.is-dark .cx-zoom button { background: #1d2025; border-color: #3a3f47; color: #e8eaed; }
 body.cx-body.is-dark .cx-page { box-shadow: 0 1px 6px rgb(0 0 0 / 0.6); }
 @media print {
   body.cx-body { background: #fff; }
@@ -135,20 +128,10 @@ body.cx-body.is-dark .cx-page { box-shadow: 0 1px 6px rgb(0 0 0 / 0.6); }
 // already take from the offline viewer's list.
 export const CANVAS_HTML_PAPER_STYLESHEETS = ["styles/94-paper-tones.css"];
 
-// Zoom, for a browser that runs scripts: − and + step it, and past 100% the
-// pages are their own size and scroll across. Without a script the page
-// still reads, at the width of the screen.
+// A code panel's badge copies its code, as it does in Recall, for a browser
+// that runs scripts. Without a script the page reads just the same.
 const CANVAS_HTML_SCRIPT = `
 (function () {
-  var pages = document.querySelector(".cx-pages");
-  var label = document.querySelector(".cx-zoom output");
-  var zoom = 1;
-  function paint() {
-    pages.style.setProperty("--zoom", String(zoom));
-    pages.classList.toggle("is-zoomed", zoom > 1);
-    if (label) label.textContent = Math.round(zoom * 100) + "%";
-  }
-  // A code panel's badge copies its code, as it does in Recall.
   document.addEventListener("click", function (event) {
     var button = event.target && event.target.closest ? event.target.closest(".code-copy-btn") : null;
     var code = button && button.closest("pre") ? button.closest("pre").querySelector("code") : null;
@@ -158,14 +141,6 @@ const CANVAS_HTML_SCRIPT = `
       setTimeout(function () { button.classList.remove("is-copied"); }, 1200);
     }, function () {});
   });
-  document.querySelectorAll("[data-cx-zoom]").forEach(function (button) {
-    button.addEventListener("click", function () {
-      var step = Number(button.getAttribute("data-cx-zoom"));
-      zoom = Math.min(4, Math.max(0.25, Math.round((zoom + step) * 100) / 100));
-      paint();
-    });
-  });
-  paint();
 })();
 `;
 
@@ -738,9 +713,7 @@ ${CANVAS_HTML_CSS}
 </head>
 <body class="cx-body${dark ? " is-dark" : ""}">
 <header class="cx-head">
-<h1>${escapeHtml(title)}</h1>
-<div class="cx-zoom" role="group" aria-label="Zoom"><button type="button" data-cx-zoom="-0.25" aria-label="Zoom out">−</button><output>100%</output><button type="button" data-cx-zoom="0.25" aria-label="Zoom in">+</button></div>
-</header>
+<h1>${escapeHtml(title)}</h1></header>
 <main class="cx-pages${pagesClass}"${palette ? ` style="${palette}"` : ""}>
 ${body}
 </main>
