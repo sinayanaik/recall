@@ -352,6 +352,7 @@
     <link rel="modulepreload" href="src/format/ink-svg.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/blank-pdf.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/block-actions-popover.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/canvas-page-menu.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/block-style.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/block-style-bar.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/doc-scrollers.js?v=__BUILD__">
@@ -1422,7 +1423,7 @@
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-page-setup" title="Page size, orientation, paper and lines — this page or every page"><span>Page setup…<span class="nhm-hint" data-hw-setup-hint>Size, paper and lines</span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-pages-grow" aria-pressed="true" title="Pages get longer or wider when what is on them reaches the right edge or the foot — off, every page is exactly its size"><span>Pages grow as needed<span class="nhm-hint">Longer or wider when you go past the edge</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-page-numbers" aria-pressed="true" title="Show &quot;1 / 5&quot; at the foot of every page — on screen and in the exported PDF"><span>Page numbers<span class="nhm-hint">1 / n at the foot of each page, exported too</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
-                <button class="md-menu-item is-danger" type="button" data-slot="notebook" data-document-action="hw-tear-out" title="Tear out the page you are looking at — everything written on it goes with it"><span>Tear out this page<span class="nhm-hint">Everything written on it goes too</span></span></button>
+                <button class="md-menu-item is-danger" type="button" data-slot="notebook" data-document-action="hw-tear-out" title="Delete the page you are looking at — everything on it goes with it"><span>Delete this page<span class="nhm-hint">Or press Page ⋯ under any page</span></span></button>
                 <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on — the PDFs tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <!-- ⋯ → Teleprompter: the PDF scrolls by itself, column by column,
                      under a reading band (src/documents/pdf-teleprompter.js). -->

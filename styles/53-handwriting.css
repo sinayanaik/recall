@@ -942,10 +942,119 @@
   .canvas-page-insert { top: calc(100% + 16px); }
 }
 
+/* "Page k ⋯": the page's own menu (appendPageMenuButton, src/documents/
+   pdf-view.js; src/documents/canvas-page-menu.js), in the same gap as ＋ Page
+   but at the page's right edge, so the two never overlap. */
+.canvas-page-menu-btn {
+  position: absolute;
+  top: calc(100% + 18px);
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 2px 10px;
+  border: 1px solid color-mix(in srgb, var(--text, #444) 25%, transparent);
+  border-radius: 999px;
+  background: var(--card, #fff);
+  color: var(--muted, #6b7280);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0.65;
+  touch-action: manipulation;
+  transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.canvas-page-menu-btn > span {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.canvas-page-menu-btn:hover,
+.canvas-page-menu-btn:focus-visible,
+.canvas-page-menu-btn[aria-expanded="true"] {
+  opacity: 1;
+  color: var(--accent, #2563eb);
+  border-color: currentColor;
+}
+
+@media (pointer: coarse) {
+  .canvas-page-menu-btn { opacity: 0.9; }
+}
+
+@media (max-width: 560px) {
+  .canvas-page-menu-btn { top: calc(100% + 16px); }
+}
+
+.canvas-page-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 610;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.28);
+}
+
+.canvas-page-menu-heading {
+  padding: 6px 10px 4px;
+  color: var(--muted, #6b7280);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.canvas-page-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.canvas-page-menu-item:hover:not(:disabled),
+.canvas-page-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--accent, #2563eb) 12%, transparent);
+  outline: none;
+}
+
+.canvas-page-menu-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.canvas-page-menu-item.is-danger {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 8px 8px;
+  color: var(--ink-pen-red, #dc2626);
+}
+
 /* Only on a Canvas there is to add to, and not in View only. */
-:is(#documentStage, #documentStageAlt):not([data-doc-slot="notebook"]) .canvas-page-insert,
-:is(#documentStage, #documentStageAlt).has-no-notebook .canvas-page-insert,
-.view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .canvas-page-insert {
+:is(#documentStage, #documentStageAlt):not([data-doc-slot="notebook"]) :is(.canvas-page-insert, .canvas-page-menu-btn),
+:is(#documentStage, #documentStageAlt).has-no-notebook :is(.canvas-page-insert, .canvas-page-menu-btn),
+.view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] :is(.canvas-page-insert, .canvas-page-menu-btn) {
   display: none;
 }
 
@@ -955,6 +1064,7 @@
    may be pressed, drawn or dragged on them, and ＋ Page cannot be pressed
    into the change a second time. */
 body.canvas-pages-busy .canvas-page-insert,
+body.canvas-pages-busy .canvas-page-menu-btn,
 body.canvas-pages-busy #documentAddPageBtn {
   pointer-events: none;
   opacity: 0.35;
