@@ -11,7 +11,7 @@ import { downloadTextFile } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { notesForExport } from "./notes-body.js?v=__BUILD__";
 import { buildCanvasPdfBytes, buildDocumentPrintDocument, documentExportBaseName, documentExportEmptyMessage, documentExportNoun, documentExportUnavailableReason, documentPrintPageCount, onCanvasSlot } from "../documents/pdf-export.js?v=__BUILD__";
-import { saveDocumentCopy } from "../documents/pdf-view.js?v=__BUILD__";
+import { currentPaperTone, saveDocumentCopy } from "../documents/pdf-view.js?v=__BUILD__";
 import { saveAnnotatedPdf } from "../documents/pdf-annot-export.js?v=__BUILD__";
 import { ensureMermaid, ensurePdfLib } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -861,7 +861,8 @@ export async function exportCanvasPdf() {
 
 // The Canvas as one web page (buildCanvasHtml, src/export/canvas-html.js):
 // vector paper and ink, real words, and every picture in the file as itself,
-// so a GIF moves. Downloaded, like the PDF.
+// so a GIF moves. Downloaded, like the PDF — and, like it, on the paper the
+// Canvas is seen on (the Canvas is the part in focus to get here).
 export async function exportCanvasHtml() {
   const blocked = documentExportUnavailableReason();
   if (blocked) {
@@ -872,6 +873,7 @@ export async function exportCanvasHtml() {
   setExportBusy(true);
   try {
     const result = await buildCanvasHtml({
+      tone: currentPaperTone(),
       onProgress: (step, done, total) => {
         if (step === "pictures" && total) setStatus(`Preparing the Canvas web page — picture ${done} of ${total}…`);
       }

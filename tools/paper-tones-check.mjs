@@ -127,6 +127,45 @@ try {
     return P.resolvePaperTone("neon").id === "white" || "resolvePaperTone did not fall back";
   });
 
+  // The paper as a colour, for what is drawn as vectors (the Canvas's web page):
+  // the same steps a page's pixels go through (paintPaperTone).
+  must("paperToneColor: white is every tone's own paper, under every theme", () => {
+    const bad = [];
+    themeCatalog.forEach((theme) => {
+      P.PAPER_TONE_IDS.forEach((id) => {
+        const tone = P.resolvePaperTone(id, theme.id);
+        const got = P.paperToneColor("#ffffff", tone);
+        if (got !== tone.bg) bad.push(`${theme.id}/${id}: ${got} ≠ ${tone.bg}`);
+      });
+    });
+    return bad.length ? bad.slice(0, 6).join("; ") : true;
+  });
+
+  must("paperToneColor: a dark paper turns a grey line light, keeps a grey a grey, and never goes below its floor", () => {
+    const black = P.resolvePaperTone("black");
+    const dim = P.resolvePaperTone("dim");
+    const line = P.parseHex(P.paperToneColor("#c8c8c8", black));
+    const ink = P.parseHex(P.paperToneColor("#16181d", black));
+    const onDim = P.parseHex(P.paperToneColor("#ffffff", dim));
+    const dimFloor = P.parseHex(dim.bg);
+    const grey = line.every((v) => Math.abs(v - line[0]) <= 1) && Math.abs(line[0] - 55) <= 2;
+    const light = ink.every((v) => v > 220);
+    const floored = onDim.every((v, i) => v >= dimFloor[i]);
+    return (grey && light && floored) || JSON.stringify({ line, ink, onDim });
+  });
+
+  must("paperToneColor: White is untouched, a light tint multiplies, and a hue is kept on a dark paper", () => {
+    const white = P.resolvePaperTone("white");
+    const sepia = P.resolvePaperTone("sepia");
+    const black = P.resolvePaperTone("black");
+    const same = P.paperToneColor("#3366cc", white) === "#3366cc";
+    const tinted = P.paperToneColor("#808080", sepia);
+    const wanted = P.rgbToHex(P.parseHex(sepia.bg).map((v) => (v * 128) / 255));
+    // A blue line stays blue: invert-and-rotate keeps the hue, flips the lightness.
+    const [r, g, b] = P.parseHex(P.paperToneColor("#2563eb", black));
+    return (same && tinted === wanted && b > r && b > g) || JSON.stringify({ same, tinted, wanted, blue: [r, g, b] });
+  });
+
   must("paperKey and paperKeyParts are inverses", () => {
     const cases = [[false, null], [true, null], [false, "#f4ecd8"], [true, "#26282d"]];
     for (const [dark, tint] of cases) {

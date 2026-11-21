@@ -2340,6 +2340,43 @@ function canvasPageIsBoundless(pageNumber) {
   return Boolean(record) && sheetFit(sheetSetupForPage(record, pageNumber)) === "boundless";
 }
 
+// ── A grown page's original size ─────────────────────────────────────────
+//
+// A page that has grown as needed shows where it was set up to end: its
+// original size, edged dashed on the sides it grew past, "Original size" in the
+// corner (styles/53-handwriting.css, .pdf-page.is-grown::before). It is also
+// the line the page grows and shrinks by (src/documents/canvas-extent.js): a
+// Block put past it grows the page, and everything taken back inside it puts
+// the page back to its size. Given as shares of the page (--canvas-set-w and
+// --canvas-set-h), so a zoom moves nothing here; set wherever a page's box is
+// laid out or changes. A pseudo-element, so it outlives every rebuild of the
+// page's children, and drawn on the screen only — neither export carries it.
+const CANVAS_GROWN_CLASS = "is-grown";
+
+function markCanvasPageGrowth(pageEl, pageNumber, open = openPdf) {
+  if (!pageEl) return;
+  const record = state.meta?.notebook;
+  let box = null;
+  let set = null;
+  if (open?.slot === DOC_SLOT_NOTEBOOK && record && sheetFit(sheetSetupForPage(record, pageNumber)) === "grow") {
+    box = canvasBoxes()[pageNumber - 1] || null;
+    set = canvasMeasureBoxes()[pageNumber - 1] || null;
+  }
+  const right = Boolean(box && set) && box[2] - set[2] >= 0.5;
+  const down = Boolean(box && set) && set[1] - box[1] >= 0.5;
+  pageEl.classList.toggle(CANVAS_GROWN_CLASS, right || down);
+  pageEl.classList.toggle("is-grown-right", right);
+  pageEl.classList.toggle("is-grown-down", down);
+  if (!right && !down) {
+    pageEl.style.removeProperty("--canvas-set-w");
+    pageEl.style.removeProperty("--canvas-set-h");
+    return;
+  }
+  const share = (part, whole) => `${Math.round(Math.min(1, Math.max(0, part / whole)) * 100000) / 1000}%`;
+  pageEl.style.setProperty("--canvas-set-w", share(set[2] - box[0], box[2] - box[0]));
+  pageEl.style.setProperty("--canvas-set-h", share(box[3] - set[1], box[3] - box[1]));
+}
+
 function pageBaseSize(pageNumber, open = openPdf) {
   if (open?.slot === DOC_SLOT_NOTEBOOK) {
     const box = canvasBoxes()[pageNumber - 1];
@@ -2509,6 +2546,7 @@ async function swapCanvasBytesNow({ blob, sha256, before }) {
     entry.viewport = viewport;
     entry.renderScale = 0;
     entry.el.classList.toggle("is-boundless", canvasPageIsBoundless(n));
+    markCanvasPageGrowth(entry.el, n, open);
     // The outline a drag left to show where the page would reach
     // (src/documents/page-grow-preview.js): it reaches there now.
     entry.el.querySelectorAll(":scope > .canvas-grow-preview").forEach((node) => node.remove());
@@ -2663,6 +2701,7 @@ function buildPagePlaceholders() {
     page.className = "pdf-page";
     page.dataset.pageNumber = String(pageNumber);
     if (openPdf.slot === DOC_SLOT_NOTEBOOK && canvasPageIsBoundless(pageNumber)) page.classList.add("is-boundless");
+    if (openPdf.slot === DOC_SLOT_NOTEBOOK) markCanvasPageGrowth(page, pageNumber);
     const base = pageBaseSize(pageNumber);
     page.style.width = `${Math.round(base.width * openPdf.scale)}px`;
     page.style.height = `${Math.round(base.height * openPdf.scale)}px`;
@@ -5824,7 +5863,7 @@ function bakePagePaper(canvas, kept = null, map = null) {
     if (!ctx) return;
     // The colour step is shared with the Canvas PDF export (paintPaperTone,
     // src/format/paper-tones.js), so the exported page is this paper.
-    imageKeep.bake(ctx, kept, map, () => paintPaperTone(ctx, canvas, { dark, tint }), { floor: dark });
+    imageKeep.bake(ctx, kept, map, () => paintPaperTone(ctx, canvas, { dark, tint, filter: true }), { floor: dark });
     markPixelsPaper(canvas, dark, tint);
     noteDarkBakeTime(performance.now() - started);
   } catch (error) {

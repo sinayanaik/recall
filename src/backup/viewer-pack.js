@@ -45,7 +45,8 @@ import { inkPathRecorder } from "../format/ink-svg.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { isHighlighterToken } from "../format/ink-colors.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
-import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
+import { paperNumberColor } from "../format/paper-palette.js?v=__BUILD__";
+import { paperRecolor, paperToneColor } from "../format/paper-tones.js?v=__BUILD__";
 import { inkCentrelinePath, inkHighlighterWidth, inkStrokeOutline, resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
 import { normalizeShape, polyPathData, shapeDashArray, shapePrimitives, stickyIconPolys } from "../render/annot-shapes.js?v=__BUILD__";
 import { outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
@@ -170,18 +171,41 @@ function svgInner(svg) {
 // The page is where it reaches — grown past its size, or Boundless
 // (src/documents/canvas-extent.js) — and `box`, when given, is the part of it
 // to draw: a Boundless page cut to what is on it, for the web page export.
-export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [], box = null } = {}) {
+//
+// `tone` (a tone from resolvePaperTone, src/format/paper-tones.js) is the paper
+// the page is SEEN on, for the web page export: the paper and its lines go
+// through the very steps the page's pixels go through on screen
+// (paperToneColor), the pen is the pen set of that paper, the shapes and the
+// pen's own colours are kept readable on it, and a Block's fill is the paper's
+// (the page's stylesheet rebinds --block-fill-* to it, styles/94-paper-tones.css).
+// None — the backup's offline viewer — is the page on its own paper, as it
+// always was.
+export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [], box = null, tone = null } = {}) {
   const setup = sheetSetupForPage(record, n);
   const reach = canvasPageBox(record, n);
   const [x0, y0, x1, y1] = Array.isArray(box) && box.length === 4 ? box.map(Number) : reach;
   const w = x1 - x0;
   const h = y1 - y0;
-  const paperHex = rgbHex(sheetOps(setup).paper);
+  const sheetPaperHex = rgbHex(sheetOps(setup).paper);
+  const toned = Boolean(tone && typeof tone === "object");
+  const toneOf = toned ? { dark: Boolean(tone.dark), tint: tone.tint || null } : null;
+  const paperHex = toned ? paperToneColor(sheetPaperHex, toneOf) : sheetPaperHex;
+  // What a colour is kept readable against, and the pen set: the tone's paper,
+  // as the screen paints the marks (paintRegionMarks), or the sheet's own.
+  const markBg = toned ? (tone.bg || paperHex) : sheetPaperHex;
+  const penPaper = toned && tone.dark ? "dark" : "light";
+  const sheetRecolor = toned
+    ? (c) => {
+      const hex = paperToneColor(rgbHex(c), toneOf);
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+      return [r, g, b];
+    }
+    : null;
   const toPoint = ([x, y]) => [x - x0, y1 - y];
   const parts = [`<svg class="viewer-page-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgNum(w)} ${svgNum(h)}" preserveAspectRatio="none">`];
-  parts.push(`<g class="viewer-paper">${svgInner(sheetSvg(setup, { box: reach, crop: [x0, y0, x1, y1] }))}</g>`);
+  parts.push(`<g class="viewer-paper">${svgInner(sheetSvg(setup, { box: reach, crop: [x0, y0, x1, y1], recolor: sheetRecolor }))}</g>`);
 
-  const recolor = paperRecolor(paperHex);
+  const recolor = paperRecolor(markBg);
   const boxes = [];
   // Shapes first, then the pen over them, as the page paints them.
   shapes.forEach((rec) => {
@@ -209,7 +233,7 @@ export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [
   ink.forEach((rec) => {
     decodeInkStrokes(rec.ink?.s).forEach((stroke) => {
       if (!stroke?.p?.length) return;
-      const paint = resolveInkPaint(stroke.c, { paper: "light", paperBg: paperHex });
+      const paint = resolveInkPaint(stroke.c, { paper: penPaper, paperBg: markBg });
       const recorder = inkPathRecorder();
       if (isHighlighterToken(stroke.c)) {
         if (!inkCentrelinePath(recorder.ctx, stroke)) return;
@@ -245,7 +269,9 @@ export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [
       x: left, y: top, w: bw, h: bh,
       rot: Number(block.rot) || 0,
       z: Number(block.z) || 0,
-      fill: BLOCK_FILL_HEX[style.fill] || "",
+      // On a tone, the paper's own fill for it (--block-fill-*, rebound to the
+      // paper by the page's stylesheet); else the fill's colour on white.
+      fill: toned ? (Object.hasOwn(BLOCK_FILL_HEX, style.fill) ? `var(--block-fill-${style.fill})` : "") : (BLOCK_FILL_HEX[style.fill] || ""),
       size: style.size,
       align: style.align,
       valign: style.valign,
@@ -256,7 +282,10 @@ export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [
   });
 
   parts.push("</svg>");
-  return { w, h, svg: parts.join(""), boxes, paper: paperHex, boundless: sheetFit(setup) === "boundless" };
+  const out = { w, h, svg: parts.join(""), boxes, paper: paperHex, boundless: sheetFit(setup) === "boundless" };
+  // The page number in the paper's own words at 60%, as the screen draws it.
+  if (toned) out.numberColor = paperNumberColor({ ...tone, bg: paperHex });
+  return out;
 }
 
 // ── A Canvas page as HTML, for the web page export ───────────────────────
@@ -314,11 +343,18 @@ export function canvasPageMarkup(page, { number = "", label = "" } = {}) {
     let outline = "";
     if (box.outline) {
       const paint = fill && fill !== "transparent" ? fill : "none";
-      outline = `<svg viewBox="0 0 ${svgNum(box.w)} ${svgNum(box.h)}" preserveAspectRatio="none" aria-hidden="true"><path d="${markupAttr(box.outline.edge)}" fill="${paint}" stroke="#4b5563" stroke-width="1" vector-effect="non-scaling-stroke"/>${box.outline.marks ? `<path d="${markupAttr(box.outline.marks)}" fill="none" stroke="#4b5563" stroke-width="1" vector-effect="non-scaling-stroke"/>` : ""}</svg>`;
+      // In style, not attributes: a fill on a paper is a var() (canvasPageDrawing),
+      // which an SVG attribute cannot hold. The edge is --cx-edge where the
+      // page's stylesheet gives the paper one (src/export/canvas-html.js).
+      const edge = "stroke:var(--cx-edge, #4b5563)";
+      outline = `<svg viewBox="0 0 ${svgNum(box.w)} ${svgNum(box.h)}" preserveAspectRatio="none" aria-hidden="true"><path d="${markupAttr(box.outline.edge)}" style="fill:${paint};${edge}" stroke-width="1" vector-effect="non-scaling-stroke"/>${box.outline.marks ? `<path d="${markupAttr(box.outline.marks)}" style="fill:none;${edge}" stroke-width="1" vector-effect="non-scaling-stroke"/>` : ""}</svg>`;
     }
     out.push(`<div class="cx-box${frame}" style="${style}">${outline}<div class="rendered">${box.html || ""}</div></div>`);
   });
-  if (number && !page?.boundless) out.push(`<div class="cx-number">${escapeHtml(number)}</div>`);
+  if (number && !page?.boundless) {
+    const colour = markupCss(page?.numberColor);
+    out.push(`<div class="cx-number"${colour ? ` style="color:${colour}"` : ""}>${escapeHtml(number)}</div>`);
+  }
   out.push("</section>");
   return out.join("");
 }
@@ -526,11 +562,13 @@ async function fetchText(url) {
   return response.text();
 }
 
-export async function collectViewerAppCss() {
+// `extra` are more of the app's stylesheets, after those — the Canvas's web
+// page adds the paper's (src/export/canvas-html.js).
+export async function collectViewerAppCss({ extra = [] } = {}) {
   if (typeof document === "undefined" || typeof fetch !== "function") return "";
   const links = Array.from(document.querySelectorAll?.('link[rel="stylesheet"][href]') || []);
   const out = [];
-  for (const name of VIEWER_APP_STYLESHEETS) {
+  for (const name of [...VIEWER_APP_STYLESHEETS, ...(extra || [])]) {
     const link = links.find((node) => String(node.getAttribute("href") || "").includes(name));
     if (!link) continue;
     try {

@@ -2,7 +2,9 @@
 //
 // Every Canvas page grows as needed (src/documents/canvas-extent.js): a Block,
 // a shape or several things carried past its right edge or its foot make it
-// longer or wider. The page itself is redrawn once they are let go — the new
+// longer or wider — past it, not merely near it: the page's original size is
+// the line (shown dashed on a page that has grown, markCanvasPageGrowth in
+// src/documents/pdf-view.js). The page itself is redrawn once they are let go — the new
 // paper is a new file (src/documents/notebook.js) — so while they are carried
 // the page shows where it will reach: its paper carried on past the old edge,
 // to the new one, drawn dashed, "Page grows" at its corner. Let go, and the
@@ -146,19 +148,25 @@ export function previewPageGrowth({ page, target = page, rects = [] } = {}) {
 }
 
 // The drag is over. Let go over a page that is growShown growing, the outline
-// stays until the page is drawn at its new size, and the page is asked to grow
-// at once; any other end takes the outlines away.
+// stays until the page is drawn at its new size; any other end takes the
+// outlines away. Every drop on the Canvas asks the pages to fit at once — a
+// page grows the moment something is let go past its edge, and is its size
+// again the moment the last thing past it is taken back inside its original
+// size (src/documents/canvas-extent.js); a drop that changes no page's reach
+// changes nothing.
 export function endPageGrowthPreview({ dropped = true } = {}) {
   markTarget(0);
+  if (dropped && growOnCanvas()) {
+    try {
+      growSoonHook();
+    } catch (error) {
+      console.warn("Could not ask the page to grow", error);
+    }
+  }
   if (!growShown.size) return;
   if (!dropped) {
     clearPageGrowthPreview();
     return;
-  }
-  try {
-    growSoonHook();
-  } catch (error) {
-    console.warn("Could not ask the page to grow", error);
   }
   clearTimeout(holdTimer);
   holdTimer = setTimeout(() => clearPageGrowthPreview(), GROW_PREVIEW_HOLD_MS);

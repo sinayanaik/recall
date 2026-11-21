@@ -11,8 +11,8 @@
 //
 // Every page **grows as needed** ("grow", and what a page with no `fit` does):
 // it is the size it is set up at, at least, and longer or wider when what is
-// on it comes near its right edge or its foot — just enough room past it to
-// keep going, never smaller than it was set up at. A page set to its size
+// on it goes past its right edge or its foot (the pen: comes near it) — just
+// enough room past it to keep going, never smaller than it was set up at. A page set to its size
 // ("set": Grows as needed switched off) is that size, as every page once was.
 // A **Boundless** page ("boundless") has no size: it is what is on it with room
 // round it on every side, its own w × h only where it starts.
@@ -33,10 +33,23 @@
 // undo that takes a Block back off the edge takes the room back too, and two
 // devices that hold the same page reach the same box and draw the same bytes.
 // The current box is an input only so the page does not change at every
-// stroke: it grows once what is on it is closer than EXTENT_ROOM_MIN to its
-// edge, by a whole EXTENT_STEP past EXTENT_ROOM, and shrinks only once there is
-// more room than that — a hand writing down the last lines of a page rewrites
-// it every few lines, not every line.
+// stroke: a grown page grows again once what is on it is closer than
+// EXTENT_ROOM_MIN to the edge it has grown to, by a whole EXTENT_STEP past
+// EXTENT_ROOM, and comes back only once there is more room than that — a hand
+// writing down the last lines of a page rewrites it every few lines, not every
+// line.
+//
+// ── The original size is the line ─────────────────────────────────────────
+//
+// A page that has grown shows where it was set up to end — its ORIGINAL SIZE,
+// a dashed edge (src/documents/pdf-view.js, markCanvasPageGrowth) — and that
+// edge is the rule: a Block, a shape or a picture put past it makes the page
+// grow; everything taken back inside it, and the page is its size again. The
+// one exception is the pen, which cannot write past the edge of the paper it is
+// on: a stroke near the right edge or the foot (within EXTENT_ROOM_MIN) is how a
+// hand writing down the page asks for more of it, so a stroke reaches that much
+// further than it is. Both are a function of what is on the page alone, so a
+// page never grows at one fit and shrinks at the next with nothing moved.
 
 import { normalizeShapeRotation, rotatePoint, shapeBounds } from "../render/annot-shapes.js?v=__BUILD__";
 import { CANVAS_SHEET_TOP, normalizeSheetSetup, sheetBox, sheetFit, sheetRound, sheetSetupForPage, validPageBox } from "./canvas-setup.js?v=__BUILD__";
@@ -104,6 +117,18 @@ export function markBounds(record) {
   return unionRects((Array.isArray(record?.quads) ? record.quads : []).map((quad) => quad?.rect));
 }
 
+// The boxes of a page's pen strokes — the things that ask for more page when
+// merely near its edge (see "The original size is the line", above).
+export function pagePenRects(marks = []) {
+  const out = [];
+  (marks || []).forEach((record) => {
+    if (record?.kind !== "ink") return;
+    const r = markBounds(record);
+    if (r) out.push(r);
+  });
+  return out;
+}
+
 // Every box on a page, from its marks and its Blocks.
 export function pageContentRects(marks = [], blocks = []) {
   const out = [];
@@ -133,6 +158,21 @@ function fittedEdge({ base, current, content, room, roomMin }) {
   return now > least ? least : now;
 }
 
+// One edge of a page that grows as needed, measured outward as above. `reach`
+// is how far what is on the page asks to go — as far as it is, a pen stroke
+// `roomMin` further — and nothing reaching past where the page was set up to
+// end (`base`) is the page at its size. Past it, the page reaches EXTENT_ROOM
+// past what is on it in whole steps, grows again when that comes within
+// `roomMin` of the edge it has grown to, and otherwise holds, or comes back to
+// just enough room.
+function grownEdge({ base, current, content, reach, roomMin }) {
+  if (content === null || !Number.isFinite(content) || !(reach > base)) return base;
+  const now = Math.max(base, Number.isFinite(current) ? current : base);
+  const target = Math.max(base, Math.ceil((content + EXTENT_ROOM) / EXTENT_STEP) * EXTENT_STEP);
+  if (now < content + roomMin) return target;
+  return Math.min(now, target);
+}
+
 // Two opposite edges held to EXTENT_MAX between them, taking the overrun off
 // whichever has grown further past where it was set up.
 function holdSpan(near, far, baseNear, baseFar) {
@@ -157,8 +197,10 @@ function holdSpan(near, far, baseNear, baseFar) {
 // now (`current`, or null for the size it is set up at). `past` asks only
 // whether something is PAST an edge, not merely near it — for a change the
 // reader did not make on the page (a new page setup), which must not grow a
-// page because something was written close to its foot.
-export function neededPageBox(setup, rects, current = null, { past = false } = {}) {
+// page because something was written close to its foot. `pen` is the boxes of
+// the pen strokes among `rects` (pagePenRects): on a page that grows, they ask
+// for more page when near its edge, where everything else must be past it.
+export function neededPageBox(setup, rects, current = null, { past = false, pen = [] } = {}) {
   const s = normalizeSheetSetup(setup);
   const base = sheetBox(s);
   const fit = sheetFit(s);
@@ -169,8 +211,11 @@ export function neededPageBox(setup, rects, current = null, { past = false } = {
   if (fit === "grow") {
     // Right and down only: the corner where writing starts stays put.
     const roomMin = past ? 0 : EXTENT_ROOM_MIN;
-    const right = fittedEdge({ base: base[2], current: now[2], content: content ? content[2] : null, room: EXTENT_ROOM, roomMin });
-    const foot = fittedEdge({ base: top - base[1], current: top - now[1], content: content ? top - content[1] : null, room: EXTENT_ROOM, roomMin });
+    const strokes = past || !content ? null : unionRects(pen);
+    const reachRight = content ? Math.max(content[2], strokes ? strokes[2] + roomMin : -Infinity) : null;
+    const reachFoot = content ? Math.max(top - content[1], strokes ? top - strokes[1] + roomMin : -Infinity) : null;
+    const right = grownEdge({ base: base[2], current: now[2], content: content ? content[2] : null, reach: reachRight, roomMin });
+    const foot = grownEdge({ base: top - base[1], current: top - now[1], content: content ? top - content[1] : null, reach: reachFoot, roomMin });
     return [base[0], sheetRound(top - Math.min(EXTENT_MAX, foot)), sheetRound(Math.min(base[0] + EXTENT_MAX, right)), top];
   }
   // Boundless: every side, from where it starts.
