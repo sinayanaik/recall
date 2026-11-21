@@ -596,7 +596,7 @@ try {
     out.pages = built.pages;
     out.pictures = built.pictures;
     out.size = built.html.length;
-    const match = /<img src="data:image\\/gif;base64,([^"]+)"/.exec(built.html);
+    const match = /<img\\b[^>]*\\ssrc="data:image\\/gif;base64,([^"]+)"/.exec(built.html);
     out.gifSame = Boolean(match) && match[1] === gif;
     out.noBlob = !/src="blob:/.test(built.html);
     out.words = ["Near the foot", "Stays put", "Goes left and up"].filter((w) => built.html.includes(w));
@@ -614,12 +614,20 @@ try {
     const doc = frame.contentDocument;
     const pages = [...doc.querySelectorAll(".cx-page")];
     out.shown = pages.map((p) => { const r = p.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
-    const img = doc.querySelector('.cx-box.is-picture img');
+    const img = doc.querySelector('.cx-layer [data-pdf-block-kind="image"] img');
     out.imgLoaded = Boolean(img && img.complete && img.naturalWidth === 8);
-    const words = [...doc.querySelectorAll(".cx-box .rendered")].map((n) => n.textContent.trim());
+    const words = [...doc.querySelectorAll(".cx-layer .pdf-block-body.rendered")].map((n) => n.textContent.trim());
     out.wordsShown = words;
-    const block = [...doc.querySelectorAll(".cx-box")].find((n) => /Near the foot/.test(n.textContent));
-    out.fontPx = block ? parseFloat(getComputedStyle(block).fontSize) : 0;
+    // The words as big against the page as they are on the Canvas: the
+    // Block's type in points, here and on the page in Recall.
+    const block = [...doc.querySelectorAll(".cx-layer .pdf-block")].find((n) => /Near the foot/.test(n.textContent));
+    const body = block?.querySelector(".pdf-block-body");
+    const layer = block?.closest(".cx-layer");
+    const layerScale = layer ? layer.getBoundingClientRect().width / layer.offsetWidth : 0;
+    out.fontPx = body ? parseFloat(getComputedStyle(body).fontSize) * layerScale : 0;
+    const liveBody = [...document.querySelectorAll("#documentStage .pdf-block")].find((n) => /Near the foot/.test(n.textContent))?.querySelector(".pdf-block-body");
+    const liveScale = api.pdfPageViewport ? api.pdfPageViewport(1)?.scale : 0;
+    out.livePt = liveBody && liveScale ? parseFloat(getComputedStyle(liveBody).fontSize) / liveScale : 0;
     out.pageWidth = pages[0] ? pages[0].getBoundingClientRect().width : 0;
     window.__frame = frame;
     return out;
@@ -628,8 +636,157 @@ try {
   check("...with the GIF in it as its own bytes, and no address that leaves the file", web.gifSame && web.noBlob && web.pictures >= 1, JSON.stringify(web));
   check("...every Block's words, and the grown page numbered while the Boundless one is not", web.words.length === 3 && web.numbered && !web.boundlessNumbered, JSON.stringify(web));
   check("...and opened on its own it lays out: the pages, the picture loaded", web.shown.length === 2 && web.shown.every(([w, h]) => w > 100 && h > 100) && web.imgLoaded, JSON.stringify(web));
-  check("...the words sized in the page's own points", web.fontPx > 0 && Math.abs(web.fontPx - (web.pageWidth / 595) * 11) < 2.5, JSON.stringify(web));
+  check("...the words sized in the page's own points, as on the Canvas", web.fontPx > 0 && web.livePt > 0 && Math.abs(web.fontPx - (web.pageWidth / 595) * web.livePt) < 0.5, JSON.stringify(web));
   await shot("web-page.png");
+  await page.evaluate("() => { window.__frame?.remove(); }");
+
+  // ── 4a. ...and every Block in it is the Block on the Canvas ───────────
+  //
+  // "The export web page for canvas is broken, not all elements are exactly
+  // remaining the same — the code blocks are not properly exported." A Block
+  // on the web page used to be a box of its own with the offline viewer's
+  // stylesheets only: a code panel in the Notes' rem sizes, too big against
+  // the page and cut off at the Block's edge; none of ◐ Canvas's type and none
+  // of a Block's own code size or code wrap. So every kind of thing a Block
+  // holds is put on the page, and each Block on the web page is measured
+  // against the same Block on the Canvas, element by element: where each
+  // piece is in its Block, how big its type is against the Block's, and
+  // whether a code panel runs past its edge.
+  const fidelity = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const out = { blocks: {} };
+    const fence = "\\u0060\\u0060\\u0060";
+    const items = {
+      code: { x: 30, y: 640, w: 270, h: 150, md: fence + "python\\nwaypoints = [\\n    {\\n        \\"ur5_arm\\": pose([-0.30, 0.70, 1.10]),\\n    },\\n]\\nstates = planner.solve_waypoints(waypoints)\\n" + fence },
+      ascii: { x: 310, y: 640, w: 260, h: 150, md: fence + "\\nYour scene and goals\\n        |\\nPython wrapper: build models\\n        |\\nVAMP: fast collision checks\\n" + fence },
+      mixed: { x: 30, y: 330, w: 270, h: 290, md: "## A heading\\n\\nWords with \\u0060inline code\\u0060 and **bold**.\\n\\n> A quote that runs on a little.\\n\\n- one\\n- two \\u0060planner.plan()\\u0060\\n\\n1. first\\n2. second\\n\\n| a | b |\\n|---|---|\\n| 1 | 2 |" },
+      sized: { x: 310, y: 420, w: 200, h: 160, md: fence + "python\\nmotion = planner.plan_through([planner.home, *states], algorithm=\\"auto\\")\\n" + fence, style: { codeSize: 7, codeWrap: true } }
+    };
+    const ids = {};
+    const records = Object.entries(items).map(([name, item]) => {
+      const id = api.freshDocumentBlockId();
+      ids[name] = id;
+      const { style, ...rest } = item;
+      return { id, page: 1, z: 20, kind: "markdown", ...rest, ...(style ? { style } : {}) };
+    });
+    api.runDiagramEdit(() => api.writeDocumentBlocks([...api.documentBlocks(), ...records]));
+    // A text box whose words are markdown, and one of plain words.
+    const note = api.addDocumentShape(1, { type: "text", p: [[320, 300], [560, 380]], text: "So it is **possible** that \u0060PlanningError\u0060 is raised.", font: { size: 9 } });
+    const plainNote = api.addDocumentShape(1, { type: "text", p: [[320, 220], [560, 280]], text: "Plain words in a box", font: { size: 11 } });
+    api.scrollToDocumentPage(1, 0);
+    await settle(1500);
+    const tone = api.currentPaperTone ? api.currentPaperTone() : null;
+    const built = await api.buildCanvasHtml({ tone });
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "position:fixed;left:0;top:0;width:1100px;height:900px;border:0;z-index:99999;background:#fff";
+    document.body.appendChild(frame);
+    frame.srcdoc = built.html;
+    await new Promise((resolve) => { frame.onload = resolve; setTimeout(resolve, 4000); });
+    await settle(500);
+    const doc = frame.contentDocument;
+    const controls = ".pdf-block-edge, .pdf-block-grip, [data-pdf-block-action], button.diagram-zoom, .image-resize-handle, .notes-img-resize-handle";
+    const parts = (node) => [...node.querySelectorAll("*")].filter((n) => !n.closest(controls) && !(n.namespaceURI || "").includes("svg"));
+    const measure = (node) => {
+      const box = node.getBoundingClientRect();
+      const base = parseFloat(getComputedStyle(node.querySelector(".pdf-block-body")).fontSize) || 1;
+      return parts(node).map((n) => {
+        const r = n.getBoundingClientRect();
+        const cs = getComputedStyle(n);
+        return {
+          tag: n.tagName.toLowerCase(),
+          rect: [(r.left - box.left) / box.width, (r.top - box.top) / box.height, r.width / box.width, r.height / box.height],
+          font: parseFloat(cs.fontSize) / base,
+          color: cs.color,
+          over: n.tagName === "PRE" ? n.scrollWidth > n.clientWidth + 1 : null
+        };
+      });
+    };
+    const zooms = {};
+    for (const [name, id] of Object.entries(ids)) {
+      const live = document.querySelector('#documentStage [data-pdf-block="' + id + '"]');
+      const shown = doc.querySelector('.cx-layer [data-pdf-block="' + id + '"]');
+      const entry = { live: Boolean(live), shown: Boolean(shown) };
+      if (live && shown) {
+        const a = measure(live);
+        const b = measure(shown);
+        entry.count = [a.length, b.length];
+        entry.tags = a.map((x) => x.tag).join() === b.map((x) => x.tag).join();
+        let rect = 0;
+        let font = 0;
+        let worst = "";
+        a.forEach((x, i) => {
+          const y = b[i];
+          if (!y) return;
+          const d = Math.max(...x.rect.map((v, k) => Math.abs(v - y.rect[k])));
+          if (d > rect) { rect = d; worst = x.tag + "#" + i; }
+          font = Math.max(font, Math.abs(x.font - y.font) / Math.max(0.01, x.font));
+        });
+        entry.rect = Math.round(rect * 1000) / 1000;
+        entry.worst = worst;
+        entry.font = Math.round(font * 1000) / 1000;
+        entry.colors = a.filter((x, i) => b[i] && x.color !== b[i].color).length;
+        entry.overLive = a.filter((x) => x.over).length;
+        entry.overShown = b.filter((x) => x.over).length;
+        const pre = shown.querySelector("pre code");
+        const livePre = live.querySelector("pre code");
+        if (pre && livePre) {
+          entry.codeRatio = [parseFloat(getComputedStyle(livePre).fontSize) / parseFloat(getComputedStyle(live.querySelector(".pdf-block-body")).fontSize),
+            parseFloat(getComputedStyle(pre).fontSize) / parseFloat(getComputedStyle(shown.querySelector(".pdf-block-body")).fontSize)].map((v) => Math.round(v * 1000) / 1000);
+          entry.codeWrap = getComputedStyle(pre).whiteSpace;
+        }
+        entry.select = getComputedStyle(shown.querySelector(".pdf-block-body")).userSelect;
+      }
+      out.blocks[name] = entry;
+    }
+    // The text boxes: built as the page builds them, their type in points.
+    const shownWidth = doc.querySelector(".cx-page").getBoundingClientRect().width;
+    const liveScale = api.pdfPageViewport(1)?.scale || 1;
+    out.texts = ["possible", "Plain words"].map((words) => {
+      const shown = [...doc.querySelectorAll(".cx-layer .pdf-shape-text")].find((n) => n.textContent.includes(words));
+      const live = [...document.querySelectorAll("#documentStage .pdf-shape-text")].find((n) => n.textContent.includes(words));
+      if (!shown) return { words, shown: false };
+      const layer = shown.closest(".cx-layer");
+      const layerScale = layer.getBoundingClientRect().width / layer.offsetWidth;
+      const pt = (parseFloat(getComputedStyle(shown).fontSize) * layerScale) / (shownWidth / 595);
+      return { words, shown: true, pt: Math.round(pt * 100) / 100, livePt: live ? Math.round((parseFloat(getComputedStyle(live).fontSize) / liveScale) * 100) / 100 : null, bold: Boolean(shown.querySelector("strong")), code: Boolean(shown.querySelector("code")) };
+    });
+    // The same at another zoom: the layer scales as one, so nothing in a
+    // Block moves against it.
+    const button = doc.querySelector('[data-cx-zoom="0.25"]');
+    const before = doc.querySelector('.cx-layer [data-pdf-block="' + ids.mixed + '"]');
+    const snap = (node) => measure(node).map((x) => x.rect);
+    const a = snap(before);
+    button.click(); button.click();
+    await settle(300);
+    const b = snap(before);
+    out.zoomRect = Math.round(Math.max(0, ...a.map((r, i) => Math.max(...r.map((v, k) => Math.abs(v - (b[i] || r)[k]))))) * 1000) / 1000;
+    out.leaves = (built.html.match(/(?:src|href)="(?:blob:|https?:)[^"]*"/g) || []).slice(0, 5);
+    button.parentElement.querySelector('[data-cx-zoom="-0.25"]').click();
+    button.parentElement.querySelector('[data-cx-zoom="-0.25"]').click();
+    await settle(200);
+    before.scrollIntoView({ block: "center" });
+    window.__frame = frame;
+    api.runDiagramEdit(() => api.writeDocumentBlocks(api.documentBlocks().filter((block) => !Object.values(ids).includes(block.id))));
+    api.applyDocumentRecordChanges({ remove: [note?.id, plainNote?.id].filter(Boolean) });
+    await settle(600);
+    return out;
+  }`);
+  for (const [name, entry] of Object.entries(fidelity.blocks)) {
+    check(`the web page's "${name}" Block is the Canvas's: every piece where it is, its type the size it is, nothing cut off that is not cut off there`,
+      entry.live && entry.shown && entry.tags && entry.rect < 0.02 && entry.font < 0.02 && entry.overShown === entry.overLive && entry.colors === 0 && entry.select !== "none",
+      JSON.stringify(entry));
+  }
+  check("...its code in the Canvas's code size against its words (not the Notes' rem), and a Block's own code size and wrap kept",
+    ["code", "ascii", "sized"].every((name) => fidelity.blocks[name]?.codeRatio && Math.abs(fidelity.blocks[name].codeRatio[0] - fidelity.blocks[name].codeRatio[1]) < 0.01)
+      && /pre-wrap|break-spaces/.test(fidelity.blocks.sized?.codeWrap || ""),
+    JSON.stringify(fidelity.blocks));
+  check("...a text box's words built as on the Canvas, in its own size in points, its markdown rendered",
+    fidelity.texts.length === 2 && fidelity.texts.every((t) => t.shown && (t.livePt === null || Math.abs(t.pt - t.livePt) < 0.1))
+      && Math.abs(fidelity.texts[0].pt - 9) < 0.1 && Math.abs(fidelity.texts[1].pt - 11) < 0.1 && fidelity.texts[0].bold && fidelity.texts[0].code,
+    JSON.stringify(fidelity.texts));
+  check("...and zoomed in, nothing in a Block moves against it", fidelity.zoomRect < 0.005, String(fidelity.zoomRect));
+  check("...with no address in the file that leaves it", !fidelity.leaves.length, JSON.stringify(fidelity.leaves));
+  await shot("web-page-blocks.png");
   await page.evaluate("() => { window.__frame?.remove(); }");
 
   // ── 4b. ...on the paper it is seen on ─────────────────────────────────
@@ -645,9 +802,9 @@ try {
     const shape = api.addDocumentShape(1, { type: "rect", p: [[60, 700], [200, 780]], stroke: "#16181d", width: 2 });
     await settle(500);
     const built = await api.buildCanvasHtml({ tone });
-    out.htmlDark = /<html lang="en" class="cx-dark">/.test(built.html);
+    out.htmlDark = /<html lang="en" class="cx-dark"[ >]/.test(built.html);
     out.bodyDark = /<body class="cx-body is-dark">/.test(built.html);
-    out.tokens = /<main class="cx-pages paper-tokens is-dark-paper" style="[^"]*--paper-bg:#[0-9a-f]{6}/.test(built.html);
+    out.tokens = /<main class="cx-pages paper-tokens is-dark-paper[^"]*" style="[^"]*--paper-bg:#[0-9a-f]{6}/.test(built.html);
     out.shapeStroke = (/stroke="(#[0-9a-f]{6})" stroke-width="2"/.exec(built.html) || [])[1] || "";
     const frame = document.createElement("iframe");
     frame.style.cssText = "position:fixed;left:0;top:0;width:900px;height:700px;border:0;z-index:99999";
@@ -663,8 +820,8 @@ try {
     out.paperFill = rgb(doc.querySelector(".viewer-paper rect")?.getAttribute("fill") || "");
     out.lines = rgb(doc.querySelector(".viewer-paper path")?.getAttribute("stroke") || "");
     out.bodyBg = rgb(getComputedStyle(doc.body).backgroundColor);
-    const block = [...doc.querySelectorAll(".cx-box")].find((n) => /Near the foot/.test(n.textContent));
-    out.words = block ? rgb(getComputedStyle(block.querySelector(".rendered p") || block).color) : [];
+    const block = [...doc.querySelectorAll(".cx-layer .pdf-block")].find((n) => /Near the foot/.test(n.textContent));
+    out.words = block ? rgb(getComputedStyle(block.querySelector(".pdf-block-body p") || block).color) : [];
     out.card = block ? rgb(getComputedStyle(block).backgroundColor) : [];
     out.number = rgb(getComputedStyle(doc.querySelector(".cx-number")).color);
     out.lum = { page: lum(out.pageBg), paper: lum(out.paperFill), lines: lum(out.lines), body: lum(out.bodyBg), words: lum(out.words), card: lum(out.card), number: lum(out.number) };

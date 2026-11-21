@@ -48,7 +48,7 @@ import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { paperNumberColor } from "../format/paper-palette.js?v=__BUILD__";
 import { paperRecolor, paperToneColor } from "../format/paper-tones.js?v=__BUILD__";
 import { inkCentrelinePath, inkHighlighterWidth, inkStrokeOutline, resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
-import { normalizeShape, polyPathData, shapeDashArray, shapePrimitives, stickyIconPolys } from "../render/annot-shapes.js?v=__BUILD__";
+import { SHAPE_TEXT_PAD, normalizeShape, polyPathData, shapeDashArray, shapePrimitives, stickyIconPolys } from "../render/annot-shapes.js?v=__BUILD__";
 import { outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { themeCatalog } from "../ui/theme-catalog.js?v=__BUILD__";
 import { VIEWER_INDEX_HTML, VIEWER_SCRIPT_JS, VIEWER_STYLE_CSS } from "./viewer-shell.js?v=__BUILD__";
@@ -315,13 +315,23 @@ export function canvasPageMarkup(page, { number = "", label = "" } = {}) {
   const pct = (v, of) => `${svgNum(((Number(v) || 0) / of) * 100)}%`;
   const pt = (v) => `calc(var(--u) * ${svgNum(Number(v) || 0)})`;
   const out = [`<section class="cx-page" aria-label="${markupAttr(label)}" style="--w:${svgNum(w)};aspect-ratio:${svgNum(w)} / ${svgNum(h)};background:${markupCss(page?.paper, "#ffffff")}">`, String(page?.svg || "")];
+  // The Blocks and text boxes as Recall built them, at `scale` CSS pixels to
+  // the point, in one layer the export's stylesheet scales to the page.
+  if (page?.layer?.html) {
+    const scale = Number(page.layer.scale) > 0 ? Number(page.layer.scale) : 1;
+    const classes = String(page.layer.className || "").split(/\s+/).filter((name) => /^[\w-]+$/.test(name)).join(" ");
+    out.push(`<div class="cx-layer${classes ? ` ${classes}` : ""}" data-doc-slot="notebook" style="--cx-l:${svgNum(scale)};width:${svgNum(w * scale)}px;height:${svgNum(h * scale)}px">${page.layer.html}</div>`);
+  }
   (page?.boxes || []).forEach((box) => {
     const rot = box.rot ? `transform:rotate(${svgNum(-Number(box.rot))}deg);` : "";
     const place = `left:${pct(box.x, w)};top:${pct(box.y, h)};width:${pct(box.w, w)};height:${pct(box.h, h)};${rot}`;
     const align = ["left", "center", "right", "justify"].includes(box.align) ? box.align : "left";
     if (box.kind === "words") {
+      // As the page paints a shape's plain words (paintShapeText,
+      // src/render/annot-shapes.js): its padding, a leading of 1.3, and the
+      // ◐ Canvas Labels face (the export's stylesheet).
       const color = markupCss(box.color);
-      out.push(`<div class="cx-words" style="${place}font-size:${pt(box.size || 12)};text-align:${align};${box.bold ? "font-weight:700;" : ""}${color ? `color:${color};` : ""}"><div class="rendered">${box.html || ""}</div></div>`);
+      out.push(`<div class="cx-words" style="${place}padding:${pt(SHAPE_TEXT_PAD)};font-size:${pt(box.size || 12)};text-align:${align};${box.bold ? "font-weight:700;" : ""}${color ? `color:${color};` : ""}"><div class="rendered">${box.html || ""}</div></div>`);
       return;
     }
     const z = `z-index:${2 + (Number(box.z) || 0)};`;
