@@ -261,7 +261,12 @@ browser's canvas has no `filter`, as on Safari before 18), the web page through
 `paperToneColor` and the paper's own tokens (`.paper-tokens`). Say "web page", not "HTML
 export" or "web export". Nothing is stored; the file is written and downloaded
 (`src/export/canvas-html.js`, `buildCanvasHtml`; drawn by `canvasPageDrawing`
-and `canvasPageMarkup` in `src/backup/viewer-pack.js`).
+and `canvasPageMarkup` in `src/backup/viewer-pack.js`). Its Blocks and text
+boxes are not redrawn: they are built by the very builders the page and the
+Canvas PDF use (`buildStaticBlock`, `buildStaticShapeText`) at the scale the
+page is seen at, written with only the app's style rules that reach them
+(`usedCssCollector`), and scaled as one layer (`.cx-layer`) to the page's width —
+so a code panel, a quote or a table on the web page is the one on the Canvas.
 
 **Section lines** are the thin lines down the left of each heading's section in
 the Notes, whose text is set one **step** in per section — ◐ Notes → Section

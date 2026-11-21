@@ -229,6 +229,13 @@ export function setRegionBlockSource(source) {
     : null;
 }
 
+// The same builders, for the Canvas's web page (src/export/canvas-html.js),
+// which keeps the built Blocks as HTML rather than turning them into pixels.
+// Null until src/main.js has registered them (and in the Node checks).
+export function regionBlockBuilders() {
+  return blockSource;
+}
+
 // ── Typed text that is markdown ─────────────────────────────────────────────
 //
 // A text box's or a callout's words are markdown (src/documents/
