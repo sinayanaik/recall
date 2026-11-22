@@ -41,6 +41,10 @@ const OWN_PANELS = [
   "[role='dialog']",
   "[role='menu']",
   "[role='listbox']",
+  // A choice asked over the page — "Upload image" above all, which a picture
+  // pasted into a Block opens. Upload there is a press on the Block's own
+  // picture; putting the Block down for it lost the picture.
+  ".category-choice-modal",
   // The selection bar raised over words picked in a Block being typed in, and
   // what it opens: a press on B is a press on the Block's words.
   ".selection-float",

@@ -3274,6 +3274,146 @@ try {
     offlinePicture.storedSrc.startsWith("http") && !offlinePicture.tokensLeft,
     `stored src "${offlinePicture.storedSrc}", this image's token still in the saved bag=${offlinePicture.tokensLeft}`);
 
+  // ── A picture pasted into a Block being typed in, kept when it is put down ──
+  //
+  // The report: "when I Ctrl+V an image in a Block and it finishes uploading,
+  // then click somewhere else and the Block goes from editing to showing — the
+  // image is lost." Three faults, each enough on its own:
+  //
+  // (a) Upload in the compression dialog is a PRESS, and the Canvas's "a press
+  //     anywhere off the page puts the Block down" (src/documents/canvas-dismiss.js)
+  //     did not count the dialog as one of the Block's own panels. The Block was
+  //     written without the picture, and the placeholder that followed went into
+  //     an editor nobody would read again. The cases before this pressed Upload
+  //     with .click(), which sends no pointerdown — so they never saw it.
+  // (b) The placeholder only went in after the dialog, so anything that put the
+  //     Block down while it was asking lost the picture the same way.
+  // (c) The Block editor is one textarea, reused. Put a Block down while its
+  //     picture is going up and open another, and the upload "swapped" into the
+  //     other Block's words, found nothing, and the first kept "uploading…".
+  //
+  // Driven offline, so the upload is the real queued branch: the picture comes
+  // back as a recall-img: reference, which is what has to end up in the Block.
+  const blockPaste = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(300);
+    const onLine = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine")
+      || Object.getOwnPropertyDescriptor(navigator, "onLine");
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => false });
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEklEQVR4nGP8//8/AzJgYkAFAB8FAv3EhrhCAAAAAElFTkSuQmCC"), (c) => c.charCodeAt(0));
+    const waitFor = async (test, tries = 60) => { for (let i = 0; i < tries && !test(); i += 1) await settle(100); return Boolean(test()); };
+    const pageNo = api.currentDocumentPage() || 1;
+    const area = (id) => document.querySelector('[data-pdf-block="' + id + '"] .pdf-block-inline textarea');
+    const mdOf = (id) => (api.documentBlocks().find((b) => b.id === id) || {}).md || "";
+    const press = (target, type) => {
+      const box = target.getBoundingClientRect();
+      target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, pointerId: 1,
+        pointerType: "mouse", isPrimary: true, button: 0, buttons: type === "pointerdown" ? 1 : 0,
+        clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }));
+    };
+    const openWithCaption = async (id, words) => {
+      api.editBlock(id);
+      await waitFor(() => area(id));
+      const ta = area(id);
+      ta.focus();
+      ta.setSelectionRange(words.length, words.length);
+      return ta;
+    };
+    const pasteInto = (ta) => {
+      const data = new DataTransfer();
+      data.items.add(new File([png], "screenshot.png", { type: "image/png" }));
+      ta.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    };
+    const pressUpload = async () => {
+      await waitFor(() => document.querySelector(".image-compress-modal [data-compress-confirm]:not([disabled])"));
+      const btn = document.querySelector(".image-compress-modal [data-compress-confirm]");
+      if (!btn) return false;
+      press(btn, "pointerdown");
+      press(btn, "pointerup");
+      btn.click();
+      return true;
+    };
+    const putDown = () => press(document.body, "pointerdown");
+    const out = {};
+
+    // (a) A real press on Upload, then a press off the Block.
+    const a = api.addDocumentBlock(pageNo, { x: 140, y: 160 }, { edit: false, md: "caption" });
+    const taA = await openWithCaption(a.id, "caption");
+    pasteInto(taA);
+    out.reservedAtOnce = taA.value.includes("![uploading");
+    await waitFor(() => document.querySelector(".image-compress-modal"));
+    out.pressed = await pressUpload();
+    await waitFor(() => (area(a.id)?.value || "").includes("recall-img:"));
+    out.stillTyping = Boolean(area(a.id));
+    out.typedHasImage = (area(a.id)?.value || "").includes("](recall-img:");
+    putDown();
+    await settle(300);
+    out.aMd = mdOf(a.id);
+
+    // (b) The Block put down while the dialog is still asking, then Upload.
+    const b = api.addDocumentBlock(pageNo, { x: 140, y: 320 }, { edit: false, md: "second" });
+    const taB = await openWithCaption(b.id, "second");
+    pasteInto(taB);
+    await waitFor(() => document.querySelector(".image-compress-modal"));
+    api.commitBlockEdit();
+    out.bWhileAsking = mdOf(b.id);
+    await pressUpload();
+    await waitFor(() => mdOf(b.id).includes("recall-img:"));
+    out.bMd = mdOf(b.id);
+
+    // (c) Block C put down holding a placeholder; Block D open in place in the
+    // same reused textarea when the upload lands.
+    const token = "![uploading…](#upl-check-reused-editor)";
+    const c = api.addDocumentBlock(pageNo, { x: 140, y: 480 }, { edit: false, md: "third " + token });
+    const d = api.addDocumentBlock(pageNo, { x: 340, y: 480 }, { edit: false, md: "fourth" });
+    const taD = await openWithCaption(d.id, "fourth");
+    await api.settleUploadToken(taD, token, "![](https://example.com/c.png)");
+    await settle(200);
+    out.cMd = mdOf(c.id);
+    out.dTyped = area(d.id)?.value || "";
+    api.commitBlockEdit();
+
+    // (d) Cancel leaves the words exactly as they were.
+    const e = api.addDocumentBlock(pageNo, { x: 340, y: 160 }, { edit: false, md: "fifth" });
+    const taE = await openWithCaption(e.id, "fifth");
+    pasteInto(taE);
+    await waitFor(() => document.querySelector(".image-compress-modal"));
+    const cancel = document.querySelector(".image-compress-modal .category-choice-actions [data-compress-cancel]");
+    press(cancel, "pointerdown");
+    cancel.click();
+    await settle(300);
+    out.eTyped = area(e.id)?.value ?? null;
+    api.commitBlockEdit();
+    await settle(200);
+    out.eMd = mdOf(e.id);
+
+    if (onLine) Object.defineProperty(navigator, "onLine", onLine);
+    // The queued bytes these parked, cleared so later cases start from nothing.
+    const tokens = [out.aMd, out.bMd].join(" ").match(/recall-img:[^)\\s]+/g) || [];
+    for (const ref of tokens) await api.deleteOutboxImage(ref.slice("recall-img:".length)).catch(() => {});
+    [a, b, c, d, e].forEach((block) => { if (block) api.deleteBlock(block.id); });
+    await settle(200);
+    out.errs = window.__errs.slice(0, 4);
+    return out;
+  }`);
+  check("a picture pasted into a Block puts its placeholder in at once, before the dialog asks",
+    blockPaste.reservedAtOnce, JSON.stringify(blockPaste));
+  check("...a real press on Upload leaves the Block open, with the picture in its words",
+    blockPaste.pressed && blockPaste.stillTyping && blockPaste.typedHasImage, JSON.stringify(blockPaste));
+  check("...and putting the Block down keeps the picture and the words",
+    /^caption!\[\]\(recall-img:/.test(blockPaste.aMd), `md "${blockPaste.aMd}"`);
+  check("a Block put down while the dialog is asking still gets its picture",
+    blockPaste.bWhileAsking.includes("![uploading") && /^second!\[\]\(recall-img:/.test(blockPaste.bMd),
+    `while asking "${blockPaste.bWhileAsking}", after "${blockPaste.bMd}"`);
+  check("an upload landing while another Block is being typed in settles the Block it belongs to",
+    blockPaste.cMd === "third ![](https://example.com/c.png)" && blockPaste.dTyped === "fourth",
+    `C "${blockPaste.cMd}", D typed "${blockPaste.dTyped}"`);
+  check("Cancel in the dialog leaves the Block's words exactly as they were",
+    blockPaste.eTyped === "fifth" && blockPaste.eMd === "fifth",
+    `typed "${blockPaste.eTyped}", md "${blockPaste.eMd}"`);
+
   // ── 10. The four faults reported off a phone ────────────────────────────
   //
   // Every one of these was true of a shipped build, and three of them were

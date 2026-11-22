@@ -104,6 +104,11 @@ export function chooseImageCompression(files, { title = "", subtitle = "" } = {}
     const modal = document.createElement("section");
     modal.className = "category-choice-modal image-compress-modal";
     modal.setAttribute("aria-label", "Upload images");
+    // A dialog, said so: it is what tells the Canvas that a press on Upload is
+    // not a press off the Block being typed in (src/documents/canvas-dismiss.js).
+    // Without it that press put the Block down before the picture went into it.
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
 
     const shell = document.createElement("div");
     shell.className = "category-choice-shell image-compress-shell";
