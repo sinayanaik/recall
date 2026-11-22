@@ -2,8 +2,8 @@
 // animation copied off a web page, which arrives as a still plus its URL.
 
 import { chooseImageCompression } from "./compress-dialog.js?v=__BUILD__";
-import { insertImageUpload, insertPreparedImageUpload } from "./outbox.js?v=__BUILD__";
-import { insertAtCursor, setImagePickerActive } from "./upload.js?v=__BUILD__";
+import { insertImageUpload, insertPreparedImageUpload, releaseImageSlots, reserveImageSlots, settleUploadToken } from "./outbox.js?v=__BUILD__";
+import { setImagePickerActive } from "./upload.js?v=__BUILD__";
 import { isAnimatedImage, sniffImageType, withSniffedType } from "./compress.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -125,7 +125,12 @@ async function fileIsAnimated(file) {
 // names an animation is LINKED rather than uploaded as a still: it keeps
 // moving, at the cost of living on that site rather than in your storage —
 // which the toast says.
-export async function insertTransferImage(textarea, file, sourceUrl, atPos) {
+//
+// The placeholder goes in first, before the fetch and before the dialog — see
+// reserveImageSlots in ./outbox.js — synchronously, while the paste or drop
+// event is still running. `token`, when given, is one a caller already reserved.
+export async function insertTransferImage(textarea, file, sourceUrl, atPos, { token = null } = {}) {
+  const slot = token || reserveImageSlots(textarea, 1, atPos)[0];
   let toUpload = file;
   if (sourceUrl && !cannotAnimateUrl(sourceUrl) && !(await fileIsAnimated(file))) {
     const named = looksAnimatedUrl(sourceUrl);
@@ -137,12 +142,12 @@ export async function insertTransferImage(textarea, file, sourceUrl, atPos) {
       let host = "that site";
       try { host = new URL(sourceUrl).hostname; } catch (_) { /* keep the generic name */ }
       // Parentheses and whitespace would end the markdown destination early.
-      insertAtCursor(textarea, `![](${sourceUrl.replace(/[()\s]/g, encodeURIComponent)})`, atPos);
+      await settleUploadToken(textarea, slot, `![](${sourceUrl.replace(/[()\s]/g, encodeURIComponent)})`);
       showToast(`Linked the animation from ${host} — that site doesn't allow copying it, so it stays hosted there`, "info");
       return;
     }
   }
-  insertImageUpload(textarea, toUpload, atPos);
+  await insertImageUpload(textarea, toUpload, undefined, { token: slot });
 }
 
 // Several images at once (dragging a selection out of a folder, or pasting a
@@ -156,15 +161,18 @@ export async function insertTransferImages(textarea, files, sourceUrl, atPos) {
     if (list.length) await insertTransferImage(textarea, list[0], sourceUrl, atPos);
     return;
   }
+  // One placeholder per image, in the order they arrived, at the caret captured
+  // while the event was live — before the dialog, so nothing that puts the
+  // editor down while it is asking can leave them out.
+  const tokens = reserveImageSlots(textarea, list.length, atPos);
   const chosen = await chooseImageCompression(list);
-  if (!chosen?.items?.length) return;
-  // Not awaited in turn: each call inserts its placeholder synchronously (so
-  // the images land in the order they were dropped) and then uploads on its
-  // own. The first goes to the caret captured before the dialog took focus;
-  // the rest follow it, since the caret has advanced past each placeholder.
+  if (!chosen?.items?.length) { await releaseImageSlots(textarea, tokens); return; }
+  // Not awaited in turn: each uploads on its own and settles its own slot.
   chosen.items.forEach((item, index) => {
-    insertPreparedImageUpload(textarea, item.upload, index === 0 ? atPos : undefined);
+    insertPreparedImageUpload(textarea, item.upload, undefined, { token: tokens[index] });
   });
+  // A slot the dialog handed nothing back for is not left saying "uploading…".
+  if (tokens.length > chosen.items.length) releaseImageSlots(textarea, tokens.slice(chosen.items.length));
 }
 
 // Detect an image in a DataTransfer during `dragover`, where getAsFile() is still
@@ -240,13 +248,15 @@ export function openImagePicker(textarea, atPos) {
       // alive across a modal that takes focus off the textarea, and the dialog
       // holds it for its own lifetime (chooseImageCompression) and releases it
       // when it closes. Clearing here first would leave a gap in the middle.
+      // The placeholders go in at the caret captured before the picker opened,
+      // before the dialog asks anything (reserveImageSlots in ./outbox.js).
+      const tokens = reserveImageSlots(target, files.length, pos);
       const chosen = await chooseImageCompression(files);
-      if (!chosen?.items?.length) return;
+      if (!chosen?.items?.length) { await releaseImageSlots(target, tokens); return; }
       chosen.items.forEach((item, i) => {
-        // First image lands at the captured caret; the rest follow (the caret has
-        // advanced past each inserted placeholder), so use the live caret for them.
-        insertPreparedImageUpload(target, item.upload, i === 0 ? pos : undefined);
+        insertPreparedImageUpload(target, item.upload, undefined, { token: tokens[i] });
       });
+      if (tokens.length > chosen.items.length) releaseImageSlots(target, tokens.slice(chosen.items.length));
     });
   }
   imagePickerInput._targetTextarea = textarea;

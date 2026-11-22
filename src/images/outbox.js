@@ -447,6 +447,30 @@ export function replaceUploadTokenInMemory(uploadToken, replacement) {
   return touched;
 }
 
+// A textarea the reader can see and type in now. See settleUploadToken.
+function liveTextarea(textarea) {
+  return Boolean(textarea && !textarea.hidden && textarea.isConnected && textarea.offsetParent !== null);
+}
+
+// ── ...and the textarea handed in may not be the one holding it ───────────
+//
+// The Block editors are singletons: one textarea for the Block typed in on the
+// page (src/documents/pdf-block-inline.js), one for the Block window. Put a
+// Block down while its picture is still going up, open another Block, and the
+// SAME textarea is live again — holding the other Block's words. Swapping into
+// it found nothing and returned, so the first Block kept `![uploading…]` for
+// ever. "Full editor" moves the words, placeholder and all, from one of those
+// textareas to the other, which the upload never hears about. So the textarea
+// is used only when it really holds the placeholder, and failing that whichever
+// live textarea does.
+function liveTextareaHolding(textarea, uploadToken) {
+  if (liveTextarea(textarea) && textarea.value.includes(uploadToken)) return textarea;
+  for (const other of document.querySelectorAll("textarea")) {
+    if (other !== textarea && liveTextarea(other) && other.value.includes(uploadToken)) return other;
+  }
+  return null;
+}
+
 // ...and if it is in neither the editor nor the open deck, the reader moved on
 // while it uploaded. The placeholder is in a stored deck, so it is settled
 // there — through rewriteDeckSnapshot, which re-reads under that deck's lock
@@ -466,8 +490,16 @@ export async function settleUploadToken(textarea, uploadToken, replacement) {
   // exactly the question, and it is a cheap read rather than a getComputedStyle
   // walk. (Safe here: none of these textareas is itself `position: fixed`, the
   // one other way of getting a null answer.)
-  if (textarea && !textarea.hidden && textarea.isConnected && textarea.offsetParent !== null) {
-    replaceInTextarea(textarea, uploadToken, replacement);
+  const holder = liveTextareaHolding(textarea, uploadToken);
+  if (holder) {
+    replaceInTextarea(holder, uploadToken, replacement);
+    // ...and any copy already put down elsewhere — a Block reopened in the
+    // window holds the placeholder in its record too, and Cancel there would
+    // put that copy back. Nothing to find is the usual answer, and it is cheap.
+    if (replaceUploadTokenInMemory(uploadToken, replacement)) {
+      scheduleDeckAutosave();
+      renderNotesViewPinned();
+    }
     return;
   }
   if (replaceUploadTokenInMemory(uploadToken, replacement)) {
@@ -535,11 +567,48 @@ export async function settleUploadToken(textarea, uploadToken, replacement) {
 // so an upload is never something that just happened: the level is chosen and
 // the sizes are seen first (src/images/compress-dialog.js), and cancelling
 // leaves the note exactly as it was.
-export async function insertImageUpload(textarea, file, atPos) {
-  if (!textarea || !file || !file.type || !file.type.startsWith("image/")) return;
+//
+// ── The placeholder goes in FIRST, before anything is asked ──────────────
+//
+// It used to go in after the dialog, when Upload was pressed. Everything that
+// happened in between — the dialog itself, fetching an animated original — was
+// time in which the picture existed nowhere in the text, so anything that put
+// the editor down then (a press the Canvas took for "off the Block", a change of
+// view) wrote the words without it, and the placeholder that followed went into
+// a textarea nobody would read again. The upload landed, said "Image uploaded",
+// and the picture was referenced by nothing. Reserved at once, the placeholder
+// is in whatever is written, wherever it is written, and settleUploadToken finds
+// it there. Cancel takes it back out.
+export function newUploadToken() {
+  return `![uploading…](#upl-${Date.now()}-${Math.random().toString(36).slice(2, 7)})`;
+}
+
+// `count` placeholders at `atPos` (the live caret without it), in one write,
+// in order. Returns their tokens.
+export function reserveImageSlots(textarea, count, atPos) {
+  const tokens = Array.from({ length: Math.max(0, count) }, () => newUploadToken());
+  // Two made in the same millisecond can share nothing but the random tail —
+  // made distinct here rather than trusted, since a duplicate settles twice.
+  const unique = tokens.map((token, i) => (tokens.indexOf(token) === i ? token : token.replace(")", `-${i})`)));
+  if (textarea && unique.length) insertAtCursor(textarea, unique.join(""), atPos);
+  return unique;
+}
+
+// Each reserved placeholder taken back out — a cancelled dialog, a fetch that
+// came to nothing — wherever it has got to by now.
+export async function releaseImageSlots(textarea, tokens) {
+  for (const token of tokens || []) await settleUploadToken(textarea, token, "");
+}
+
+export async function insertImageUpload(textarea, file, atPos, { token = null } = {}) {
+  if (!textarea || !file || !file.type || !file.type.startsWith("image/")) {
+    if (token) await releaseImageSlots(textarea, [token]);
+    return;
+  }
+  const slot = token || reserveImageSlots(textarea, 1, atPos)[0];
   const chosen = await chooseImageCompression([file]);
-  if (!chosen?.items?.length) return;
-  await insertPreparedImageUpload(textarea, chosen.items[0].upload, atPos);
+  if (!chosen?.items?.length) { await releaseImageSlots(textarea, [slot]); return; }
+  await insertPreparedImageUpload(textarea, chosen.items[0].upload, undefined, { token: slot });
 }
 
 // The half that runs once the compression level is settled: the file handed in
@@ -593,10 +662,15 @@ export async function storeImageOrQueue(file) {
   }
 }
 
-export async function insertPreparedImageUpload(textarea, file, atPos) {
-  if (!textarea || !file || !file.type || !file.type.startsWith("image/")) return;
-  const uploadToken = `![uploading…](#upl-${Date.now()}-${Math.random().toString(36).slice(2, 7)})`;
-  insertAtCursor(textarea, uploadToken, atPos);
+// `token`: a placeholder already reserved in the text (reserveImageSlots), to
+// be settled in place rather than a new one put in at the caret.
+export async function insertPreparedImageUpload(textarea, file, atPos, { token = null } = {}) {
+  if (!textarea || !file || !file.type || !file.type.startsWith("image/")) {
+    if (token) await releaseImageSlots(textarea, [token]);
+    return;
+  }
+  const uploadToken = token || newUploadToken();
+  if (!token) insertAtCursor(textarea, uploadToken, atPos);
   showToast("Uploading image…", "info");
   const result = await storeImageOrQueue(file);
 
