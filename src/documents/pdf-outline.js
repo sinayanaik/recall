@@ -120,6 +120,53 @@ let outlineCollapsed = new Set();
 let outlineKnownBranches = new Set();
 let outlineActiveIndex = -1;
 
+// ── The Canvas's half ──────────────────────────────────────────────────────
+//
+// A Canvas has no contents to list (see "...and a notebook has neither"
+// below), so on the Canvas the drawer's first tab is Pages: every page as a
+// small picture, src/documents/canvas-drawer-pages.js. That module is reached
+// from src/handwriting/board.js and registers itself here rather than being
+// imported — it needs src/documents/pdf-view.js, which imports THIS module.
+//
+//   render(onCanvas)  the drawer now belongs to the Canvas (true) or a PDF
+//   setPage(page)     the page in view changed
+//   opened()          the drawer opened
+//   closed()          ...and closed
+let canvasOutlineHooks = {};
+
+export function setCanvasOutlineHooks(hooks = {}) {
+  canvasOutlineHooks = { ...canvasOutlineHooks, ...hooks };
+  paintOutlineCanvasMode();
+}
+
+// The drawer is the Canvas's, and the Canvas's Pages tab is there to show.
+function outlineOnCanvas() {
+  return activeDocSlot() === DOC_SLOT_NOTEBOOK && typeof canvasOutlineHooks.render === "function";
+}
+
+// The first tab's name, the drawer's label and the class the Pages grid hangs
+// off: "Pages" on the Canvas, "Contents" on a PDF. The tab itself is built on
+// the drawer's first open (installDrawerSections), so this runs then too.
+export function paintOutlineCanvasMode() {
+  const drawer = el.documentOutlineDrawer;
+  if (!drawer) return;
+  const onCanvas = outlineOnCanvas();
+  drawer.classList.toggle("is-canvas", onCanvas);
+  drawer.setAttribute("aria-label", onCanvas ? "Canvas pages and highlights" : "PDF contents and highlights");
+  const tab = drawer.querySelector('[data-drawer-tab="contents"]');
+  if (tab) {
+    tab.textContent = onCanvas ? "Pages" : "Contents";
+    tab.title = onCanvas ? "Every page of the Canvas, as a picture" : "";
+  }
+  const scroll = el.documentOutlineList?.parentElement;
+  scroll?.setAttribute("aria-label", onCanvas ? "Canvas pages" : "Contents");
+}
+
+function renderCanvasOutline() {
+  paintOutlineCanvasMode();
+  canvasOutlineHooks.render?.(outlineOnCanvas());
+}
+
 export function documentOutlineEntries() {
   return outlineEntries;
 }
@@ -147,9 +194,10 @@ export function clearDocumentOutline() {
   outlineKnownBranches = new Set();
   const list = el.documentOutlineList;
   if (list) list.innerHTML = "";
-  if (el.documentOutlineEmpty) el.documentOutlineEmpty.hidden = false;
+  if (el.documentOutlineEmpty) el.documentOutlineEmpty.hidden = outlineOnCanvas();
   paintOutlineDerivedNote();
   paintOutlineEditable();
+  renderCanvasOutline();
 }
 
 // A pdf.js outline destination → a 1-based page number, or 0 when it cannot be
@@ -181,6 +229,7 @@ export async function buildDocumentOutline(doc, pdfId = PDF_PRIMARY_ID) {
   outlinePdfId = pdfId || PDF_PRIMARY_ID;
   outlineUser = false;
   paintOutlineEditable();
+  renderCanvasOutline();
 
   // ── The reader's own, first ──────────────────────────────────────────────
   //
@@ -230,8 +279,8 @@ export async function buildDocumentOutline(doc, pdfId = PDF_PRIMARY_ID) {
   // in the file. So the scan below can only ever find nothing, at the cost of a
   // pass over every page; and `pdfToc` is one key on the deck, shared with
   // whatever paper the deck is also carrying, which is not a cache to write an
-  // empty answer into. The drawer still opens: its Highlights half is the half
-  // that means something here.
+  // empty answer into. The drawer still opens: its first tab is Pages here
+  // (renderCanvasOutline, above), and its Highlights half is the Canvas's own.
   if (activeDocSlot() === DOC_SLOT_NOTEBOOK) {
     outlineEntries = [];
     outlineDerived = true;
@@ -412,7 +461,7 @@ export function renderDocumentOutline() {
   outlineActiveIndex = -1;
   const has = outlineEntries.length > 0;
   list.hidden = !has;
-  if (el.documentOutlineEmpty) el.documentOutlineEmpty.hidden = has || outlineScanning;
+  if (el.documentOutlineEmpty) el.documentOutlineEmpty.hidden = has || outlineScanning || outlineOnCanvas();
   paintOutlineDerivedNote();
   if (!has) return;
 
@@ -530,6 +579,7 @@ export function setDocumentOutlinePage(page) {
   if (next === outlineCurrentPage) return;
   outlineCurrentPage = next;
   updateDocumentOutlineActive();
+  if (activeDocSlot() === DOC_SLOT_NOTEBOOK) canvasOutlineHooks.setPage?.(next);
 }
 
 export function updateDocumentOutlineActive() {
@@ -786,6 +836,7 @@ export function openDocumentToc() {
   // The drawer's second half — this document's own highlights — built on the way
   // in and only when it is stale, the same discipline openNotesToc keeps.
   refreshDrawerOnOpen(drawer);
+  paintOutlineCanvasMode();
   drawer.hidden = false;
   // Force reflow so the open transition runs from the hidden state.
   void drawer.offsetWidth;
@@ -793,6 +844,7 @@ export function openDocumentToc() {
   el.documentTocBtn?.classList.add("is-active");
   el.documentTocBtn?.setAttribute("aria-expanded", "true");
   updateDocumentOutlineActive();
+  canvasOutlineHooks.opened?.();
 }
 
 export function closeDocumentToc() {
@@ -801,6 +853,7 @@ export function closeDocumentToc() {
   drawer.classList.remove("is-open");
   el.documentTocBtn?.classList.remove("is-active");
   el.documentTocBtn?.setAttribute("aria-expanded", "false");
+  canvasOutlineHooks.closed?.();
   // Torn down explicitly rather than with { once: true }, for the reason
   // closeNotesToc gives: the listener only fires if a transition actually runs,
   // and under reduced motion it does not.

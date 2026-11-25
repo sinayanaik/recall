@@ -7,10 +7,9 @@
 // or from ⋯ → Canvas pages → Pages panel. Whether it is open is kept on this
 // device only (PANEL_KEY), never synced.
 //
-// The pictures are drawn as the Canvas's PDF export draws a page
-// (renderCanvasPageThumb, src/documents/pdf-export.js), one at a time and only
-// those scrolled into the panel, and drawn again only for a page whose things
-// changed (pageSignature). Every page change — a move, a delete, a duplicate —
+// The pictures come from src/documents/canvas-page-thumbs.js, shared with the
+// Pages tab of the ☰ drawer: drawn one at a time, only for the pages scrolled
+// into the panel, and drawn again only for a page whose things changed. Every page change — a move, a delete, a duplicate —
 // is one change of src/documents/notebook.js's (moveNotebookPages and the
 // others), so the records, the page setups and the cards that show a spot of
 // the Canvas all follow, exactly as for ⋯ → Canvas pages.
@@ -19,23 +18,18 @@
 // while the Canvas is the part in focus), and stands down otherwise.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../core/state.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_NOTEBOOK } from "./doc-slot.js?v=__BUILD__";
-import { canvasPageBox } from "./canvas-setup.js?v=__BUILD__";
 import { pageOrderAfterMove, pagesAfterOrder, isIdentityOrder } from "./canvas-page-list.js?v=__BUILD__";
-import { currentPaperTone, documentPageInFocus, scrollToDocumentPage } from "./pdf-view.js?v=__BUILD__";
-import { renderCanvasPageThumb } from "./pdf-export.js?v=__BUILD__";
-import { deleteNotebookPages, duplicateNotebookPages, hasNotebook, moveNotebookPages, notebookPageCount, notebookPagesBusy } from "./notebook.js?v=__BUILD__";
+import { documentPageInFocus, scrollToDocumentPage } from "./pdf-view.js?v=__BUILD__";
+import { canvasThumbAspect, canvasThumbFileKey, canvasThumbHeld, copyCanvasThumb, dropCanvasThumbRequests, forgetCanvasThumbs, remapCanvasThumbs, wantCanvasThumb } from "./canvas-page-thumbs.js?v=__BUILD__";
+import { deleteNotebookPages, duplicateNotebookPages, hasNotebook, moveNotebookPages, notebookPageCount } from "./notebook.js?v=__BUILD__";
 import { closeCanvasPageMenu, openCanvasMenu, openCanvasPageMenu } from "./canvas-page-menu.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
-import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 const PAGES_PANEL_PANEL_KEY = "recall:canvas-pages-panel-v1";
-// The picture's size in device pixels: about twice the panel's column, so it
-// is sharp on a high-density screen.
-const PAGES_PANEL_THUMB_MAX_W = 280;
-const PAGES_PANEL_THUMB_MAX_H = 400;
+// Who the panel's requests for pictures are from (canvas-page-thumbs.js).
+const PAGES_PANEL_THUMB_OWNER = "pages-panel";
 // A finger or a pen holds this long on a page before it is picked up to drag
 // (and picked) — a shorter press is a tap, and a moving one scrolls the panel.
 const PAGES_PANEL_HOLD_MS = 380;
@@ -53,9 +47,6 @@ let ppAnchorPage = 0;
 let ppSelectMode = false;
 let ppLastTotal = 0;
 let ppLastDeck = "";
-const ppThumbs = new Map(); // page → { sig, canvas }
-const ppQueue = new Set();
-let ppDrawing = false;
 let ppObserver = null;
 let ppWatchTimer = 0;
 let ppDrag = null;
@@ -73,10 +64,6 @@ let ppWantOpen = false;
 // The Canvas is the part in focus, and has pages.
 function ppCanvasInFocus() {
   return activeDocSlot() === DOC_SLOT_NOTEBOOK && hasNotebook() && notebookPageCount() > 0 && Boolean(el.documentStage);
-}
-
-function ppDeckKey() {
-  return `${state.localDeckId || state.deckTitle || ""}`;
 }
 
 export function isCanvasPagesPanelOpen() {
@@ -192,15 +179,6 @@ function ppPaintBar() {
   if (some || ppSelectMode) ppBar.append(ppButton("cpp-btn cpp-clear", "Clear", "Pick no pages — ⇓ exports every page again", () => ppClearSelection()));
 }
 
-function ppPageAspect(page) {
-  const box = canvasPageBox(state.meta?.notebook, page);
-  const w = Math.max(1, Number(box?.[2]) - Number(box?.[0]) || 595);
-  const h = Math.max(1, Number(box?.[3]) - Number(box?.[1]) || 842);
-  // A very long page shows as a tall frame, held to 1:2 so it does not take
-  // the whole panel; the picture inside is drawn to fit it.
-  return `${w} / ${Math.min(h, w * 2)}`;
-}
-
 function ppBuildItems() {
   const total = notebookPageCount();
   ppObserver?.disconnect();
@@ -217,9 +195,9 @@ function ppBuildItems() {
     item.title = `Page ${page} — press to go there; Ctrl or Shift to pick several; drag to move; right-click for more`;
     const frame = document.createElement("div");
     frame.className = "cpp-thumb";
-    frame.style.aspectRatio = ppPageAspect(page);
-    const held = ppThumbs.get(page);
-    if (held?.canvas) frame.append(ppPictureOf(held.canvas));
+    frame.style.aspectRatio = canvasThumbAspect(page);
+    const held = canvasThumbHeld(page);
+    if (held) frame.append(copyCanvasThumb(held));
     const num = document.createElement("span");
     num.className = "cpp-num";
     num.textContent = String(page);
@@ -232,16 +210,6 @@ function ppBuildItems() {
   }
   ppLastTotal = total;
   ppPaintSelection();
-}
-
-function ppPictureOf(canvas) {
-  // A copy: the drawn canvas stays in the cache, and a list rebuilt after a
-  // page change takes it again without drawing.
-  const copy = document.createElement("canvas");
-  copy.width = canvas.width;
-  copy.height = canvas.height;
-  copy.getContext("2d")?.drawImage(canvas, 0, 0);
-  return copy;
 }
 
 function ppItemOf(page) {
@@ -274,63 +242,12 @@ function ppRevealPage(page) {
 
 // ── The pictures ────────────────────────────────────────────────────────────
 
-// What a page's picture depends on: everything on it (each record's id and
-// when it last changed — ink, by how much is written), its setup and how far it
-// reaches, and the paper it is seen on. Cheap, so it is asked of every page
-// every WATCH_MS while the panel is open.
-function ppPageSignature(page) {
-  const meta = state.meta || {};
-  const parts = [];
-  const onPage = (record) => Number(record?.page || record?.quads?.[0]?.page) === page;
-  for (const record of recordsForSurface(meta.pdfHighlights, DOC_SLOT_NOTEBOOK, null)) {
-    if (!onPage(record)) continue;
-    parts.push(`${record.id}@${record.at || ""}:${record.ink?.s?.length || 0}`);
-  }
-  for (const block of recordsForSurface(meta.pdfBlocks, DOC_SLOT_NOTEBOOK, null)) {
-    if (!onPage(block)) continue;
-    parts.push(`${block.id}@${block.at || ""}`);
-  }
-  const notebook = meta.notebook || {};
-  parts.push(JSON.stringify(canvasPageBox(notebook, page)));
-  parts.push(JSON.stringify(notebook.pageSetups?.[String(page)] || notebook.setup || notebook.paper || ""));
-  const tone = currentPaperTone();
-  parts.push(tone?.key || "");
-  return parts.join("|");
-}
-
 function ppWantThumb(page) {
-  const held = ppThumbs.get(page);
-  if (held && held.sig === ppPageSignature(page)) return;
-  ppQueue.add(page);
-  ppDrawNext();
-}
-
-async function ppDrawNext() {
-  if (ppDrawing || !ppQueue.size || !isCanvasPagesPanelOpen()) return;
-  if (notebookPagesBusy()) { setTimeout(ppDrawNext, 300); return; }
-  const page = ppQueue.values().next().value;
-  ppQueue.delete(page);
-  if (page > notebookPageCount()) { ppDrawNext(); return; }
-  ppDrawing = true;
-  const sig = ppPageSignature(page);
-  const deck = ppDeckKey();
-  let canvas = null;
-  try {
-    canvas = await renderCanvasPageThumb(page, { maxW: PAGES_PANEL_THUMB_MAX_W, maxH: PAGES_PANEL_THUMB_MAX_H });
-  } catch (error) {
-    console.warn("Could not draw a page for the Pages panel", error);
-  }
-  ppDrawing = false;
-  if (canvas && deck === ppDeckKey() && sig === ppPageSignature(page)) {
-    ppThumbs.set(page, { sig, canvas });
-    const frame = ppItemOf(page)?.querySelector(".cpp-thumb");
-    if (frame) frame.replaceChildren(ppPictureOf(canvas));
-  } else if (canvas && deck === ppDeckKey()) {
-    // Changed while it drew: draw it again.
-    ppQueue.add(page);
-  }
-  // Let the pen and the scroll have the main thread between pictures.
-  setTimeout(ppDrawNext, 30);
+  wantCanvasThumb(page, PAGES_PANEL_THUMB_OWNER, (drawn, canvas) => {
+    if (!isCanvasPagesPanelOpen()) return;
+    const frame = ppItemOf(drawn)?.querySelector(".cpp-thumb");
+    if (frame) frame.replaceChildren(copyCanvasThumb(canvas));
+  });
 }
 
 function ppVisiblePages() {
@@ -361,6 +278,7 @@ export function syncCanvasPagesPanel() {
     if (!ppPanel.hidden) {
       ppPanel.hidden = true;
       ppPanel.parentElement?.classList.remove("has-pages-panel");
+      dropCanvasThumbRequests(PAGES_PANEL_THUMB_OWNER);
       closeCanvasPageMenu();
     }
     ppPaintPagerButton();
@@ -371,11 +289,9 @@ export function syncCanvasPagesPanel() {
     ppPanel.parentElement?.classList.remove("has-pages-panel");
     stage.appendChild(ppPanel);
   }
-  const deck = ppDeckKey();
+  const deck = canvasThumbFileKey();
   if (deck !== ppLastDeck) {
     ppLastDeck = deck;
-    ppThumbs.clear();
-    ppQueue.clear();
     ppSelection = new Set();
     ppAnchorPage = 0;
     ppSelectMode = false;
@@ -413,19 +329,8 @@ function ppPaintPagerButton() {
 
 // After a page change: the pictures follow their pages (`order` is the new
 // order, as old page numbers), and the panel is rebuilt for the new count.
-function ppRemapThumbs(order) {
-  if (!order) { ppThumbs.clear(); return; }
-  const next = new Map();
-  order.forEach((oldPage, index) => {
-    const held = ppThumbs.get(oldPage);
-    if (held) next.set(index + 1, held);
-  });
-  ppThumbs.clear();
-  next.forEach((value, key) => ppThumbs.set(key, value));
-}
-
 function ppAfterPageChange({ order = null, select = null, scrollTo = 0 } = {}) {
-  ppRemapThumbs(order);
+  remapCanvasThumbs(order);
   if (select) {
     ppSelection = new Set(select);
     ppAnchorPage = select[0] || 0;
@@ -651,7 +556,7 @@ async function ppDuplicatePicked() {
   // Each copy is straight after its page, so page p (the k-th picked, from 0)
   // is now p + k, and its copy p + k + 1. The copies are picked.
   const copies = picked.map((page, k) => page + k + 1);
-  ppThumbs.clear();
+  forgetCanvasThumbs();
   ppAfterPageChange({ select: copies, scrollTo: copies[0] });
 }
 
@@ -668,7 +573,7 @@ function ppDeletePicked() {
     : `Delete ${picked.length} pages of ${total}? Everything on them goes with them.`;
   showConfirmModal(question, async () => {
     if (!(await deleteNotebookPages(picked))) return;
-    ppThumbs.clear();
+    forgetCanvasThumbs();
     ppAfterPageChange({ select: [] });
   }, { confirmLabel: picked.length === 1 ? "Delete page" : `Delete ${picked.length} pages`, danger: true });
 }
@@ -728,10 +633,10 @@ function ppOnItemContextMenu(event) {
     onPageDown: () => ppMovePages([page], page + 2),
     onDuplicate: async () => {
       if (!(await duplicateNotebookPages([page]))) return;
-      ppThumbs.clear();
+      forgetCanvasThumbs();
       ppAfterPageChange({ select: [page + 1], scrollTo: page + 1 });
     },
-    onSetup: () => ppHooks.onSetup?.(page, () => { ppThumbs.delete(page); ppAfterPageChange(); }),
+    onSetup: () => ppHooks.onSetup?.(page, () => { forgetCanvasThumbs([page]); ppAfterPageChange(); }),
     onDelete: () => { ppSelection = new Set([page]); ppDeletePicked(); },
     onExportPdf: () => ppExportPages("pdf", [page]),
     onExportHtml: () => ppExportPages("html", [page])

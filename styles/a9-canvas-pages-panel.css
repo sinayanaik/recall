@@ -286,3 +286,78 @@
 :is(#documentStage, #documentStageAlt).has-no-notebook .canvas-pages-panel {
   display: none;
 }
+
+/* ── The ☰ drawer's Pages tab (src/documents/canvas-drawer-pages.js) ───────
+   On the Canvas the drawer's first tab is Pages: the same pictures as the
+   Pages panel, two to a row. Press one to go there; the page in view is lit. */
+
+.canvas-drawer-pages {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 12px;
+  padding: 6px 4px 4px;
+}
+
+.canvas-drawer-pages[hidden] {
+  display: none;
+}
+
+.cdp-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.cdp-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cdp-thumb {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: 4px;
+  background: var(--surface-2, #e5e7eb);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+}
+
+.cdp-thumb > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: top center;
+}
+
+.cdp-num {
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.cdp-item:hover .cdp-thumb {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.cdp-item.is-current .cdp-thumb {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.cdp-item.is-current .cdp-num {
+  color: var(--accent);
+}
