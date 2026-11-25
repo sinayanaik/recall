@@ -507,25 +507,128 @@ try {
   check("...a table's Block no wider than Tables and code land at (80%)", sec?.block && sec.block.w <= Math.floor(595 * 0.8) + 1, `w=${sec?.block?.w}`);
   await snap("5-grip-drop.png");
 
-  if (SHOTS) {
-    // The preview, mid-drag: a card by its grip over the Canvas beside.
-    await page.evaluate(`async () => {
+  // ── 7c'. The grips dragged with real input ────────────────────────────
+  // What is above dispatches made-up DragEvents, which cannot tell whether a
+  // drag starts at all from a pressed grip, or whether anything follows the
+  // pointer while it goes. These are trusted input, a mouse and a pen. Chrome
+  // starts its own HTML5 drag from a mouse, and sometimes from a pen; that drag
+  // is intercepted over the DevTools protocol (as a browser automation library
+  // drives one) and carried on as drag events with its own data. A pen it does
+  // not start one for is followed by the grip's own pointer drag.
+  {
+    const mouse = (type, x, y, buttons, pointerType = "mouse") => page.call("Input.dispatchMouseEvent", {
+      type, x, y, button: type === "mouseMoved" && !buttons ? "none" : "left", buttons, clickCount: 1, pointerType
+    });
+    const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+    const pageBox = () => page.evaluate(`() => { const r = document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='1']").getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; }`);
+    const blockCount = () => page.evaluate(`() => window.__recall.api.documentBlocks().length`);
+    const chipText = () => page.evaluate(`() => document.querySelector(".canvas-drag-chip")?.textContent || ""`);
+    const ghostDrawn = () => page.evaluate(`() => Boolean(document.querySelector(".canvas-drop-ghost.is-rendered"))`);
+    const realDrag = async (x, y, tx, ty, pointerType = "mouse") => {
+      await page.call("Input.setInterceptDrags", { enabled: true });
+      let data = null;
+      const off = client.on((m) => { if (m.sessionId === page.sessionId && m.method === "Input.dragIntercepted") data = m.params.data; });
+      const step = async (px, py, entering) => {
+        if (data) await page.call("Input.dispatchDragEvent", { type: entering ? "dragEnter" : "dragOver", x: px, y: py, data });
+        else await mouse("mouseMoved", px, py, 1, pointerType);
+      };
+      await mouse("mouseMoved", x, y, 0, pointerType);
+      await mouse("mousePressed", x, y, 1, pointerType);
+      let chip = "";
+      let entered = false;
+      const steps = 14;
+      for (let i = 1; i <= steps; i += 1) {
+        const hadData = Boolean(data);
+        await step(x + ((tx - x) * i) / steps, y + ((ty - y) * i) / steps, hadData && !entered);
+        if (hadData) entered = true;
+        await pause(30);
+        if (i >= 5 && !chip) chip = await chipText();
+      }
+      let ghost = false;
+      for (let i = 0; i < 20 && !ghost; i += 1) {
+        await step(tx, ty, false);
+        ghost = await ghostDrawn();
+        if (!ghost) await pause(100);
+      }
+      const chipOverPage = await chipText();
+      if (data) await page.call("Input.dispatchDragEvent", { type: "drop", x: tx, y: ty, data });
+      await mouse("mouseReleased", tx, ty, 0, pointerType);
+      off();
+      // Interception stays on until the drop: turned off mid-drag, Chrome ends
+      // the drag (dragend) there and then.
+      await page.call("Input.setInterceptDrags", { enabled: false });
+      await pause(1500);
+      return { html5: Boolean(data), types: data ? data.items.map((i) => i.mimeType) : null, chip, ghost, chipOverPage, chipGone: !(await chipText()) };
+    };
+    const notesGripFor = async (pointerType) => {
+      const at = await page.evaluate(`async () => {
+        const { settle } = window.__recall;
+        const heading = [...document.querySelectorAll("#notesView h1, #notesView h2, #notesView h3")].find((h) => /Figures/.test(h.textContent));
+        heading.scrollIntoView({ block: "center" });
+        await settle(300);
+        const r = heading.getBoundingClientRect();
+        return { x: r.left + 12, y: r.top + 8 };
+      }`);
+      await mouse("mouseMoved", at.x, at.y, 0, pointerType);
+      await pause(150);
+      return page.evaluate(`() => { const g = document.querySelector(".notes-canvas-grip"); if (!g || g.hidden) return null; const r = g.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }`);
+    };
+
+    // The Notes' grip, by mouse.
+    let grip = await notesGripFor("mouse");
+    let box = await pageBox();
+    let before = await blockCount();
+    const byMouse = grip ? await realDrag(grip.x, grip.y, box.x + box.w * 0.3, box.y + box.h * 0.7) : null;
+    check("the Notes' grip, dragged with a real mouse, starts a drag carrying its item", byMouse?.html5 === true && byMouse.types.includes("application/x-recall-item"), JSON.stringify(byMouse));
+    check("...a chip naming it follows the pointer away from the Canvas, and gives way to the preview over a page", /Figures/.test(byMouse?.chip || "") && byMouse?.ghost === true && byMouse?.chipOverPage === "" && byMouse?.chipGone === true, JSON.stringify(byMouse && { chip: byMouse.chip, over: byMouse.chipOverPage }));
+    check("...and let go of on a Canvas page, it is a Block there", (await blockCount()) === before + 1);
+
+    // The Notes' grip, by pen.
+    grip = await notesGripFor("pen");
+    box = await pageBox();
+    before = await blockCount();
+    const byPen = grip ? await realDrag(grip.x, grip.y, box.x + box.w * 0.6, box.y + box.h * 0.8, "pen") : null;
+    check("the Notes' grip, dragged with a pen, is followed: the chip, then the preview over a page", /Figures/.test(byPen?.chip || "") && byPen?.ghost === true, JSON.stringify(byPen));
+    check("...and let go of on a Canvas page, it is a Block there", (await blockCount()) === before + 1);
+
+    // A card's grip, by mouse and by pen, with the Cards beside the Canvas.
+    const cardGrip = await page.evaluate(`async () => {
       const { api, settle } = window.__recall;
-      const pageEl = document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='1']");
-      const box = pageEl.getBoundingClientRect();
-      const dt = new DataTransfer();
       window.__cardsBefore = [api.state.cards, api.state.current];
       api.state.cards = api.state.masterCards;
-      api.state.current = 1;
-      document.getElementById("cardCanvasGripBtn").dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt }));
-      const x = box.left + box.width * 0.45;
-      const y = box.top + box.height * 0.08;
-      const fire = () => document.elementFromPoint(x, y).dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
-      fire();
-      for (let i = 0; i < 30 && document.querySelector(".canvas-drop-ghost.is-guess"); i += 1) { await settle(100); fire(); }
+      api.state.current = 0;
+      api.setViewMode("cards");
+      await settle(600);
+      api.openSplitPart("handwriting");
+      for (let i = 0; i < 60 && !document.querySelector("[data-doc-slot='notebook'] .pdf-page[data-page-number='1'] canvas"); i += 1) await settle(100);
+      await settle(600);
+      const g = document.getElementById("cardCanvasGripBtn");
+      const r = g.getBoundingClientRect();
+      return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
     }`);
-    await snap("5b-preview.png");
-    await page.evaluate(`() => { document.getElementById("cardCanvasGripBtn").dispatchEvent(new DragEvent("dragend", { bubbles: true })); [window.__recall.api.state.cards, window.__recall.api.state.current] = window.__cardsBefore; }`);
+    box = await pageBox();
+    before = await blockCount();
+    const cardByMouse = cardGrip ? await realDrag(cardGrip.x, cardGrip.y, box.x + box.w * 0.2, box.y + box.h * 0.2) : null;
+    check("a card's grip, dragged with a real mouse, puts the card where it is let go of", cardByMouse?.html5 === true && /⠿/.test(cardByMouse.chip) && (await blockCount()) === before + 2, JSON.stringify({ cardByMouse, n: (await blockCount()) - before }));
+    before = await blockCount();
+    const cardByPen = cardGrip ? await realDrag(cardGrip.x, cardGrip.y, box.x + box.w * 0.25, box.y + box.h * 0.45, "pen") : null;
+    check("...and with a pen, too — once, not also at the end as a press would", /⠿/.test(cardByPen?.chip || "") && (await blockCount()) === before + 2, JSON.stringify({ cardByPen, n: (await blockCount()) - before }));
+    // A pen's press without a move is still a press: the card at the end.
+    before = await blockCount();
+    if (cardGrip) {
+      await mouse("mousePressed", cardGrip.x, cardGrip.y, 1, "pen");
+      await mouse("mouseReleased", cardGrip.x, cardGrip.y, 0, "pen");
+      await pause(1500);
+    }
+    check("...and a pen's press on it, not moved, still puts the card at the end", (await blockCount()) === before + 2, `n=${(await blockCount()) - before}`);
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      [api.state.cards, api.state.current] = window.__cardsBefore;
+      api.setViewMode("notes");
+      await settle(500);
+      api.openSplitPart("handwriting");
+      await settle(1200);
+    }`);
   }
 
   // ── 7d. The picker: New only / All / None, and the Colours row ────────

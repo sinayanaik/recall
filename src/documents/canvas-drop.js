@@ -27,9 +27,11 @@
 // of what is dragged is hidden, so it is the one thing that moves.
 //
 // The parts beside the Canvas, or the Canvas in focus: a drop on a Canvas page
-// is read here either way. HTML5 drag and drop, which a touch screen does not
-// do: there, the selection bar and a highlight's menu have "To the Canvas",
-// which puts it at the end. An item travels as CANVAS_ITEM_MIME (JSON of the
+// is read here either way. HTML5 drag and drop, which a pen or a finger may not
+// start: the ⠿ grips are followed by their own pointer drag for those, and the
+// selection bar and a highlight's menu have "To the Canvas", which puts it at
+// the end. Away from a Canvas page a chip naming what is dragged follows the
+// pointer, so a grip pressed and dragged is seen to go. An item travels as CANVAS_ITEM_MIME (JSON of the
 // item), with text/plain beside it for anything else it is dropped on.
 
 import { el } from "../core/dom.js?v=__BUILD__";
@@ -195,6 +197,8 @@ function carryCanvasItem(dt, item) {
 }
 
 function onCanvasDragStart(event) {
+  // A pen the browser does start a drag for: that drag takes over.
+  endPointerDrag();
   setDragItem(null);
   const dt = event.dataTransfer;
   if (!dt) return;
@@ -253,6 +257,149 @@ function onCanvasDragStart(event) {
       hideBrowserDragImage(dt);
     }
   }
+}
+
+// ── What follows the pointer, away from a Canvas page ─────────────────────
+//
+// The browser's own picture of what is dragged is swapped for an empty one
+// (above), so that over a Canvas page the preview is the one thing that moves.
+// Away from a page that left nothing moving at all: a grip pressed and dragged
+// looked as if it had not let go. So while one of our own items is dragged, a
+// small chip naming it follows the pointer everywhere but over a Canvas page,
+// where the preview takes over.
+
+let dragChip = null;
+
+// Its first line with words in it, as words.
+function dragChipLabel(item) {
+  const raw = item?.kind === "pair" ? item.q : item?.md;
+  const lines = String(raw || "")
+    .replace(/!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>/gi, "Picture")
+    .replace(/<[^>]+>/g, " ")
+    .split(/\n/)
+    .filter((line) => !/^\s*(?:`{3,}|~{3,})/.test(line))
+    .map((line) => line.replace(/^\s*(?:#{1,6}|>|[-*+]|\d+[.)])\s+/, "").replace(/[*_`|~\\]+/g, " ").replace(/\s+/g, " ").trim());
+  const line = lines.find((text) => /[\p{L}\p{N}]/u.test(text)) || "";
+  return line.length > 48 ? `${line.slice(0, 47)}…` : line || "Block";
+}
+
+function showDragChip(clientX, clientY) {
+  if (!dragItem) { hideDragChip(); return; }
+  if (!dragChip) {
+    dragChip = document.createElement("div");
+    dragChip.className = "canvas-drag-chip";
+    dragChip.setAttribute("aria-hidden", "true");
+  }
+  if (dragChip.dataset.for !== (dragItem.from || dragItem.md || dragItem.q || "")) {
+    dragChip.dataset.for = dragItem.from || dragItem.md || dragItem.q || "";
+    dragChip.textContent = `⠿ ${dragChipLabel(dragItem)}`;
+  }
+  if (!dragChip.isConnected) document.body.appendChild(dragChip);
+  dragChip.style.left = `${Math.round(clientX + 14)}px`;
+  dragChip.style.top = `${Math.round(clientY + 12)}px`;
+}
+
+function hideDragChip() {
+  dragChip?.remove();
+}
+
+// ── A grip dragged by a pen or a finger ───────────────────────────────────
+//
+// HTML5 drag and drop starts from a mouse only: a pen on a tablet, or a
+// finger, pressed on a ⠿ grip and moved, scrolled the page or did nothing. So
+// for those the grip's drag is followed by its pointer here — the same item,
+// the same chip and preview, and let go of over a Canvas page it lands there
+// as a dropped one does. A press that does not move stays a press (the card's
+// grip then puts the card at the end).
+
+const GRIP_SELECTOR = "#cardCanvasGripBtn, .notes-canvas-grip";
+const POINTER_DRAG_SLOP = 8;
+let pointerDrag = null;
+
+function gripItem({ source, thing }) {
+  if (source.matches("#cardCanvasGripBtn")) {
+    const card = state.cards?.[state.current];
+    return card ? cardItem(card.id) : null;
+  }
+  return thing?.isConnected ? notesElementItem(thing) : null;
+}
+
+function endPointerDrag() {
+  if (!pointerDrag) return;
+  const { source, id } = pointerDrag;
+  pointerDrag = null;
+  try { source.releasePointerCapture?.(id); } catch { /* not captured */ }
+  source.classList.remove("is-pointer-dragging");
+  hideDragChip();
+  markCanvasDropPage(null);
+}
+
+function onGripPointerDown(event) {
+  if (event.pointerType === "mouse" || event.button !== 0) return;
+  const source = event.target?.closest?.(GRIP_SELECTOR);
+  if (!source) return;
+  endPointerDrag();
+  // The Notes' grip moves to whatever the pointer is over: what it stood for
+  // when pressed is what is dragged.
+  const thing = source.matches(".notes-canvas-grip") ? notesGripTarget() : null;
+  pointerDrag = { id: event.pointerId, source, thing, x0: event.clientX, y0: event.clientY, started: false };
+}
+
+function canvasPageUnder(clientX, clientY) {
+  return canvasDropPageAt(document.elementFromPoint(clientX, clientY));
+}
+
+function onGripPointerMove(event) {
+  if (!pointerDrag || event.pointerId !== pointerDrag.id) return;
+  if (!pointerDrag.started) {
+    if (Math.hypot(event.clientX - pointerDrag.x0, event.clientY - pointerDrag.y0) < POINTER_DRAG_SLOP) return;
+    const item = gripItem(pointerDrag);
+    if (!item) { endPointerDrag(); return; }
+    pointerDrag.started = true;
+    dragFromCanvas = false;
+    setDragItem(item);
+    pointerDrag.source.classList.add("is-pointer-dragging");
+    try { pointerDrag.source.setPointerCapture?.(event.pointerId); } catch { /* the pointer is gone */ }
+  }
+  event.preventDefault();
+  const page = canvasPageUnder(event.clientX, event.clientY);
+  if (!page) {
+    markCanvasDropPage(null);
+    showDragChip(event.clientX, event.clientY);
+    return;
+  }
+  hideDragChip();
+  markCanvasDropPage(page);
+  const frame = canvasPageFrame(page);
+  if (!frame) return;
+  measureDragFor(frame.page);
+  paintGhost(frame, event.clientX, event.clientY, "item");
+}
+
+// The click a press-and-drag ends in is not a press of the grip.
+function swallowNextClick(source) {
+  const swallow = (event) => {
+    if (source.contains(event.target)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  };
+  document.addEventListener("click", swallow, true);
+  setTimeout(() => document.removeEventListener("click", swallow, true), 400);
+}
+
+function onGripPointerUp(event) {
+  if (!pointerDrag || event.pointerId !== pointerDrag.id) return;
+  const { started, source } = pointerDrag;
+  if (!started) { endPointerDrag(); return; }
+  swallowNextClick(source);
+  const page = canvasPageUnder(event.clientX, event.clientY);
+  hideDragChip();
+  pointerDrag = null;
+  source.classList.remove("is-pointer-dragging");
+  try { source.releasePointerCapture?.(event.pointerId); } catch { /* not captured */ }
+  if (!page) { markCanvasDropPage(null); setDragItem(null); return; }
+  dropOwnItemAt(page, event.clientX, event.clientY);
 }
 
 // ── Over a Canvas page ────────────────────────────────────────────────────
@@ -404,7 +551,12 @@ function paintGhost(frame, clientX, clientY, kind) {
 
 function onCanvasDragOver(event) {
   const page = canvasDropPageAt(event.target);
-  if (!page || !canvasDropCarries(event.dataTransfer) || !canvasDropIsOurs(event.dataTransfer)) { markCanvasDropPage(null); return; }
+  if (!page || !canvasDropCarries(event.dataTransfer) || !canvasDropIsOurs(event.dataTransfer)) {
+    markCanvasDropPage(null);
+    if (dragItem) showDragChip(event.clientX, event.clientY);
+    return;
+  }
+  hideDragChip();
   event.preventDefault();
   event.dataTransfer.dropEffect = "copy";
   markCanvasDropPage(page);
@@ -416,6 +568,8 @@ function onCanvasDragOver(event) {
 
 function onCanvasDragLeave(event) {
   if (canvasDropOverPage && !canvasDropOverPage.contains(event.relatedTarget)) markCanvasDropPage(null);
+  // Out of the window altogether.
+  if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0 || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight)) hideDragChip();
 }
 
 // ── Reading what was let go ───────────────────────────────────────────────
@@ -489,6 +643,7 @@ async function onCanvasDrop(event) {
   const measured = dragItem && dragMeasure?.key === frame?.page ? dragMeasure.result : null;
   const ownItem = dragItem;
   markCanvasDropPage(null);
+  hideDragChip();
   disarmCanvasDrag();
   setDragItem(null);
   if (documentViewOnly(DOC_SLOT_NOTEBOOK)) {
@@ -511,6 +666,28 @@ async function onCanvasDrop(event) {
   await placeOnCanvas([item], { at: place, measured: item === ownItem ? measured : null });
 }
 
+// One of our own items let go of over a Canvas page by a pen or a finger
+// (above): where its preview was, as a drop puts it.
+async function dropOwnItemAt(page, clientX, clientY) {
+  const frame = canvasPageFrame(page);
+  const item = dragItem;
+  if (frame && item) {
+    markCanvasDropPage(page);
+    paintGhost(frame, clientX, clientY, "item");
+  }
+  const place = ghostState?.place || null;
+  const measured = item && dragMeasure?.key === frame?.page ? dragMeasure.result : null;
+  markCanvasDropPage(null);
+  setDragItem(null);
+  if (!item || !place) return;
+  if (documentViewOnly(DOC_SLOT_NOTEBOOK)) {
+    showToast("View only — press ✎ to add to the page", "info");
+    return;
+  }
+  if (!(await makeCanvasLiveForDrop())) return;
+  await placeOnCanvas([item], { at: place, measured });
+}
+
 let canvasDropWired = false;
 
 export function initCanvasDrop() {
@@ -524,6 +701,16 @@ export function initCanvasDrop() {
   document.addEventListener("dragover", onCanvasDragOver, true);
   document.addEventListener("dragleave", onCanvasDragLeave, true);
   document.addEventListener("drop", onCanvasDrop, true);
-  document.addEventListener("dragend", () => { markCanvasDropPage(null); disarmCanvasDrag(); setDragItem(null); dragFromCanvas = false; }, true);
+  document.addEventListener("dragend", () => { markCanvasDropPage(null); hideDragChip(); disarmCanvasDrag(); setDragItem(null); dragFromCanvas = false; }, true);
+  // A grip dragged by a pen or a finger.
+  document.addEventListener("pointerdown", onGripPointerDown, true);
+  document.addEventListener("pointermove", onGripPointerMove, { capture: true, passive: false });
+  document.addEventListener("pointerup", onGripPointerUp, true);
+  document.addEventListener("pointercancel", (event) => {
+    if (!pointerDrag || event.pointerId !== pointerDrag.id) return;
+    const started = pointerDrag.started;
+    endPointerDrag();
+    if (started) setDragItem(null);
+  }, true);
   document.addEventListener("pointerup", () => { if (canvasDragArmed) setTimeout(disarmCanvasDrag, 0); }, true);
 }
