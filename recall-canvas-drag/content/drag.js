@@ -88,17 +88,21 @@
   // stacking, overflow or transform can cover it, with a closed shadow root so
   // no page's CSS reaches inside. It takes no pointer events but the grip's.
 
+  //
+  // A site with a strict Content-Security-Policy refuses inline style
+  // attributes and <style> elements, even ones a content script adds, so the
+  // host is styled through the CSSOM and the shadow root by a constructed
+  // stylesheet, neither of which CSP governs.
   const host = document.createElement("recall-canvas-drag");
-  const HOST_STYLE = [
-    "position:fixed", "inset:0", "width:100vw", "height:100vh", "max-width:none", "max-height:none",
-    "margin:0", "padding:0", "border:0", "background:transparent", "overflow:visible",
-    "pointer-events:none", "display:block", "z-index:2147483647", "color-scheme:light"
-  ].map((rule) => `${rule} !important`).join(";");
-  host.setAttribute("style", HOST_STYLE);
+  const HOST_STYLE = {
+    position: "fixed", inset: "0", width: "100vw", height: "100vh", "max-width": "none", "max-height": "none",
+    margin: "0", padding: "0", border: "0", background: "transparent", overflow: "visible",
+    "pointer-events": "none", display: "block", "z-index": "2147483647", "color-scheme": "light"
+  };
+  for (const [name, value] of Object.entries(HOST_STYLE)) host.style.setProperty(name, value, "important");
   if ("popover" in HTMLElement.prototype) host.setAttribute("popover", "manual");
   const root = host.attachShadow({ mode: "closed" });
-  root.innerHTML = `
-<style>
+  const SHEET = `
   :host { all: initial; }
   .wrap { position: fixed; inset: 0; pointer-events: none; font: 500 12px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; }
   .wrap[hidden] { display: none; }
@@ -125,14 +129,38 @@
   }
   .thumb img { display: block; max-width: 204px; max-height: 150px; border-radius: 4px; }
   .thumb .words { display: block; max-width: 204px; max-height: 60px; overflow: hidden; }
-</style>
-<div class="wrap" hidden>
-  <div class="box"></div>
-  <div class="grip" draggable="true" title="Drag onto a Recall Canvas. Hold Shift as you let go for a picture of it.">
-    <span class="dots" aria-hidden="true">⠿</span><span class="kind"></span><span class="state"></span><span class="keys">Alt+↑↓</span>
-  </div>
-</div>
-<div class="thumb"><img alt=""><span class="words"></span></div>`;
+`;
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(SHEET);
+    root.adoptedStyleSheets = [sheet];
+  } catch (_) {
+    // No constructed stylesheets: a <style>, which a strict CSP may refuse.
+    const style = document.createElement("style");
+    style.textContent = SHEET;
+    root.appendChild(style);
+  }
+  // Built node by node rather than from markup: a page that enforces Trusted
+  // Types refuses an HTML string.
+  const make = (tag, className, attrs = {}, kids = []) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
+    node.append(...kids);
+    return node;
+  };
+  root.append(
+    make("div", "wrap", { hidden: "" }, [
+      make("div", "box"),
+      make("div", "grip", { draggable: "true", title: "Drag onto a Recall Canvas. Hold Shift as you let go for a picture of it." }, [
+        make("span", "dots", { "aria-hidden": "true" }, ["⠿"]),
+        make("span", "kind"),
+        make("span", "state"),
+        make("span", "keys", {}, ["Alt+↑↓"])
+      ])
+    ]),
+    make("div", "thumb", {}, [make("img", "", { alt: "" }), make("span", "words")])
+  );
   const wrap = root.querySelector(".wrap");
   const box = root.querySelector(".box");
   const grip = root.querySelector(".grip");
@@ -387,6 +415,11 @@
   }
 
   window.addEventListener("pointermove", onPointerMove, { capture: true, passive: true });
+  // A press anywhere but the grip: no drag of ours is under way, whatever a
+  // dragend that never came would have said.
+  window.addEventListener("pointerdown", (event) => {
+    if (!isOurs(event.composedPath?.()[0] || event.target)) dragging = false;
+  }, { capture: true, passive: true });
   window.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("keyup", onKeyUp, true);
   window.addEventListener("wheel", onWheel, { capture: true, passive: false });
@@ -540,9 +573,10 @@
     return { w: w || 0, h: h || 0 };
   }
 
-  function svgToImg(svg, doc) {
+  // `picked`: the <svg> is the part picked itself, so it is wanted however small.
+  function svgToImg(svg, doc, picked = false) {
     const { w, h } = sizeOf(svg);
-    if (w < ICON_SIZE && h < ICON_SIZE) return null; // an icon
+    if (!picked && w < ICON_SIZE && h < ICON_SIZE) return null; // an icon
     svg.removeAttribute(SIZE_ATTR);
     if (!svg.getAttribute("xmlns")) svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
     if (w && !svg.getAttribute("width")) svg.setAttribute("width", String(w));
@@ -588,7 +622,7 @@
     });
     holder.querySelectorAll("svg").forEach((svg) => {
       if (svg.parentElement?.closest("svg")) return;
-      const img = svgToImg(svg, doc);
+      const img = svgToImg(svg, doc, svg === holder.firstElementChild);
       if (img) svg.replaceWith(img);
       else svg.remove();
     });
@@ -829,7 +863,11 @@
 
   // Leaving the grip for the part it stands for keeps it; leaving both, with
   // Alt let go of, takes the outline away (handled by the page's pointermove).
+  // A page's own press handlers (a drag library, a "no text selection" guard)
+  // can call preventDefault on the press, which cancels a drag before it
+  // starts: the grip's press stops here.
   grip.addEventListener("pointerdown", (event) => event.stopPropagation());
+  grip.addEventListener("mousedown", (event) => event.stopPropagation());
 
   // ── Messages from the popup and the shortcut ──────────────────────────────
 

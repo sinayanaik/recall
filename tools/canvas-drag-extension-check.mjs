@@ -199,6 +199,44 @@ function mouse(page, type, x, y, { buttons = 0, modifiers = 0 } = {}) {
   });
 }
 
+// Press the grip at `grip` and move until Chrome starts its drag; the drag's
+// data, as the protocol hands it back, or null.
+async function dragFromGrip(target, grip) {
+  await target.call("Input.setInterceptDrags", { enabled: true });
+  let data = null;
+  const off = client.on((m) => { if (m.sessionId === target.sessionId && m.method === "Input.dragIntercepted") data = m.params.data; });
+  await mouse(target, "mousePressed", grip.x, grip.y, { buttons: 1 });
+  for (let i = 1; i <= 8 && !data; i += 1) {
+    await mouse(target, "mouseMoved", grip.x + i * 5, grip.y + i * 4, { buttons: 1 });
+    await pause(40);
+  }
+  off();
+  // Over: the drag is called off here (its data goes on to Recall below), so
+  // the page sees its dragend as it would after a real drop elsewhere.
+  if (data) await target.call("Input.dispatchDragEvent", { type: "dragCancel", x: grip.x + 40, y: grip.y + 30, data });
+  await mouse(target, "mouseReleased", grip.x + 40, grip.y + 30);
+  await target.call("Input.setInterceptDrags", { enabled: false });
+  await pause(100);
+  return data;
+}
+
+// Hold Alt over (x, y), let go, wait for the drag to be prepared.
+async function pickAt(target, x, y) {
+  await mouse(target, "mouseMoved", x, y);
+  await keys(target, "rawKeyDown", "Alt", ALT);
+  await mouse(target, "mouseMoved", x + 1, y, { modifiers: ALT });
+  await pause(200);
+  await keys(target, "keyUp", "Alt", 0);
+  await pause(2200);
+}
+
+// The grip of a part whose box is `r` (content/drag.js, place()).
+const gripOf = (r) => ({ x: Math.max(2, r.left - 3) + 16, y: (r.top - 3 - 24 >= 0 ? r.top - 3 - 24 : Math.max(0, r.top + 2)) + 12 });
+
+const clipOf = (data) => {
+  try { return JSON.parse(data.items.find((item) => item.mimeType === MIME).data); } catch (_) { return null; }
+};
+
 try {
   // The extension's worker is up before any page loads.
   for (let i = 0; i < 50; i += 1) {
@@ -229,25 +267,14 @@ try {
   check("...and letting go of Alt keeps it while the pointer is on it", kept);
   await snap(web, "1-web-page-outlined.png");
 
-  // Its grip sits above the part's top-left corner (content/drag.js, place()).
-  const grip = { x: Math.max(2, card.left - 3) + 16, y: card.top - 3 - 24 + 12 };
+  // Its grip sits above the part's top-left corner.
+  const grip = gripOf(card);
   await mouse(web, "mouseMoved", grip.x, card.top + 4);
   await mouse(web, "mouseMoved", grip.x, grip.y);
-  await web.call("Input.setInterceptDrags", { enabled: true });
-  let data = null;
-  const off = client.on((m) => { if (m.sessionId === web.sessionId && m.method === "Input.dragIntercepted") data = m.params.data; });
-  await mouse(web, "mousePressed", grip.x, grip.y, { buttons: 1 });
-  for (let i = 1; i <= 8 && !data; i += 1) {
-    await mouse(web, "mouseMoved", grip.x + i * 5, grip.y + i * 4, { buttons: 1 });
-    await pause(40);
-  }
-  off();
-  await mouse(web, "mouseReleased", grip.x + 40, grip.y + 30);
-  await web.call("Input.setInterceptDrags", { enabled: false });
+  const data = await dragFromGrip(web, grip);
   const types = data ? data.items.map((item) => item.mimeType) : [];
   check("dragging the grip starts a drag carrying the part, as HTML and words too", types.includes(MIME) && types.includes("text/html") && types.includes("text/plain"), JSON.stringify(types));
-  let clip = null;
-  try { clip = JSON.parse(data.items.find((item) => item.mimeType === MIME).data); } catch (_) { clip = null; }
+  const clip = data ? clipOf(data) : null;
   const html = clip?.html || "";
   check("...the whole card: heading, words, list, table, code", /<h2/.test(html) && /<strong>timed<\/strong>/.test(html) && /<li>Short gaps first<\/li>/.test(html) && /<table/.test(html) && /<pre><code class="language-python">/.test(html), html.slice(0, 160));
   check("...without what the page hides, its icons or its styles", !/Secret hidden/.test(html) && !/<svg/.test(html) && !/style=/.test(html), html.length);
@@ -257,6 +284,31 @@ try {
   check("...the picture's own bytes carried with it", /^data:image\/png;base64,/.test(clip?.images?.[iconUrl] || ""), Object.keys(clip?.images || {}).join(", "));
   check("...and a picture of the card as it looks", /^data:image\/png;base64,/.test(clip?.picture?.dataUrl || "") && Math.abs((clip?.picture?.cssWidth || 0) - Math.round(card.width)) <= 2 && clip?.picture?.cut === false, JSON.stringify(clip?.picture && { w: clip.picture.cssWidth, h: clip.picture.cssHeight, cut: clip.picture.cut }));
   check("...with where it came from", clip?.title === "Fixture article" && /fixtures\/page\.html$/.test(clip?.url || ""));
+
+  // ── 1b. A page with a strict CSP that cancels every press ──────────────
+  // Inline styles refused, and a mousedown handler that calls preventDefault
+  // (which cancels a drag before it starts) — the grip still shows where it
+  // should and still drags. And a small icon picked on its own is carried.
+  await web.goto(`${site.base}/recall-canvas-drag/tools/fixtures/strict.html`);
+  await pause(600);
+  const strictCard = await web.evaluate(() => { const r = document.getElementById("card").getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
+  await pickAt(web, strictCard.left + 6, strictCard.top + strictCard.height / 2);
+  const strictGrip = gripOf(strictCard);
+  await mouse(web, "mouseMoved", strictGrip.x, strictCard.top + 4);
+  await mouse(web, "mouseMoved", strictGrip.x, strictGrip.y);
+  const strictData = await dragFromGrip(web, strictGrip);
+  const strictClip = strictData ? clipOf(strictData) : null;
+  check("on a page with a strict CSP that cancels every press, the grip is in place and still drags the part", /Retrieval practice/.test(strictClip?.html || "") && /^data:image\/(png|jpeg)/.test(strictClip?.picture?.dataUrl || ""), JSON.stringify(strictClip && { html: strictClip.html.slice(0, 80), picture: Boolean(strictClip.picture) }));
+  await keys(web, "rawKeyDown", "Escape", 0);
+  await keys(web, "keyUp", "Escape", 0);
+  const icon = await web.evaluate(() => { const r = document.getElementById("icon").getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
+  await pickAt(web, icon.left + icon.width / 2, icon.top + icon.height / 2);
+  const iconGrip = gripOf(icon);
+  await mouse(web, "mouseMoved", icon.left + 4, icon.top + 2);
+  await mouse(web, "mouseMoved", iconGrip.x, iconGrip.y);
+  const iconData = iconGrip ? await dragFromGrip(web, iconGrip) : null;
+  const iconClip = iconData ? clipOf(iconData) : null;
+  check("a small icon picked on its own is carried as a picture, not dropped as an icon", /^<img src="data:image\/svg\+xml;base64,/.test(iconClip?.html || "") && iconClip?.kind === "Picture", JSON.stringify(iconClip && { kind: iconClip.kind, html: iconClip.html.slice(0, 60) }));
 
   // ── 2. In Recall, on another origin ─────────────────────────────────────
   const page = await openPage(client);

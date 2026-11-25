@@ -287,19 +287,19 @@ export const EXTENSIONS = [
     "name": "Recall Drag to Canvas",
     "version": "1.0.0",
     "description": "Drag any part of any web page onto a Recall Canvas: a paragraph, a table, a code block, a figure, a card. It lands as Blocks, or hold Shift to drop it as a picture.",
-    "bytes": 53149,
+    "bytes": 55717,
     "files": [
       {
         "path": "README.md",
-        "size": 5643
+        "size": 5890
       },
       {
         "path": "background.js",
-        "size": 4668
+        "size": 5149
       },
       {
         "path": "content/drag.js",
-        "size": 34892
+        "size": 36732
       },
       {
         "path": "icons/icon-128.png",

@@ -21,6 +21,7 @@ const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15000;
 // captureVisibleTab allows about two calls a second per window.
 const CAPTURE_GAP_MS = 550;
+const LARGE_CAPTURE_BYTES = 3 * 1024 * 1024;
 
 function blobToDataUrl(blob) {
   return blob.arrayBuffer().then((buffer) => {
@@ -66,7 +67,15 @@ function capture(windowId, rect, dpr) {
     const canvas = new OffscreenCanvas(sw, sh);
     canvas.getContext("2d").drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
     bitmap.close?.();
-    const blob = await canvas.convertToBlob({ type: "image/png" });
+    let blob = await canvas.convertToBlob({ type: "image/png" });
+    // A large part (a long article, a full-width figure on a high-density
+    // screen) can be tens of megabytes as a PNG, all of it carried in the drag:
+    // past this size it goes as a JPEG, which keeps words readable at a
+    // fraction of the size.
+    if (blob.size > LARGE_CAPTURE_BYTES) {
+      const jpeg = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.9 });
+      if (jpeg.size < blob.size) blob = jpeg;
+    }
     return { ok: true, dataUrl: await blobToDataUrl(blob), width: sw, height: sh, scale };
   };
   const next = captureQueue.then(run, run);

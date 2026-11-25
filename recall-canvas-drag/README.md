@@ -100,8 +100,8 @@ Click the toolbar icon:
 
 | File | |
 |---|---|
-| `content/drag.js` | Runs in every page. The outline and grip live in one element in the browser's top layer with a closed shadow root, so no page can cover or restyle them. Prepares the drag as soon as the outline settles, because a drag's data has to be handed over the moment it starts. |
-| `background.js` | Fetches a picture's bytes (`rdc-fetch-image`) and takes the picture of the part (`rdc-capture`, `chrome.tabs.captureVisibleTab` cropped). Relays Alt+Shift+D. |
+| `content/drag.js` | Runs in every page. The outline and grip live in one element in the browser's top layer with a closed shadow root, so no page can cover or restyle them; it is styled with a constructed stylesheet and built node by node, so a strict Content-Security-Policy or Trusted Types does not stop it, and the grip's press is kept from the page's own handlers. Prepares the drag as soon as the outline settles, because a drag's data has to be handed over the moment it starts. |
+| `background.js` | Fetches a picture's bytes (`rdc-fetch-image`) and takes the picture of the part (`rdc-capture`, `chrome.tabs.captureVisibleTab` cropped; a PNG, or a JPEG when the PNG would be over 3 MB). Relays Alt+Shift+D. |
 | `popup.html` / `popup.js` | The switches. |
 
 The drag carries one JSON value under `application/x-recall-web-clip`:

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- No inline styles at all: an inline style attribute or a <style> the
+       extension added would be refused here. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <title>Strict fixture</title>
+  <link rel="stylesheet" href="strict.css">
+</head>
+<body>
+  <p>A page with a strict Content-Security-Policy that also cancels every press.</p>
+  <div class="card" id="card">
+    <h2>Retrieval practice</h2>
+    <p>Recalling beats rereading.</p>
+  </div>
+  <p class="icon-row">An icon on its own: <svg id="icon" width="16" height="16" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="#c62828"/></svg></p>
+  <script src="strict.js"></script>
+</body>
+</html>
