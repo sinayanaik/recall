@@ -57,6 +57,7 @@ import { DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasHandwrittenPages } from "../do
 import { currentDocumentPage, documentPageInFocus, openDocumentView, pdfPageViewport, scrollToDocumentPage, setCanvasPageInsertHandler, setCanvasPageMenuHandler } from "../documents/pdf-view.js?v=__BUILD__";
 import { openCanvasPageMenu } from "../documents/canvas-page-menu.js?v=__BUILD__";
 import { initCanvasPagesPanel, toggleCanvasPagesPanel } from "../documents/canvas-pages-panel.js?v=__BUILD__";
+import { initCanvasDrawerPages } from "../documents/canvas-drawer-pages.js?v=__BUILD__";
 import { hasObjectClipboard, pastePicked } from "../documents/canvas-selection.js?v=__BUILD__";
 import { documentViewOnly } from "../documents/view-only.js?v=__BUILD__";
 import { bindInkRailActivation } from "./rail.js?v=__BUILD__";
@@ -325,6 +326,10 @@ function wire() {
     onChanged: paintHandwritingControls,
     onSetup: (page, done) => openCanvasSetupDialog({ page, onApplied: () => { paintHandwritingControls(); done?.(); } })
   });
+
+  // The ☰ drawer's Pages tab (src/documents/canvas-drawer-pages.js): the same
+  // pictures, in the drawer whose Contents tab a Canvas has nothing for.
+  initCanvasDrawerPages();
 
   // The pager's own +: a page straight after the one in view.
   el.documentAddPageBtn?.addEventListener("click", () => {

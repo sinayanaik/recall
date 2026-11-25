@@ -66,6 +66,12 @@ in `src/documents/pdf-export.js`), `src/documents/canvas-page-list.js` (the
 numbers, pure), and `moveNotebookPages` / `deleteNotebookPages` /
 `duplicateNotebookPages` in `src/documents/notebook.js`; open or closed is
 `recall:canvas-pages-panel-v1` in localStorage, this device only.
+On the Canvas, the contents drawer's first tab (the ☰ beside the tabs) is
+**Pages** rather than Contents — a Canvas has no headings to list — and shows
+the same pictures, two to a row, the page in view lit; press one to go to it.
+Say "the drawer's Pages tab". Code: `src/documents/canvas-drawer-pages.js`,
+registered with `src/documents/pdf-outline.js` through `setCanvasOutlineHooks`;
+the pictures for both are drawn once, in `src/documents/canvas-page-thumbs.js`.
 
 A picture is **stored once**: the same bytes put in a file again — pasted,
 dropped, a GIF, or copied out of the file through the system clipboard — go

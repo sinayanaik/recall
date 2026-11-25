@@ -15,7 +15,9 @@
 //   3. Ctrl-click picks pages; ⇓ and the panel's Export… take only those, the
 //      PDF numbered "1 / 2", "2 / 2" and the web page with just those pages;
 //   4. a page dragged to the top takes what is on it — and a card's picture of
-//      it — with it; Duplicate and Delete act on the pages picked.
+//      it — with it; Duplicate and Delete act on the pages picked;
+//   5. the ☰ drawer's first tab, empty on a Canvas until now, is Pages: the
+//      same pictures, two to a row, the page in view lit, a press goes there.
 
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -57,6 +59,7 @@ const API_SRC = `async () => {
     "/src/documents/canvas-setup.js?v=__BUILD__",
     "/src/documents/canvas-setup-dialog.js?v=__BUILD__",
     "/src/documents/canvas-pages-panel.js?v=__BUILD__",
+    "/src/documents/pdf-outline.js?v=__BUILD__",
     "/src/export/canvas-html.js?v=__BUILD__",
     "/src/documents/blank-pdf.js?v=__BUILD__",
     "/src/documents/pdf-store.js?v=__BUILD__",
@@ -401,6 +404,57 @@ try {
     return { hidden: document.getElementById("canvasPagesPanel").hidden, stored: localStorage.getItem("recall:canvas-pages-panel-v1"), selection: api.canvasExportSelection() };
   }`);
   check("× closes it, and ⇓ exports every page again", closed.hidden && closed.stored === "closed" && closed.selection === null, JSON.stringify(closed));
+
+  // ── 7. The ☰ drawer's Pages tab ────────────────────────────────────────
+  const drawer = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await settle(500);
+    document.getElementById("documentTocBtn").click();
+    await settle(400);
+    const root = document.getElementById("documentOutlineDrawer");
+    const grid = root.querySelector(".canvas-drawer-pages");
+    for (let i = 0; i < 80 && root.querySelectorAll(".cdp-thumb canvas").length < 4; i += 1) await settle(150);
+    const tab = root.querySelector('[data-drawer-tab="contents"]');
+    return {
+      open: root.classList.contains("is-open"),
+      tab: tab?.textContent,
+      tabActive: tab?.classList.contains("is-active"),
+      grid: Boolean(grid && !grid.hidden && grid.offsetParent),
+      items: grid?.querySelectorAll(".cdp-item").length,
+      drawn: grid?.querySelectorAll(".cdp-thumb canvas").length,
+      columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(" ").length : 0,
+      current: grid?.querySelector(".cdp-item.is-current")?.dataset.page,
+      empty: document.getElementById("documentOutlineEmpty").hidden,
+      canvasClass: root.classList.contains("is-canvas")
+    };
+  }`);
+  check("☰ on the Canvas opens on a Pages tab, not an empty Contents", drawer.open && drawer.tab === "Pages" && drawer.tabActive && drawer.canvasClass, JSON.stringify(drawer));
+  check("...a picture of every page, two to a row", drawer.grid && drawer.items === 4 && drawer.drawn === 4 && drawer.columns === 2, JSON.stringify(drawer));
+  check("...the page in view lit, and no \"No contents\" message", drawer.current === "2" && drawer.empty, JSON.stringify(drawer));
+  await shot("drawer-pages.png");
+  const went = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const root = document.getElementById("documentOutlineDrawer");
+    root.querySelector('.cdp-item[data-page="4"]').click();
+    await settle(700);
+    const out = { closed: !root.classList.contains("is-open"), inView: api.documentPageInFocus() };
+    document.getElementById("documentTocBtn").click();
+    await settle(400);
+    out.current = root.querySelector(".cdp-item.is-current")?.dataset.page;
+    root.querySelector('[data-drawer-tab="highlights"]').click();
+    await settle(200);
+    out.gridHiddenOnHighlights = !root.querySelector(".canvas-drawer-pages").offsetParent;
+    root.querySelector('[data-drawer-tab="contents"]').click();
+    await settle(200);
+    out.gridBack = Boolean(root.querySelector(".canvas-drawer-pages").offsetParent);
+    document.getElementById("documentTocBtn").click();
+    await settle(400);
+    return out;
+  }`);
+  check("pressing a page goes to it and closes the drawer", went.closed && went.inView === 4, JSON.stringify(went));
+  check("...and opened again, that page is the one lit", went.current === "4", JSON.stringify(went));
+  check("the Highlights tab still switches away from it and back", went.gridHiddenOnHighlights && went.gridBack, JSON.stringify(went));
 
   if (SHOTS) {
     await page.evaluate(`async () => { document.getElementById("canvasPagesBtn").click(); await window.__recall.settle(800); }`);
