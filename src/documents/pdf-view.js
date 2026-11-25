@@ -1232,9 +1232,23 @@ export function setCanvasPageInsertHandler(fn) {
   onInsertCanvasPage = typeof fn === "function" ? fn : null;
 }
 
+// The gap under a Canvas page holds one centred cluster, "＋ Page │ Page k ⋯":
+// the two used to sit at the middle and at the right edge, and the right one
+// was under the floating pager (#documentPager) whenever a page filled the
+// width — the corner the pager parks in.
+function pageGapCluster(pageEl) {
+  let gap = pageEl.querySelector(":scope > .canvas-page-gap");
+  if (gap) return gap;
+  gap = document.createElement("div");
+  gap.className = "canvas-page-gap";
+  gap.dataset.pageChrome = "";
+  pageEl.appendChild(gap);
+  return gap;
+}
+
 function appendPageInsertButton(pageEl, pageNumber) {
   if (!pageEl || openPdf?.slot !== DOC_SLOT_NOTEBOOK) return;
-  if (pageEl.querySelector(":scope > .canvas-page-insert")) return;
+  if (pageEl.querySelector(":scope > .canvas-page-gap > .canvas-page-insert")) return;
   const button = document.createElement("button");
   button.type = "button";
   button.className = "canvas-page-insert";
@@ -1252,7 +1266,7 @@ function appendPageInsertButton(pageEl, pageNumber) {
     event.stopPropagation();
     onInsertCanvasPage?.(Number(button.dataset.insertAfter) || pageNumber);
   });
-  pageEl.appendChild(button);
+  pageGapCluster(pageEl).appendChild(button);
   appendPageMenuButton(pageEl, pageNumber);
 }
 
@@ -1271,7 +1285,7 @@ export function setCanvasPageMenuHandler(fn) {
 
 function appendPageMenuButton(pageEl, pageNumber) {
   if (!pageEl || openPdf?.slot !== DOC_SLOT_NOTEBOOK) return;
-  if (pageEl.querySelector(":scope > .canvas-page-menu-btn")) return;
+  if (pageEl.querySelector(":scope > .canvas-page-gap > .canvas-page-menu-btn")) return;
   const button = document.createElement("button");
   button.type = "button";
   button.className = "canvas-page-menu-btn";
@@ -1288,7 +1302,7 @@ function appendPageMenuButton(pageEl, pageNumber) {
     event.stopPropagation();
     onCanvasPageMenu?.(Number(button.dataset.pageMenuFor) || pageNumber, button);
   });
-  pageEl.appendChild(button);
+  pageGapCluster(pageEl).appendChild(button);
 }
 
 function renderStartNotebookPrompt() {

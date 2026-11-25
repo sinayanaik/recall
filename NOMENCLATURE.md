@@ -46,9 +46,33 @@ and ＋□ beside the page number adds one after the page in view
 (`src/documents/notebook.js`). **＋ Page**, the pill in the gap under every
 Canvas page, inserts a blank page right there, between that page and the next
 (`appendPageInsertButton` in `src/documents/pdf-view.js`; `data-page-chrome`
-keeps the page's tools off it). **Page k ⋯**, at the right of the same gap, is
-that page's own menu — Move up, Move down, Duplicate, Page setup…, Delete page
-(`appendPageMenuButton`; `src/documents/canvas-page-menu.js`). Say "delete a
+keeps the page's tools off it). **Page k ⋯**, beside it — the two are one
+cluster in the middle of the gap (`.canvas-page-gap`), so the floating pager in
+the corner never covers either — is that page's own menu: Move up, Move down,
+Duplicate, Page setup…, Export this page as PDF or as a web page, Delete page
+(`appendPageMenuButton`; `src/documents/canvas-page-menu.js`).
+
+The **Pages panel** is every Canvas page as a small picture, in a column at the
+left of the Canvas (▤ in the pager, the pager's "k / n", or ⋯ → Canvas pages →
+Pages panel). Press a page to go to it; Ctrl-click (or hold, on a touch screen)
+**picks** several and Shift-click a run of them; drag pages to put them in
+another order; **Export…**, **Duplicate** and **Delete** in its bar act on the
+pages picked, or Export… on every page when none are. With pages picked, ⇓'s
+PDF and Web page rows export only those, numbered within the export ("1 / 2",
+not "3 / 12") and named "… - canvas (pages 2-4, 7)". Say "Pages panel" and
+"picked pages", not "sidebar", "slide sorter" or "selected slides". Code:
+`src/documents/canvas-pages-panel.js` (the pictures are `renderCanvasPageThumb`
+in `src/documents/pdf-export.js`), `src/documents/canvas-page-list.js` (the
+numbers, pure), and `moveNotebookPages` / `deleteNotebookPages` /
+`duplicateNotebookPages` in `src/documents/notebook.js`; open or closed is
+`recall:canvas-pages-panel-v1` in localStorage, this device only.
+
+A picture is **stored once**: the same bytes put in a file again — pasted,
+dropped, a GIF, or copied out of the file through the system clipboard — go
+down at the address they were first uploaded to rather than being uploaded
+again (`src/images/media-reuse.js`, `uploadImage` in `src/images/upload.js`,
+`ownPictureFromTransfer` in `src/images/paste.js`). Only within one file: a
+picture from another file is uploaded for this one. Say "delete a
 page", not "tear out" (the code keeps `tearOutNotebookPage` and `hw-tear-out`). Each Canvas page shows its **page number**,
 "k / n", at its foot, and the Canvas PDF export prints it in the same place;
 ⋯ → Canvas pages → Page numbers turns it off (`meta.notebook.pageNumbers:

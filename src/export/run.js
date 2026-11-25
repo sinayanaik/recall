@@ -26,6 +26,7 @@ import { collectDeckHighlightsForExport } from "../panels/highlights-panel.js?v=
 import { preloadRegionImages } from "../documents/pdf-region-embed.js?v=__BUILD__";
 import { exportSql } from "./sql.js?v=__BUILD__";
 import { buildCanvasHtml } from "./canvas-html.js?v=__BUILD__";
+import { canvasExportSelection } from "../documents/canvas-pages-panel.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
@@ -821,7 +822,9 @@ export async function exportDocumentPdf({ annotatedOnly = false, theme = loadExp
 // as the screen draws it (buildCanvasPdfBytes, src/documents/pdf-export.js).
 // Written with pdf-lib and downloaded, so no print dialog gets to scale or
 // split it. The only Canvas export there is.
-export async function exportCanvasPdf() {
+// `pages`: only these Canvas pages (the Pages panel's selection); none is
+// every page.
+export async function exportCanvasPdf({ pages = null } = {}) {
   const blocked = documentExportUnavailableReason();
   if (blocked) {
     setStatus(blocked, "error");
@@ -840,7 +843,7 @@ export async function exportCanvasPdf() {
         : "Could not load the PDF writer.", "error");
       return;
     }
-    const result = await buildCanvasPdfBytes();
+    const result = await buildCanvasPdfBytes({ pages });
     if (!result) return; // the file was closed while its pages rendered
     const url = URL.createObjectURL(new Blob([result.bytes], { type: "application/pdf" }));
     const link = document.createElement("a");
@@ -863,7 +866,7 @@ export async function exportCanvasPdf() {
 // vector paper and ink, real words, and every picture in the file as itself,
 // so a GIF moves. Downloaded, like the PDF — and, like it, on the paper the
 // Canvas is seen on (the Canvas is the part in focus to get here).
-export async function exportCanvasHtml() {
+export async function exportCanvasHtml({ pages = null } = {}) {
   const blocked = documentExportUnavailableReason();
   if (blocked) {
     setStatus(blocked, "error");
@@ -874,6 +877,7 @@ export async function exportCanvasHtml() {
   try {
     const result = await buildCanvasHtml({
       tone: currentPaperTone(),
+      pages,
       onProgress: (step, done, total) => {
         if (step === "pictures" && total) setStatus(`Preparing the Canvas web page — picture ${done} of ${total}…`);
       }
@@ -919,8 +923,10 @@ export function handleExportDocumentAction(action, { theme } = {}) {
   if (el.viewExportMenu) el.viewExportMenu.hidden = true;
   // The Canvas has two exports: the web page, and the PDF for every other row.
   if (onCanvasSlot()) {
-    if (action === "canvas-html") exportCanvasHtml();
-    else exportCanvasPdf();
+    // The Pages panel's selection, when it has one short of every page.
+    const pages = canvasExportSelection();
+    if (action === "canvas-html") exportCanvasHtml({ pages });
+    else exportCanvasPdf({ pages });
     return;
   }
   if (action === "original") {

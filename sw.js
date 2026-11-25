@@ -398,6 +398,7 @@ const APP_SHELL = [
   `./styles/a6-list-lead.css?v=${STAMP}`,
   `./styles/a7-code-lines.css?v=${STAMP}`,
   `./styles/a8-canvas-feed.css?v=${STAMP}`,
+  `./styles/a9-canvas-pages-panel.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -524,6 +525,8 @@ const APP_SHELL = [
   `./src/documents/view-only.js?v=${STAMP}`,
   `./src/documents/canvas-setup.js?v=${STAMP}`,
   `./src/documents/canvas-extent.js?v=${STAMP}`,
+  `./src/documents/canvas-page-list.js?v=${STAMP}`,
+  `./src/documents/canvas-pages-panel.js?v=${STAMP}`,
   `./src/documents/page-grow-preview.js?v=${STAMP}`,
   `./src/documents/canvas-setup-dialog.js?v=${STAMP}`,
   `./src/documents/canvas-feed.js?v=${STAMP}`,
@@ -598,6 +601,7 @@ const APP_SHELL = [
   `./src/images/compress-dialog.js?v=${STAMP}`,
   `./src/images/compress.js?v=${STAMP}`,
   `./src/images/outbox.js?v=${STAMP}`,
+  `./src/images/media-reuse.js?v=${STAMP}`,
   `./src/images/paste.js?v=${STAMP}`,
   `./src/images/surface-controls.js?v=${STAMP}`,
   `./src/images/upload.js?v=${STAMP}`,

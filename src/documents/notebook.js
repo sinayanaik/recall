@@ -53,6 +53,7 @@ import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
 import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
 import { deleteDocumentCopies } from "../storage/document-migration.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { isIdentityOrder, moveForOrder, pageOrderAfterMove } from "./canvas-page-list.js?v=__BUILD__";
 
 export const NOTEBOOK_MAX_PAGES = 300;
 
@@ -1012,6 +1013,16 @@ function recordOnPage(record, page, id) {
 async function copyNotebookPage(pageNumber) {
   if (!hasNotebook() || !roomForAnotherPage()) return false;
   const pages = notebookPageCount();
+  if (!copyNotebookPageRecords(pageNumber, pages)) return false;
+  return writeNotebookPdf({ pages: pages + 1, paper: notebookPaper() });
+}
+
+// The records half of a duplicate: page `n`'s things copied onto a new page
+// straight after it, everything below moved down one — and no new paper yet,
+// so several pages can be duplicated in one rewrite (copyNotebookPages).
+// `pages` is the Canvas's page count before ANY of them were copied; the
+// copies are made from the last page up, so `n` is always still `n`.
+function copyNotebookPageRecords(pageNumber, pages) {
   const n = Number(pageNumber);
   if (!(n >= 1 && n <= pages)) return false;
   const marks = documentHighlights().filter((record) => Number(record?.page) === n);
@@ -1065,7 +1076,75 @@ async function copyNotebookPage(pageNumber) {
     return copy;
   });
   if (markCopies.length) applyDocumentRecordChanges({ put: markCopies });
-  return writeNotebookPdf({ pages: pages + 1, paper: notebookPaper() });
+  return true;
+}
+
+// ── Several pages at once (the Pages panel, src/documents/canvas-pages-panel.js)
+//
+// Each is one page change: one renumbering of every record, one new paper at
+// most, one save — so a sync can never carry half of it, and the Canvas
+// reopens once rather than once a page.
+
+// `pages` lifted out, in their own order, and put down before page `before`
+// (as numbered now; past the end is after the last page). A page keeps its
+// setup and how far it has grown wherever it goes (remapNotebookPages). New
+// paper only when a page now stands where a page of another size or paper
+// stood; otherwise only which records are on which page changes.
+async function moveNotebookPagesTo(pages, before) {
+  if (!hasNotebook()) return false;
+  const total = notebookPageCount();
+  const order = pageOrderAfterMove(total, pages, before);
+  if (isIdentityOrder(order)) return false;
+  const differ = order.some((oldPage, index) => {
+    const now = index + 1;
+    return oldPage !== now && (!sameSheet(notebookPageSetup(oldPage), notebookPageSetup(now))
+      || !samePageBox(notebookPageBox(oldPage), notebookPageBox(now)));
+  });
+  const before0 = JSON.stringify(notebookSheetState().pageSetups || null);
+  remapNotebookPages(moveForOrder(order));
+  if (differ) return writeNotebookPdf({ pages: total, paper: notebookPaper() });
+  // The records saved themselves as they were remapped; the setups, which
+  // ride on meta.notebook, are saved here when they moved (as swapNotebookPage).
+  if (JSON.stringify(notebookSheetState().pageSetups || null) !== before0) await saveDeckToLibrary({ silent: true });
+  return true;
+}
+
+// `pages` torn out together: what was on them goes with them, and every page
+// after closes up. A Canvas keeps at least one page.
+async function tearOutNotebookPages(pages) {
+  if (!hasNotebook()) return false;
+  const total = notebookPageCount();
+  const gone = new Set([...(pages || [])].map(Number).filter((n) => n >= 1 && n <= total));
+  if (!gone.size) return false;
+  if (gone.size >= total) {
+    showToast("A canvas keeps at least one page", "info");
+    return false;
+  }
+  const sorted = [...gone].sort((a, b) => a - b);
+  remapNotebookPages((record) => {
+    const on = Number(record?.page) || 0;
+    if (gone.has(on)) return null;
+    let below = 0;
+    for (const page of sorted) if (page < on) below += 1;
+    return on - below;
+  });
+  return writeNotebookPdf({ pages: total - gone.size, paper: notebookPaper() });
+}
+
+// Each of `pages` copied straight after itself, in one rewrite.
+async function copyNotebookPages(pages) {
+  if (!hasNotebook()) return false;
+  const total = notebookPageCount();
+  const wanted = [...new Set([...(pages || [])].map(Number).filter((n) => n >= 1 && n <= total))].sort((a, b) => b - a);
+  if (!wanted.length) return false;
+  if (total + wanted.length > NOTEBOOK_MAX_PAGES) {
+    showToast(`A canvas stops at ${NOTEBOOK_MAX_PAGES} pages — start another one`, "info");
+    return false;
+  }
+  let copied = 0;
+  wanted.forEach((page) => { if (copyNotebookPageRecords(page, total)) copied += 1; });
+  if (!copied) return false;
+  return writeNotebookPdf({ pages: total + copied, paper: notebookPaper() });
 }
 
 // Page `n` swapped with the one `delta` away (one up is -1). Two pages set up
@@ -1193,6 +1272,18 @@ export function moveNotebookPage(pageNumber, delta) {
 
 export function deleteNotebookPage(pageNumber) {
   return runCanvasPageChange(() => tearOutNotebookPage(pageNumber));
+}
+
+export function moveNotebookPages(pages, before) {
+  return runCanvasPageChange(() => moveNotebookPagesTo(pages, before));
+}
+
+export function deleteNotebookPages(pages) {
+  return runCanvasPageChange(() => tearOutNotebookPages(pages));
+}
+
+export function duplicateNotebookPages(pages) {
+  return runCanvasPageChange(() => copyNotebookPages(pages));
 }
 
 export function setNotebookPaper(kind) {

@@ -893,12 +893,29 @@
   gap: 36px;
 }
 
-.canvas-page-insert {
+/* "＋ Page │ Page k ⋯": one cluster in the middle of the gap under the page
+   (pageGapCluster, src/documents/pdf-view.js). Centred, so neither pill is in
+   the corner the floating pager (#documentPager) parks in. The cluster itself
+   takes no presses: only its two pills do, so a stroke started in the gap
+   beside them still reaches the stage. */
+.canvas-page-gap {
   position: absolute;
   top: calc(100% + 18px);
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.canvas-page-gap > * {
+  pointer-events: auto;
+}
+
+.canvas-page-insert {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -939,18 +956,13 @@
 
 @media (max-width: 560px) {
   :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-pages { gap: 32px; }
-  .canvas-page-insert { top: calc(100% + 16px); }
+  .canvas-page-gap { top: calc(100% + 16px); }
 }
 
 /* "Page k ⋯": the page's own menu (appendPageMenuButton, src/documents/
-   pdf-view.js; src/documents/canvas-page-menu.js), in the same gap as ＋ Page
-   but at the page's right edge, so the two never overlap. */
+   pdf-view.js; src/documents/canvas-page-menu.js), beside ＋ Page in the
+   cluster under the page. */
 .canvas-page-menu-btn {
-  position: absolute;
-  top: calc(100% + 18px);
-  right: 0;
-  transform: translateY(-50%);
-  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -986,10 +998,6 @@
 
 @media (pointer: coarse) {
   .canvas-page-menu-btn { opacity: 0.9; }
-}
-
-@media (max-width: 560px) {
-  .canvas-page-menu-btn { top: calc(100% + 16px); }
 }
 
 .canvas-page-menu {
@@ -1052,9 +1060,9 @@
 }
 
 /* Only on a Canvas there is to add to, and not in View only. */
-:is(#documentStage, #documentStageAlt):not([data-doc-slot="notebook"]) :is(.canvas-page-insert, .canvas-page-menu-btn),
-:is(#documentStage, #documentStageAlt).has-no-notebook :is(.canvas-page-insert, .canvas-page-menu-btn),
-.view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] :is(.canvas-page-insert, .canvas-page-menu-btn) {
+:is(#documentStage, #documentStageAlt):not([data-doc-slot="notebook"]) :is(.canvas-page-gap, .canvas-page-insert, .canvas-page-menu-btn),
+:is(#documentStage, #documentStageAlt).has-no-notebook :is(.canvas-page-gap, .canvas-page-insert, .canvas-page-menu-btn),
+.view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] :is(.canvas-page-gap, .canvas-page-insert, .canvas-page-menu-btn) {
   display: none;
 }
 

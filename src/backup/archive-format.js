@@ -255,7 +255,12 @@ export const NOT_BACKED_UP_STORES = {
     "Pictures of PDF pages, kept so a paper is drawn once instead of on every "
     + "open and zoom (src/documents/pdf-pictures.js). A cache: every byte can be "
     + "drawn again from the paper itself, which IS backed up, and they are "
-    + "specific to this device's screen."
+    + "specific to this device's screen.",
+  "recall-media-hashes":
+    "Which address each picture's bytes were uploaded to, so the same picture "
+    + "put in a file again is not uploaded twice (src/images/media-reuse.js). A "
+    + "cache: losing it costs one more upload, and the addresses are already in "
+    + "the files that use them."
 };
 
 // ── What a SHARE does with each key ─────────────────────────────────────────
@@ -360,6 +365,7 @@ export const BACKED_UP_SETTINGS_KEYS = {
   recall_card_canvas_style_v1: "How a card looks when it goes onto the Canvas: its question and answer Blocks, the arrow, and side by side or one above the other.",
   recall_canvas_feed_colours_v1: "Which highlight colours To the Canvas last took, for the Notes and for the PDFs, and whether it fills each Block with its highlight's colour.",
   "recall:view-only-v1": "Whether the PDFs and the Canvas are View only on this device — read and zoomed, nothing on the page moved.",
+  "recall:canvas-pages-panel-v1": "Whether the Canvas's Pages panel (every page as a picture down the left) is open.",
   "recall:readingProgressShown": "Whether the reading-progress row is shown at the foot of Notes and PDFs.",
   "recall:teleprompter-v1": "The teleprompter's speed, type, reading band and behaviour.",
   "recall:pdf-teleprompter-v1": "The PDF teleprompter's speed, layout, reading band and behaviour.",

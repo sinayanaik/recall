@@ -1,0 +1,288 @@
+/* ── The Pages panel (src/documents/canvas-pages-panel.js) ──────────────────
+   Every Canvas page as a picture, in a column at the left of the Canvas: press
+   one to go there, Ctrl / Shift (or hold, on a touch screen) to pick several,
+   drag to put them in another order, and Export…, Duplicate or Delete the
+   pages picked. Wide screens make room for it — the pages are fitted to what
+   is left — and a phone lays it over the pages, as the Contents drawer is. */
+
+.document-stage {
+  --cpp-w: 176px;
+}
+
+.canvas-pages-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  width: var(--cpp-w);
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--card) 94%, var(--panel));
+  box-shadow: 10px 0 30px -22px rgb(0 0 0 / 0.6);
+}
+
+.canvas-pages-panel[hidden] {
+  display: none;
+}
+
+@media (min-width: 721px) {
+  .document-stage.has-pages-panel > .document-scroll {
+    margin-left: var(--cpp-w);
+  }
+}
+
+@media (max-width: 720px) {
+  .document-stage {
+    --cpp-w: min(150px, 42%);
+  }
+}
+
+.cpp-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px 4px 12px;
+}
+
+.cpp-title {
+  flex: 1 1 auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.cpp-close {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cpp-close:hover,
+.cpp-close:focus-visible {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+
+/* What the panel does to the pages picked — or, with none picked, to every
+   page. Wraps: the column is narrow. */
+.cpp-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cpp-picked {
+  flex: 1 0 100%;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.cpp-btn {
+  min-height: 26px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.cpp-btn:hover,
+.cpp-btn:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.cpp-btn.is-danger {
+  color: var(--ink-pen-red, #dc2626);
+}
+
+.cpp-btn.is-danger:hover,
+.cpp-btn.is-danger:focus-visible {
+  border-color: currentColor;
+}
+
+.cpp-btn.cpp-clear {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.cpp-list {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 14px 24px 26px;
+  outline: none;
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.cpp-list.is-dragging {
+  cursor: grabbing;
+}
+
+.cpp-item {
+  position: relative;
+  margin: 0 0 14px;
+  cursor: pointer;
+  -webkit-touch-callout: none;
+}
+
+.cpp-thumb {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: 4px;
+  background: var(--surface-2, #e5e7eb);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+}
+
+.cpp-thumb > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: top center;
+}
+
+/* The number at the left of the picture, as a slide sorter shows it. */
+.cpp-num {
+  position: absolute;
+  top: 2px;
+  left: -20px;
+  width: 16px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The page in view. */
+.cpp-item.is-current .cpp-thumb {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.cpp-item.is-current .cpp-num {
+  color: var(--accent);
+}
+
+/* A page picked: a ring in the accent, and a tick. */
+.cpp-item.is-picked .cpp-thumb {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.cpp-check {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--card);
+}
+
+.cpp-item.is-picked .cpp-check {
+  display: block;
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--card);
+}
+
+/* Picking by taps (a hold started it): every page shows its ring. */
+.cpp-list.is-select-mode .cpp-check {
+  display: block;
+}
+
+.cpp-item:hover:not(.is-picked) .cpp-thumb {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.cpp-list:focus-visible .cpp-item.is-current .cpp-thumb {
+  outline: 2px dashed var(--accent);
+  outline-offset: 3px;
+}
+
+/* Being dragged: the pages carried are faded where they were, and a line
+   shows where they go. */
+.cpp-list.is-dragging .cpp-item.is-carried {
+  opacity: 0.45;
+}
+
+.cpp-drop-line {
+  position: absolute;
+  left: 22px;
+  right: 10px;
+  z-index: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.cpp-drop-line[hidden] {
+  display: none;
+}
+
+/* ▤ in the pager, and "k / n" beside it as a way in: the Canvas's alone. */
+.document-pager .canvas-pages-btn {
+  display: none;
+}
+
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"]:not(.has-no-notebook) .document-pager .canvas-pages-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.document-pager .canvas-pages-btn.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .document-pager .document-page-indicator {
+  cursor: pointer;
+}
+
+/* A phone hides the pager's zoom buttons (styles/37-document-chrome.css);
+   ▤ is not a zoom, so it stays. */
+@media (max-width: 560px) {
+  :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"]:not(.has-no-notebook) .document-pager .canvas-pages-btn {
+    display: inline-flex;
+  }
+}
+
+/* Not on the offer of a Canvas, and not on a stage showing the PDFs. */
+:is(#documentStage, #documentStageAlt):not([data-doc-slot="notebook"]) .canvas-pages-panel,
+:is(#documentStage, #documentStageAlt).has-no-notebook .canvas-pages-panel {
+  display: none;
+}

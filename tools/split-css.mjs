@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a9-canvas-pages-panel.css":
+    "The Canvas's Pages panel (src/documents/canvas-pages-panel.js): every page " +
+    "as a picture down the left of the Canvas, to go to, pick, drag into another " +
+    "order and export, and ▤ in the pager that opens it.",
   "a8-canvas-feed.css":
     "To the Canvas (src/documents/canvas-feed.js): the picker that puts the " +
     "Notes' or a PDF's highlights or the Cards on the Canvas as Blocks, the " +

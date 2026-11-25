@@ -56,6 +56,7 @@ import { blockShapeIconSvg } from "../documents/block-style-bar.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
 import { currentDocumentPage, documentPageInFocus, openDocumentView, pdfPageViewport, scrollToDocumentPage, setCanvasPageInsertHandler, setCanvasPageMenuHandler } from "../documents/pdf-view.js?v=__BUILD__";
 import { openCanvasPageMenu } from "../documents/canvas-page-menu.js?v=__BUILD__";
+import { initCanvasPagesPanel, toggleCanvasPagesPanel } from "../documents/canvas-pages-panel.js?v=__BUILD__";
 import { hasObjectClipboard, pastePicked } from "../documents/canvas-selection.js?v=__BUILD__";
 import { documentViewOnly } from "../documents/view-only.js?v=__BUILD__";
 import { bindInkRailActivation } from "./rail.js?v=__BUILD__";
@@ -64,6 +65,10 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { hasActiveDeck, refreshHandwritingTab } from "../cards/card-status.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseImageCompression } from "../images/compress-dialog.js?v=__BUILD__";
+import { deckImageFolder, reusableUpload } from "../images/upload.js?v=__BUILD__";
+import { mediaHash, rememberMediaUpload } from "../images/media-reuse.js?v=__BUILD__";
+import { isThisFilesPicture, ownPictureFromTransfer } from "../images/paste.js?v=__BUILD__";
+import { LOCAL_IMAGE_SCHEME } from "../images/outbox.js?v=__BUILD__";
 import { armBlockPlacement, placeBlockInView, viewDropPoint } from "../documents/block-place.js?v=__BUILD__";
 import { closeInkRailPopups } from "../ui/ink-rail.js?v=__BUILD__";
 
@@ -211,6 +216,7 @@ export function startHandwritingNotebook({ chooseSetup = false } = {}) {
 // of that menu is already dispatched — a second listener on the same menu is a
 // second place for the close-the-menu rules to be got wrong.
 export function runHandwritingMenuAction(action) {
+  if (action === "hw-pages-panel") { toggleCanvasPagesPanel(); return true; }
   if (action === "hw-tear-out") { tearOutPage(); return true; }
   if (action === "hw-page-after") { addPage({ after: documentPageInFocus() || notebookPageCount() }); return true; }
   if (action === "hw-page-end") { addPage(); return true; }
@@ -306,8 +312,18 @@ function wire() {
       onPageDown: () => movePage(1, page),
       onDuplicate: () => duplicatePage(page),
       onSetup: () => openCanvasSetupDialog({ page, onApplied: paintHandwritingControls }),
-      onDelete: () => tearOutPage(page)
+      onDelete: () => tearOutPage(page),
+      onExportPdf: () => import("../export/run.js?v=__BUILD__").then(({ exportCanvasPdf }) => exportCanvasPdf({ pages: [page] })),
+      onExportHtml: () => import("../export/run.js?v=__BUILD__").then(({ exportCanvasHtml }) => exportCanvasHtml({ pages: [page] }))
     });
+  });
+
+  // The Pages panel (src/documents/canvas-pages-panel.js): every page as a
+  // picture, picked, dragged into order, exported. Its page changes repaint
+  // these controls as the ones here do.
+  initCanvasPagesPanel({
+    onChanged: paintHandwritingControls,
+    onSetup: (page, done) => openCanvasSetupDialog({ page, onApplied: () => { paintHandwritingControls(); done?.(); } })
   });
 
   // The pager's own +: a page straight after the one in view.
@@ -496,19 +512,53 @@ function buildShapePalette() {
 // over whatever the reader was pointing past.
 // `width`: each picture's width in points (a drop onto a Canvas, which takes
 // ◐ Canvas → Pictures land at), or null for the page's own rule.
-export async function addHandwritingImages(files, at = null, { width = null } = {}) {
+//
+// A picture is never stored twice (src/images/media-reuse.js). `ownUrl` is the
+// address a paste or a drop says the one picture in it was copied from
+// (ownPictureFromTransfer, src/images/paste.js): one of this file's own, it
+// goes down at that address, as it is — no compression asked, nothing
+// uploaded. And a file whose very bytes were put in this file before goes down
+// at the address they were uploaded to, without asking how to compress them.
+export async function addHandwritingImages(files, at = null, { width = null, ownUrl = "" } = {}) {
   const list = Array.from(files || []).filter((file) => file && String(file.type || "").startsWith("image/"));
   if (!list.length) return [];
   const page = Number(at?.page) || currentDocumentPage();
   if (!pdfPageViewport(page)) return [];
-  const chosen = await chooseImageCompression(list);
-  if (!chosen?.items?.length) return [];
+  const folder = deckImageFolder();
+  // Which address each file already has, if any; and its bytes' hash.
+  const known = await Promise.all(list.map(async (file, index) => {
+    if (index === 0 && list.length === 1 && ownUrl && (await isThisFilesPicture(ownUrl))) return { src: ownUrl, hash: "" };
+    const hash = await mediaHash(file);
+    const src = hash ? await reusableUpload(folder, `src:${hash}`) : "";
+    return { src, hash };
+  }));
+  const fresh = list.filter((_, index) => !known[index].src);
+  let chosen = { items: [] };
+  if (fresh.length) {
+    chosen = await chooseImageCompression(fresh);
+    // Cancelled: nothing at all goes down, the reused ones neither.
+    if (!chosen?.items?.length) return [];
+  }
   const start = at || handwritingDropPoint(page);
   const anchor = at ? "corner" : "center";
   const added = [];
-  for (const [index, item] of chosen.items.entries()) {
+  let freshIndex = 0;
+  for (const [index, file] of list.entries()) {
     const point = start ? { x: start.x + (index * IMAGE_DROP_CASCADE), y: start.y - (index * IMAGE_DROP_CASCADE) } : null;
-    const block = await addDocumentImageBlock(page, item.upload, point, { anchor, width });
+    const { src, hash } = known[index];
+    let block = null;
+    if (src) {
+      block = await addDocumentImageBlock(page, file, point, { anchor, width, src });
+    } else {
+      const item = chosen.items[freshIndex++];
+      if (!item) continue;
+      block = await addDocumentImageBlock(page, item.upload, point, { anchor, width });
+      // These bytes, as they arrived, are at the address the compressed copy
+      // went to: the next time they come, nothing is asked or uploaded.
+      if (block?.src && hash && !String(block.src).startsWith(LOCAL_IMAGE_SCHEME)) {
+        rememberMediaUpload(folder, `src:${hash}`, { url: block.src, type: file.type });
+      }
+    }
     if (block) added.push(block);
   }
   if (added.length) paintHandwritingControls();
@@ -538,7 +588,11 @@ async function pastePictureFromClipboard() {
     return;
   }
   const files = [];
+  let html = "";
   for (const item of items || []) {
+    if (!html && (item.types || []).includes("text/html")) {
+      try { html = await (await item.getType("text/html")).text(); } catch (_) { /* no address: the bytes are enough */ }
+    }
     const type = (item.types || []).find((t) => String(t).startsWith("image/"));
     if (!type) continue;
     try {
@@ -551,6 +605,9 @@ async function pastePictureFromClipboard() {
     showToast("No picture on the clipboard", "info");
     return;
   }
-  addHandwritingImages(files);
+  // The address a picture copied out of this file was shown from, so it goes
+  // down as itself rather than as a second upload (src/images/paste.js).
+  const ownUrl = files.length === 1 && html ? ownPictureFromTransfer({ getData: (kind) => (kind === "text/html" ? html : "") }) : "";
+  addHandwritingImages(files, null, { ownUrl });
 }
 

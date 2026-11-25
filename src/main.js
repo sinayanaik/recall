@@ -41,7 +41,7 @@ import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, ren
 import { applyPillHighlight, applyPillMarkHex, applyPillMarkStyle, buildPillHighlightMenu, refreshPillHighlightMenu, refreshPillHighlightSwatch, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
 import { markBrokenImages } from "./images/broken.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "./images/outbox.js?v=__BUILD__";
-import { allImageFiles, dragContainsImage, animatedSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
+import { allImageFiles, dragContainsImage, animatedSourceUrlFromTransfer, insertTransferImages, ownPictureFromTransfer } from "./images/paste.js?v=__BUILD__";
 import { imagePickerActive } from "./images/upload.js?v=__BUILD__";
 import { loadFiles, loadSample, showImportSourceDrawer, stagePastedMarkdown } from "./import/files.js?v=__BUILD__";
 import { htmlToMarkdown } from "./import/html-to-markdown.js?v=__BUILD__";
@@ -159,6 +159,7 @@ import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, openDocumentSlot, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentChromeMovedHook, setDocumentOpenedHook, noteBesideDocumentStale, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkArmed, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
+import { syncCanvasPagesPanel } from "./documents/canvas-pages-panel.js?v=__BUILD__";
 import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { cardItem, notesHighlightItemForMark, pdfHighlightItem, placeOnCanvas } from "./documents/canvas-feed.js?v=__BUILD__";
 import { escapePlainMarkdown } from "./documents/canvas-sizing.js?v=__BUILD__";
@@ -1667,6 +1668,7 @@ onDomReady(() => {
     repaintHighlightLink();
   });
   setDocumentOpenedHook((opened) => {
+    syncCanvasPagesPanel();
     // A paper given a moment to finish drawing beside the one in focus (side by
     // side — "catch-up turns" in src/documents/pdf-view.js), or put back after
     // one. Its ink engine is adopted like any paper's and its printed notes are
@@ -1926,7 +1928,10 @@ onDomReady(() => {
 // rather than imported into src/documents/pdf-highlights.js, which
 // pdf-page-notes.js already imports — this file is the one that knows both ends
 // (the same reason setDocumentPagePaintedHook exists below).
-onDomReady(() => setDocumentChromeMovedHook(rehomeInkRail));
+onDomReady(() => setDocumentChromeMovedHook(() => {
+  rehomeInkRail();
+  syncCanvasPagesPanel();
+}));
 onDomReady(() => setHighlightsChangedHandler(() => {
   // The file's other paper, side by side and suspended, shows marks of its own
   // that this may have changed; it repaints them on its next turn.
@@ -3924,7 +3929,12 @@ setViewSwitchHook((previous, next) => {
   putCanvasThingsDown();
   noteViewSwitch(previous, next);
 });
-setPageIndicatorUpdatedHook(noteDocumentProgress);
+// ...and the Canvas's Pages panel, which outlines the page in view and follows
+// the Canvas as it opens, changes and moves between the two stages.
+setPageIndicatorUpdatedHook(() => {
+  noteDocumentProgress();
+  syncCanvasPagesPanel();
+});
 setReadingAnchorCapturedHook(noteNotesProgress);
 initReadingProgressToggles();
 initActivityLog();
@@ -4073,7 +4083,11 @@ function handwritingImageDrop(event, files) {
   const at = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
     ? pdfPointAt(event.clientX, event.clientY)
     : pagePointAtPointer();
-  addHandwritingImages(list, at);
+  // A picture copied out of this file and pasted back is put down at the
+  // address it already has, not uploaded again (src/images/paste.js). Read
+  // now, while the event's data can still be read.
+  const ownUrl = list.length === 1 ? ownPictureFromTransfer(event.clipboardData || event.dataTransfer) : "";
+  addHandwritingImages(list, at, { ownUrl });
   return true;
 }
 
@@ -4135,7 +4149,10 @@ document.addEventListener("paste", (event) => {
     // is async, so both have to be captured before awaiting anything.
     const atPos = target.selectionStart;
     const sourceUrl = imageFiles.length === 1 && imageFiles[0].type !== "image/gif" ? animatedSourceUrlFromTransfer(clipboardData) : null;
-    insertTransferImages(target, imageFiles, sourceUrl, atPos);
+    // One of this file's own pictures, copied and pasted: its address, not a
+    // second upload (src/images/paste.js).
+    const ownUrl = imageFiles.length === 1 ? ownPictureFromTransfer(clipboardData) : "";
+    insertTransferImages(target, imageFiles, sourceUrl, atPos, { ownUrl });
     return;
   }
 
@@ -4209,7 +4226,8 @@ document.addEventListener("drop", (event) => {
     // single dragged image can carry that hint — a multi-file drop is files
     // from a folder, which arrive whole.
     const sourceUrl = imageFiles.length === 1 && imageFiles[0].type !== "image/gif" ? animatedSourceUrlFromTransfer(event.dataTransfer) : null;
-    insertTransferImages(event.target, imageFiles, sourceUrl, event.target.selectionStart);
+    const ownUrl = imageFiles.length === 1 ? ownPictureFromTransfer(event.dataTransfer) : "";
+    insertTransferImages(event.target, imageFiles, sourceUrl, event.target.selectionStart, { ownUrl });
   } else showToast("Only image files can be dropped here", "info");
 });
 

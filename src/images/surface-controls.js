@@ -589,7 +589,21 @@ export function deckStillReferencesImage(url) {
       .some((image) => imageMatchKey(image.url) === key);
   };
   if (points(state.notes)) return true;
-  return state.masterCards.some((card) => points(card.question) || points(card.answer));
+  if (state.masterCards.some((card) => points(card.question) || points(card.answer))) return true;
+  // ...and what is on the file's pages: a Picture Block (`src`), a picture in
+  // a Block's markdown, and one typed into a text box. A picture dragged from
+  // the Notes onto the Canvas keeps its address, so removing it from the Notes
+  // used to delete the Canvas's copy out from under it.
+  const meta = state.meta || {};
+  for (const block of Array.isArray(meta.pdfBlocks) ? meta.pdfBlocks : []) {
+    if (!block || typeof block !== "object") continue;
+    if (typeof block.src === "string" && block.src && imageMatchKey(block.src) === key) return true;
+    if (points(block.md)) return true;
+  }
+  for (const record of Array.isArray(meta.pdfHighlights) ? meta.pdfHighlights : []) {
+    if (record?.shape && points(record.shape.text)) return true;
+  }
+  return false;
 }
 
 // Bottom-right corner-grip resize (the universal affordance): drag out from the
