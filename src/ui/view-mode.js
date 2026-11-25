@@ -30,6 +30,7 @@ import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { measureChromeHeights } from "./chrome.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK } from "../documents/doc-slot.js?v=__BUILD__";
 import { documentStages } from "../documents/doc-scrollers.js?v=__BUILD__";
+import { canvasExportSelection } from "../documents/canvas-pages-panel.js?v=__BUILD__";
 import { SPLIT_PART_MODES, documentPartInFocus, isDocumentPartMode, isNotesShown } from "./split-parts.js?v=__BUILD__";
 import { SPLIT_STACK_QUERY, applySplitRatio, readSplitRatio, releaseSplitLayout, scheduleSplitRelayout, setSplitLayoutOwner, splitStacked } from "./split-layout.js?v=__BUILD__";
 
@@ -875,7 +876,16 @@ export function paintViewExportMenu() {
   headLabel.textContent = spec.head;
   head.appendChild(headLabel);
   menu.appendChild(head);
-  spec.rows.forEach(([action, label, hint]) => {
+  // On the Canvas, with pages picked in the Pages panel (short of every page),
+  // both rows export just those — and say so.
+  const picked = spec === VIEW_EXPORT_MENUS.handwriting ? canvasExportSelection() : null;
+  if (picked) headLabel.textContent = `${spec.head} — ${picked.length} page${picked.length === 1 ? "" : "s"}`;
+  spec.rows.forEach(([action, label, rowHint]) => {
+    let hint = rowHint;
+    if (picked) {
+      const which = picked.length === 1 ? `Page ${picked[0]}` : `The ${picked.length} pages picked in the Pages panel`;
+      hint = action === "doc:canvas-html" ? `${which}, in one file that opens in any browser` : `${which}, exactly as it looks`;
+    }
     const button = document.createElement("button");
     button.type = "button";
     button.className = "md-menu-item";

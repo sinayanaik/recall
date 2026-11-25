@@ -9,6 +9,7 @@ import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUIL
 import { state } from "../core/state.js?v=__BUILD__";
 import { chooseImageCompression } from "./compress-dialog.js?v=__BUILD__";
 import { deckImageFolder, insertAtCursor, replaceInTextarea, uploadImage } from "./upload.js?v=__BUILD__";
+import { mediaHash } from "./media-reuse.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 // Only ever CALLED, never read at module scope — the cycle back through
@@ -647,18 +648,34 @@ export async function storeImageOrQueue(file) {
       return { error: err.message === "NOT_SIGNED_IN" ? "not-signed-in" : "failed", cause: err };
     }
     if (err.notStored) console.warn("An upload came back clean but left nothing in the bucket", err);
+    // The same bytes already parked for this file: the same placeholder, so
+    // the device keeps one copy and the next sync uploads it once.
+    const hash = await mediaHash(file);
+    const parked = hash ? await parkedTokenFor(hash, folder) : "";
+    if (parked) return { url: `${LOCAL_IMAGE_SCHEME}${parked}`, queued: true, reason: err.notStored ? "not-stored" : "offline" };
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
     try {
       // `folder` rides along so a queued image still lands beside the rest of
       // its deck's images when it finally uploads, however many decks the user
       // has opened in between. Entries queued before this existed have no
       // folder and fall back to unfiled/.
-      await putOutboxImage({ token, blob: file, folder, savedAt: new Date().toISOString() });
+      await putOutboxImage({ token, blob: file, folder, hash, savedAt: new Date().toISOString() });
     } catch (error) {
       console.warn("Could not queue the image for upload", error);
       return { error: "not-kept", reason: err.notStored ? "not-stored" : "offline" };
     }
     return { url: `${LOCAL_IMAGE_SCHEME}${token}`, queued: true, reason: err.notStored ? "not-stored" : "offline" };
+  }
+}
+
+// The token of an image already parked with these bytes for this folder, or "".
+async function parkedTokenFor(hash, folder) {
+  try {
+    const queued = await allOutboxImages();
+    const match = (queued || []).find((entry) => entry?.hash === hash && (entry.folder || null) === (folder || null));
+    return match?.token || "";
+  } catch {
+    return "";
   }
 }
 

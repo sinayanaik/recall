@@ -54,7 +54,7 @@ import { initNotesGrip, notesElementItem, notesGripTarget } from "./notes-grip.j
 import { isPartShown } from "../ui/split-parts.js?v=__BUILD__";
 import { focusPart } from "../ui/view-mode.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
-import { allImageFiles, dragContainsImage } from "../images/paste.js?v=__BUILD__";
+import { allImageFiles, dragContainsImage, ownPictureFromTransfer } from "../images/paste.js?v=__BUILD__";
 import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
 import { ensureTurndown } from "../core/lib-loader.js?v=__BUILD__";
 import { headingNumbersOn, stripTypedHeadingNumbersFromMarkdown } from "../notes/heading-numbers.js?v=__BUILD__";
@@ -663,11 +663,14 @@ async function onCanvasDrop(event) {
   const types = Array.from(dt.types || []);
   const files = !types.includes(CANVAS_ITEM_MIME) && !types.includes(WEB_CLIP_MIME) && dragContainsImage(dt) ? Array.from(allImageFiles(dt) || []) : [];
   const strings = files.length ? null : transferStrings(dt);
+  // One of this file's own pictures dragged back on: put down at its address,
+  // not uploaded again (src/images/paste.js). Read before anything awaits.
+  const ownUrl = files.length === 1 ? ownPictureFromTransfer(dt) : "";
   if (!(await makeCanvasLiveForDrop())) return;
   if (files.length) {
     const { addHandwritingImages } = await import("../handwriting/board.js?v=__BUILD__");
     const width = ghostItem && !ghostItem.pair ? ghostItem.w : (frame.box[2] - frame.box[0]) * canvasDropWidthPercent("picture") / 100;
-    addHandwritingImages(files, { page: place.page, x: place.x, y: place.y }, { width });
+    addHandwritingImages(files, { page: place.page, x: place.x, y: place.y }, { width, ownUrl });
     return;
   }
   const clip = strings.web ? readWebClip(strings.web) : null;

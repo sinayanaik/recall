@@ -2,8 +2,10 @@
 // animation copied off a web page, which arrives as a still plus its URL.
 
 import { chooseImageCompression } from "./compress-dialog.js?v=__BUILD__";
-import { insertImageUpload, insertPreparedImageUpload, releaseImageSlots, reserveImageSlots, settleUploadToken } from "./outbox.js?v=__BUILD__";
-import { setImagePickerActive } from "./upload.js?v=__BUILD__";
+import { LOCAL_IMAGE_SCHEME, getOutboxImage, insertImageUpload, insertPreparedImageUpload, localImageObjectUrls, releaseImageSlots, reserveImageSlots, settleUploadToken } from "./outbox.js?v=__BUILD__";
+import { S3_IMAGE_PREFIX, canonicalImageParts, canonicalImageUrlFor, s3ImagePartsFromKey, s3ImageUrlPrefix } from "../cloud/s3-images.js?v=__BUILD__";
+import { CANONICAL_SRC_ATTR } from "../cloud/storage-urls.js?v=__BUILD__";
+import { UNFILED_IMAGE_FOLDER, deckImageFolder, setImagePickerActive } from "./upload.js?v=__BUILD__";
 import { isAnimatedImage, sniffImageType, withSniffedType } from "./compress.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -43,6 +45,99 @@ export function animatedSourceUrlFromTransfer(dataTransfer) {
   } catch (_) { /* as above */ }
   const uri = uriList.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith("#"));
   return uri && isWebUrl(uri) ? uri : null;
+}
+
+// ── A picture of our own, back from the clipboard ────────────────────────
+//
+// A picture copied out of this app (a Canvas Picture, a figure in the Notes or
+// on a card — right-click → Copy image, or dragged) arrives as bytes AND as the
+// address it was shown from: a presigned bucket URL, a signed Supabase URL, the
+// canonical identifier itself, or the blob: URL of one still waiting to
+// upload. Uploading the bytes again would store a second copy of a picture
+// that is already stored, so the address is read back to the identifier the
+// file keeps (src/cloud/s3-images.js) and that is what goes on the page.
+
+const SUPABASE_SIGNED_IMAGE_RE = /^https:\/\/([^/?#]+)\/storage\/v1\/object\/sign\/images\/([^?#]+)/;
+
+// The identifier a file keeps for the picture shown at `url` — or "" when it
+// is not one of ours.
+export function ownImageCanonical(url) {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  if (value.startsWith(LOCAL_IMAGE_SCHEME)) return value;
+  if (canonicalImageParts(value)) return value;
+  const signed = SUPABASE_SIGNED_IMAGE_RE.exec(value);
+  if (signed) {
+    let path = signed[2];
+    try { path = decodeURI(path); } catch { /* keep it as it is */ }
+    return canonicalImageUrlFor(signed[1], path);
+  }
+  const prefix = s3ImageUrlPrefix();
+  if (prefix && value.startsWith(prefix)) {
+    const rest = value.slice(prefix.length).split(/[?#]/)[0];
+    let key = "";
+    try {
+      key = `${S3_IMAGE_PREFIX}/${rest.split("/").map((part) => decodeURIComponent(part)).join("/")}`;
+    } catch {
+      return "";
+    }
+    const parts = s3ImagePartsFromKey(key);
+    return parts ? canonicalImageUrlFor(parts.host, parts.path) : "";
+  }
+  if (value.startsWith("blob:")) {
+    for (const [token, objectUrl] of localImageObjectUrls) {
+      if (objectUrl === value) return `${LOCAL_IMAGE_SCHEME}${token}`;
+    }
+  }
+  return "";
+}
+
+// Whether `own` (from ownImageCanonical) is a picture of the file open now —
+// filed under its folder, or parked for it. Only those are put down by
+// address: a picture of ANOTHER file is uploaded again for this one, since
+// removing it from that file's Notes deletes its object (removeSourceImage,
+// src/images/surface-controls.js), which would take it off this page too.
+export async function isThisFilesPicture(own) {
+  const folder = deckImageFolder();
+  if (!own || !folder || folder === UNFILED_IMAGE_FOLDER) return false;
+  if (own.startsWith(LOCAL_IMAGE_SCHEME)) {
+    try {
+      const entry = await getOutboxImage(own.slice(LOCAL_IMAGE_SCHEME.length));
+      return Boolean(entry) && entry.folder === folder;
+    } catch {
+      return false;
+    }
+  }
+  const parts = canonicalImageParts(own);
+  if (!parts) return false;
+  // <uid>/<folder…>/<name>
+  return parts.path.split("/").slice(1).join("/").startsWith(`${folder}/`);
+}
+
+// The identifier of the one picture of ours a paste or a drop carries, or "".
+// Read while the event is live, as every DataTransfer must be.
+export function ownPictureFromTransfer(dataTransfer) {
+  let html = "";
+  try {
+    html = dataTransfer?.getData?.("text/html") || "";
+  } catch { /* unreadable outside its own event */ }
+  if (html) {
+    try {
+      const imgs = new DOMParser().parseFromString(html, "text/html").querySelectorAll("img");
+      if (imgs.length === 1) {
+        const img = imgs[0];
+        const own = ownImageCanonical(img.getAttribute(CANONICAL_SRC_ATTR)) || ownImageCanonical(img.getAttribute("src"));
+        if (own) return own;
+      }
+      if (imgs.length > 1) return "";
+    } catch { /* a fragment that does not parse: try the uri-list */ }
+  }
+  let uriList = "";
+  try {
+    uriList = dataTransfer?.getData?.("text/uri-list") || "";
+  } catch { /* as above */ }
+  const uri = uriList.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith("#"));
+  return uri ? ownImageCanonical(uri) : "";
 }
 
 // A URL that names an animation outright — by extension, or by being one of
@@ -129,8 +224,16 @@ async function fileIsAnimated(file) {
 // The placeholder goes in first, before the fetch and before the dialog — see
 // reserveImageSlots in ./outbox.js — synchronously, while the paste or drop
 // event is still running. `token`, when given, is one a caller already reserved.
-export async function insertTransferImage(textarea, file, sourceUrl, atPos, { token = null } = {}) {
+//
+// `ownUrl`: the address the picture was copied from, when it is one of ours
+// (ownPictureFromTransfer). One of this file's own goes in at that address —
+// nothing fetched, compressed or uploaded.
+export async function insertTransferImage(textarea, file, sourceUrl, atPos, { token = null, ownUrl = "" } = {}) {
   const slot = token || reserveImageSlots(textarea, 1, atPos)[0];
+  if (ownUrl && (await isThisFilesPicture(ownUrl))) {
+    await settleUploadToken(textarea, slot, `![](${ownUrl.replace(/[()\s]/g, encodeURIComponent)})`);
+    return;
+  }
   let toUpload = file;
   if (sourceUrl && !cannotAnimateUrl(sourceUrl) && !(await fileIsAnimated(file))) {
     const named = looksAnimatedUrl(sourceUrl);
@@ -155,10 +258,10 @@ export async function insertTransferImage(textarea, file, sourceUrl, atPos, { to
 // image for a drop of twenty would be its own kind of unusable — and then each
 // prepared file is inserted in the order it arrived. The single-file case goes
 // through insertTransferImage so a copied animation still gets its frames back.
-export async function insertTransferImages(textarea, files, sourceUrl, atPos) {
+export async function insertTransferImages(textarea, files, sourceUrl, atPos, { ownUrl = "" } = {}) {
   const list = Array.from(files || []);
   if (list.length <= 1) {
-    if (list.length) await insertTransferImage(textarea, list[0], sourceUrl, atPos);
+    if (list.length) await insertTransferImage(textarea, list[0], sourceUrl, atPos, { ownUrl });
     return;
   }
   // One placeholder per image, in the order they arrived, at the caret captured

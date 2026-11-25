@@ -44,6 +44,7 @@ import { createAppViewerRenderer } from "../backup/viewer-render.js?v=__BUILD__"
 import { decodeImageRefEntities, readBackupAssetBlob } from "../backup/backup.js?v=__BUILD__";
 import { canvasPageBox, sheetFit, sheetSetupForPage } from "../documents/canvas-setup.js?v=__BUILD__";
 import { exportPageBox, pageContentRects } from "../documents/canvas-extent.js?v=__BUILD__";
+import { exportPageList, pageListLabel } from "../documents/canvas-page-list.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK } from "../documents/doc-slot.js?v=__BUILD__";
 import { recordsForSurface } from "../documents/pdf-multi.js?v=__BUILD__";
 import { sniffImageType } from "../images/compress.js?v=__BUILD__";
@@ -584,9 +585,9 @@ function safeStyleText(css) {
   return String(css || "").replace(/<\/(style)/gi, "<\\/$1");
 }
 
-function canvasHtmlName() {
+function canvasHtmlName(suffix = "") {
   const title = state.deckTitle || state.sourceTitle || "Canvas";
-  return `${title.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Canvas"} - canvas.html`;
+  return `${title.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Canvas"} - canvas${suffix}.html`;
 }
 
 // The paper's palette as inline custom properties, for the element that holds
@@ -603,17 +604,22 @@ function paletteStyle(tone) {
 // Resolves to { html, name, pages, pictures, missing }, or null when there is
 // no Canvas. `tone` is the paper the Canvas is seen on (currentPaperTone,
 // src/documents/pdf-view.js); none is the pages on their own paper.
-export async function buildCanvasHtml({ onProgress = null, tone = null } = {}) {
+//
+// `pages`: the Canvas pages to put in it (the Pages panel's selection), in
+// page order; none is every page. Numbered within the export, as the PDF is.
+export async function buildCanvasHtml({ onProgress = null, tone = null, pages: only = null } = {}) {
   const record = state.meta?.notebook;
   const count = Math.max(0, Math.round(Number(record?.pages) || 0));
   if (!record || !count) return null;
+  const wanted = exportPageList(only, count);
+  const whole = wanted.length === count;
   const marks = recordsForSurface(state.meta?.pdfHighlights, DOC_SLOT_NOTEBOOK, null);
   const blocks = recordsForSurface(state.meta?.pdfBlocks, DOC_SLOT_NOTEBOOK, null).filter((block) => block && block.id);
   const drawn = [];
   const layers = [];
   const css = typeof document === "undefined" ? null : usedCssCollector();
   const fonts = [];
-  for (let n = 1; n <= count; n += 1) {
+  for (const [index, n] of wanted.entries()) {
     const onPage = (rec) => (Number(rec?.page) || 1) === n;
     const pageMarks = marks.filter(onPage);
     const pageBlocks = blocks.filter(onPage).sort((a, b) => (Number(a.z) || 0) - (Number(b.z) || 0));
@@ -637,7 +643,7 @@ export async function buildCanvasHtml({ onProgress = null, tone = null } = {}) {
       const shape = normalizeShape(rec.shape);
       return shape && (shape.type === "text" || shape.type === "callout") && String(shape.text || "").trim();
     });
-    onProgress?.("blocks", n, count);
+    onProgress?.("blocks", index + 1, wanted.length);
     let layer = null;
     if (css) {
       try {
@@ -721,5 +727,5 @@ ${body}
 </body>
 </html>
 `;
-  return { html, name: canvasHtmlName(), pages: pages.length, pictures, missing };
+  return { html, name: canvasHtmlName(whole ? "" : ` (pages ${pageListLabel(wanted)})`), pages: pages.length, pictures, missing };
 }

@@ -54,9 +54,48 @@ export function openCanvasPageMenu({
   onPageDown = () => {},
   onDuplicate = () => {},
   onSetup = () => {},
-  onDelete = () => {}
+  onDelete = () => {},
+  // This page alone as a PDF or a web page (src/export/run.js). Offered when
+  // given; the Pages panel and the gap's "Page k ⋯" both give them.
+  onExportPdf = null,
+  onExportHtml = null
 } = {}) {
-  // A second press on the same page's button closes its menu.
+  const onlyPage = total < 2;
+  const items = [
+    ["up", "Move up", { disabled: page <= 1, title: page <= 1 ? "This is the first page" : `Swap page ${page} with page ${page - 1}` }],
+    ["down", "Move down", { disabled: page >= total, title: page >= total ? "This is the last page" : `Swap page ${page} with page ${page + 1}` }],
+    ["duplicate", "Duplicate", { title: `A copy of page ${page}, right after it` }],
+    ["setup", "Page setup…", { title: `Page ${page}'s size, paper and lines` }]
+  ];
+  if (onExportPdf) items.push(["export-pdf", "Export this page as PDF", { title: `Page ${page} alone, as a PDF, exactly as it looks` }]);
+  if (onExportHtml) items.push(["export-html", "Export this page as a web page", { title: `Page ${page} alone, as one file that opens in any browser` }]);
+  items.push(["delete", "Delete page", {
+    danger: true,
+    disabled: onlyPage,
+    title: onlyPage ? "A canvas keeps at least one page" : `Delete page ${page} and everything on it`
+  }]);
+  const actions = {
+    up: onPageUp,
+    down: onPageDown,
+    duplicate: onDuplicate,
+    setup: onSetup,
+    delete: onDelete,
+    "export-pdf": onExportPdf,
+    "export-html": onExportHtml
+  };
+  return openCanvasMenu({
+    anchor,
+    heading: `Page ${page} of ${total}`,
+    items,
+    onChoose: (action) => actions[action]?.()
+  });
+}
+
+// The same small menu with any rows: `items` is [action, label, { danger,
+// disabled, title }] and `onChoose(action)` is told which was pressed. The
+// Pages panel's Export… is one (src/documents/canvas-pages-panel.js).
+export function openCanvasMenu({ anchor, heading: headingText = "", items = [], onChoose = () => {} } = {}) {
+  // A second press on the same button closes its menu.
   const again = pageMenu?.anchor === anchor;
   closeCanvasPageMenu();
   if (again || !anchor) return null;
@@ -64,25 +103,15 @@ export function openCanvasPageMenu({
   const root = document.createElement("div");
   root.className = "canvas-page-menu";
   root.setAttribute("role", "menu");
-  root.setAttribute("aria-label", `Page ${page} of ${total}`);
+  if (headingText) root.setAttribute("aria-label", headingText);
 
-  const heading = document.createElement("div");
-  heading.className = "canvas-page-menu-heading";
-  heading.textContent = `Page ${page} of ${total}`;
-
-  const onlyPage = total < 2;
-  root.append(
-    heading,
-    menuItem("up", "Move up", { disabled: page <= 1, title: page <= 1 ? "This is the first page" : `Swap page ${page} with page ${page - 1}` }),
-    menuItem("down", "Move down", { disabled: page >= total, title: page >= total ? "This is the last page" : `Swap page ${page} with page ${page + 1}` }),
-    menuItem("duplicate", "Duplicate", { title: `A copy of page ${page}, right after it` }),
-    menuItem("setup", "Page setup…", { title: `Page ${page}'s size, paper and lines` }),
-    menuItem("delete", "Delete page", {
-      danger: true,
-      disabled: onlyPage,
-      title: onlyPage ? "A canvas keeps at least one page" : `Delete page ${page} and everything on it`
-    })
-  );
+  if (headingText) {
+    const heading = document.createElement("div");
+    heading.className = "canvas-page-menu-heading";
+    heading.textContent = headingText;
+    root.append(heading);
+  }
+  items.forEach(([action, label, options]) => root.append(menuItem(action, label, options)));
   document.body.appendChild(root);
   anchor.setAttribute("aria-expanded", "true");
 
@@ -95,9 +124,10 @@ export function openCanvasPageMenu({
     const top = below + size.height > window.innerHeight - margin
       ? Math.max(margin, box.top - size.height - 6)
       : below;
-    // Right-aligned with the button, which sits at the page's right edge.
+    // Right-aligned with the button, unless that would run off the left of
+    // the screen (a thumbnail in the Pages panel, at the left edge).
     const left = Math.min(
-      Math.max(margin, box.right - size.width),
+      Math.max(margin, box.right - size.width < margin ? box.left : box.right - size.width),
       Math.max(margin, window.innerWidth - size.width - margin)
     );
     root.style.top = `${Math.round(top)}px`;
@@ -123,11 +153,7 @@ export function openCanvasPageMenu({
 
   function choose(action) {
     closeCanvasPageMenu();
-    if (action === "up") onPageUp();
-    else if (action === "down") onPageDown();
-    else if (action === "duplicate") onDuplicate();
-    else if (action === "setup") onSetup();
-    else if (action === "delete") onDelete();
+    onChoose(action);
   }
 
   const onPageMenuScroll = () => {

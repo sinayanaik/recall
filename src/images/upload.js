@@ -9,7 +9,8 @@
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
-import { canonicalImageParts, noteS3Image, statS3Image, uploadS3Image } from "../cloud/s3-images.js?v=__BUILD__";
+import { canonicalImageParts, noteS3Image, s3ImageIndexHas, statS3Image, uploadS3Image } from "../cloud/s3-images.js?v=__BUILD__";
+import { forgetMediaUpload, mediaHash, recallMediaUpload, rememberMediaUpload } from "./media-reuse.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 
@@ -439,8 +440,72 @@ function bucketRefusedForGood(error) {
 // through, a flaky network would have cost the reader a pasted picture. So
 // when both storages were tried, `authFailed` is reported only if BOTH refused
 // for good; anything else is `retryable`, which the outbox keeps.
+// The same bytes already uploaded into the same file's folder are not sent
+// again: their first address is handed back (src/images/media-reuse.js), once
+// the object is confirmed to still be there. A caller naming its own file
+// (`name`, the EPUB importer) wants that exact path, and always uploads.
 export async function uploadImage(file, options = {}) {
   if (!navigator.onLine) throw new Error("OFFLINE");
+  // Only within one file's own folder: `unfiled/` is every file that had no
+  // id yet, and a picture shared between two files is one a removal from
+  // either could delete (see src/images/media-reuse.js).
+  const folder = options.folder || "";
+  const hash = options.name || !folder || folder === UNFILED_IMAGE_FOLDER ? "" : await mediaHash(file);
+  if (hash) {
+    const reused = await reusableUpload(folder, hash, file);
+    if (reused) return reused;
+  }
+  const url = await uploadImageAnywhere(file, options);
+  if (hash) await rememberMediaUpload(folder, hash, { url, size: file?.size, type: file?.type });
+  return url;
+}
+
+// The address these bytes were uploaded to before in this folder, if this
+// account's object is still there; "" otherwise (and a dead address is
+// forgotten). Never throws: not knowing is an upload.
+export async function reusableUpload(folder, hash, file = null) {
+  try {
+    const known = await recallMediaUpload(folder, hash);
+    if (!known?.url) return "";
+    const session = await getCachedSession();
+    const userId = session?.user?.id;
+    const parts = canonicalImageParts(known.url);
+    // Another account's address on this device is not this account's picture.
+    if (!userId || !parts || !parts.path.startsWith(`${userId}/`)) return "";
+    const size = Number(file?.size || known.size) || 0;
+    const there = await storedMediaStillThere(parts, size);
+    if (there === false) await forgetMediaUpload(folder, hash);
+    return there ? known.url : "";
+  } catch {
+    return "";
+  }
+}
+
+// true: the object is there (at this size); false: it is not; null: no answer.
+async function storedMediaStillThere({ host, path }, size) {
+  if (s3ImageIndexHas(host, path)) return true;
+  if (canReachS3()) {
+    const stat = await statS3Image(host, path).catch(() => null);
+    if (stat?.answered) {
+      if (stat.exists && (stat.size < 0 || !size || stat.size === size)) return true;
+      if (!stat.exists) {
+        // Not in the bucket: it may be one of the figures still in Supabase.
+        const row = await storedImageObject(path);
+        if (row) return true;
+        return row === null ? false : null;
+      }
+      return false;
+    }
+  }
+  const row = await storedImageObject(path);
+  if (row) {
+    const stored = Number(row.metadata?.size) || 0;
+    return !stored || !size || stored === size;
+  }
+  return row === null ? false : null;
+}
+
+async function uploadImageAnywhere(file, options = {}) {
   let bucketError = null;
   if (canReachS3()) {
     try {

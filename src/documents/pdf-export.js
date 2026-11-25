@@ -63,6 +63,7 @@ import { createInvisibleTextLayer } from "./pdf-text-layer.js?v=__BUILD__";
 import { drawRegionBlocks, highlightHex, paintRegionMarks, rasteriseRegionBlocks, regionBlocksInBox, regionMarksOnPage, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
 import { sheetFit, sheetSetupForPage } from "./canvas-setup.js?v=__BUILD__";
 import { exportPageBox, pageContentRects } from "./canvas-extent.js?v=__BUILD__";
+import { exportPageList, pageListLabel } from "./canvas-page-list.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
 // 14mm margins (installPdfPrintStyle) is ~182mm of content, and the page is
@@ -530,7 +531,11 @@ function canvasPageRects(pageNumber) {
 // One Canvas page as the screen shows it, at CANVAS_EXPORT_WIDTH. `number` is
 // the "k / n" to draw into the picture when the labels face is one pdf-lib
 // cannot write (paintPageNumber); null otherwise.
-async function renderCanvasPageExact(pageNumber, { number = null, box = null, onTile = null } = {}) {
+//
+// `scale` (pixels per point) draws it at another size — the Pages panel's
+// thumbnails (renderCanvasPageThumb) — and `words: false` skips measuring the
+// Blocks' words, which only a PDF's text layer needs.
+async function renderCanvasPageExact(pageNumber, { number = null, box = null, onTile = null, scale: drawScale = 0, words: wantWords = true } = {}) {
   const doc = currentPdfDocument();
   if (!doc) return null;
   const token = pdfOpenToken;
@@ -546,7 +551,7 @@ async function renderCanvasPageExact(pageNumber, { number = null, box = null, on
   // A Canvas page can be any size now (src/documents/canvas-setup.js): drawn at
   // the same ~300dpi as an A4 sheet, and no wider than twice that, so an A3
   // page is as sharp as an A4 one and a poster does not take the tab's memory.
-  const scale = canvasExportScale(partW, partH);
+  const scale = drawScale > 0 ? drawScale : canvasExportScale(partW, partH);
   const left = (part[0] - view[0]) * scale;
   const top = (view[3] - part[3]) * scale;
   const pxW = Math.ceil(partW * scale);
@@ -561,7 +566,7 @@ async function renderCanvasPageExact(pageNumber, { number = null, box = null, on
   const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, page.view, scale, {
     paper: "theme",
     layoutScale: seenScale(pageNumber),
-    words: true
+    words: wantWords
   }).catch((error) => {
     console.warn("Could not draw a page's blocks for the export", error);
     return { rasters: [] };
@@ -628,6 +633,29 @@ async function renderCanvasPageExact(pageNumber, { number = null, box = null, on
   return { tiles, tone, words, box: part };
 }
 
+// One Canvas page as a small picture, for the Pages panel
+// (src/documents/canvas-pages-panel.js): drawn exactly as the export draws it —
+// paper, tone, ink, shapes, Blocks and pictures — no wider than `maxW` and no
+// taller than `maxH` pixels, cut to what is on it on a Boundless page, with no
+// page number. Resolves to a canvas, or null when the Canvas was closed or
+// changed while it drew.
+export async function renderCanvasPageThumb(pageNumber, { maxW = 300, maxH = 420 } = {}) {
+  const doc = currentPdfDocument();
+  if (!doc || !onCanvasSlot()) return null;
+  const token = pdfOpenToken;
+  const pdfPage = await doc.getPage(pageNumber).catch(() => null);
+  if (!pdfPage || token !== pdfOpenToken) return null;
+  const view = Array.isArray(pdfPage.view) ? pdfPage.view.map(Number) : [0, 0, 595, 842];
+  const setup = sheetSetupForPage(state.meta?.notebook, pageNumber);
+  const part = sheetFit(setup) === "boundless" ? exportPageBox(setup, view, canvasPageRects(pageNumber)) : view;
+  const w = Math.max(1, part[2] - part[0]);
+  const h = Math.max(1, part[3] - part[1]);
+  const scale = Math.min(maxW / w, maxH / h);
+  const drawn = await renderCanvasPageExact(pageNumber, { box: part, scale, words: false });
+  if (!drawn || token !== pdfOpenToken) return null;
+  return drawn.tiles[0]?.canvas || null;
+}
+
 // ── The words, selectable ───────────────────────────────────────────────────
 //
 // A page of the file is one picture, so a Block's words were pixels: nothing to
@@ -657,19 +685,28 @@ async function writeCanvasWords(out, wordsByPage) {
 
 // Resolves to { bytes, name, pages }, or null when the deck was closed while
 // its pages were rendering. Needs window.PDFLib (ensurePdfLib) loaded first.
-export async function buildCanvasPdfBytes() {
+//
+// `pages`: the Canvas pages to export (the Pages panel's selection,
+// src/documents/canvas-pages-panel.js), in page order whatever order they are
+// given in; none, or none that exist, is every page. The "k / n" at each
+// page's foot counts the pages EXPORTED — pages 3 and 5 of twelve come out as
+// "1 / 2" and "2 / 2" — so the file reads as a document of its own; with every
+// page exported that is exactly the numbering on screen.
+export async function buildCanvasPdfBytes({ pages = null } = {}) {
   const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
   const source = currentPdfDocument();
   if (!source) return null;
   const token = pdfOpenToken;
-  const wanted = pagesToPrint();
+  const all = pagesToPrint();
+  const wanted = pages ? exportPageList(pages, all.length) : all;
+  const whole = wanted.length === all.length;
   const out = await PDFDocument.create();
   const font = await out.embedFont(StandardFonts.Helvetica);
   // Read off the record as src/documents/notebook.js does (notebookPageNumbers,
   // notebookPageCount) — not imported, since that module reaches the whole
   // page surface and this one is reached from the renderers.
   const numbered = state.meta?.notebook?.pageNumbers !== false;
-  const total = Number(state.meta?.notebook?.pages) || source.numPages || wanted.length;
+  const total = wanted.length;
   // A labels face of the reader's own: the numbers go into the pictures
   // (paintPageNumber); Helvetica, the default, stays selectable vector text.
   const numbersInPicture = numbered && Boolean(canvasLabelFont());
@@ -702,7 +739,7 @@ export async function buildCanvasPdfBytes() {
     const [boxX, boxY] = part;
     const width = part[2] - part[0];
     const height = part[3] - part[1];
-    const label = numbered && !boundless ? `${pageNumber} / ${total}` : null;
+    const label = numbered && !boundless ? `${i + 1} / ${total}` : null;
     const page = out.addPage([width, height]);
     if (boxX || boxY) page.setMediaBox(boxX, boxY, width, height);
     const drawn = await renderCanvasPageExact(pageNumber, {
@@ -746,7 +783,8 @@ export async function buildCanvasPdfBytes() {
   out.setTitle(state.deckTitle || state.sourceTitle || "Canvas");
   out.setProducer("Recall");
   const bytes = await out.save();
-  return { bytes, name: `${documentExportBaseName()}.pdf`, pages: wanted.length };
+  const suffix = whole ? "" : ` (pages ${pageListLabel(wanted)})`;
+  return { bytes, name: `${documentExportBaseName()}${suffix}.pdf`, pages: wanted.length };
 }
 
 export function documentExportBaseName() {

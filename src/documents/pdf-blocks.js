@@ -2067,7 +2067,10 @@ export function nextBlockZ(blocks = documentBlocks()) {
 // `width`, in points, is the width a picture put on a Canvas from elsewhere
 // takes (◐ Canvas → Pictures land at, src/documents/canvas-drop.js) rather
 // than the most a page gives a picture.
-export async function addDocumentImageBlock(pageNumber, file, at = null, { anchor = "center", width = null } = {}) {
+// `src`: an address the picture is already stored at — one of this file's own
+// pictures copied and pasted back, or the same bytes uploaded before
+// (src/images/media-reuse.js). The file is then only measured, never uploaded.
+export async function addDocumentImageBlock(pageNumber, file, at = null, { anchor = "center", width = null, src = null } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return null;
   if (!file || !String(file.type || "").startsWith("image/")) {
@@ -2084,7 +2087,7 @@ export async function addDocumentImageBlock(pageNumber, file, at = null, { ancho
   let h = w / ratio;
   if (h > maxH && !(Number(width) > 0)) { h = maxH; w = h * ratio; }
 
-  const stored = await storeImageOrQueue(file);
+  const stored = src ? { url: String(src) } : await storeImageOrQueue(file);
   if (stored.error) {
     showToast(stored.error === "not-signed-in"
       ? "Sign in to add pictures — they are stored with your file"

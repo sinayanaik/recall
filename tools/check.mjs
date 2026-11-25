@@ -405,6 +405,10 @@ const checks = [
   // and draws dots a row at a time; a fixed page's bytes are what they were.
   // pdf-lib from disk, no browser.
   ["canvas-extent ", ["node", ["tools/canvas-extent-check.mjs"], ROOT]],
+  // Lists of Canvas pages (src/documents/canvas-page-list.js): which pages an
+  // export takes and what its file is called, and where every page goes when
+  // some are dragged in the Pages panel. Pure, no browser.
+  ["canvas-pages  ", ["node", ["tools/canvas-page-list-check.mjs"], ROOT]],
   // To the Canvas (src/documents/canvas-flow.js): Blocks from the Notes, a
   // PDF or the Cards go under what is on the last page, stacked without
   // overlapping, onto new pages when it is full; a card is one row with room
@@ -783,6 +787,17 @@ const checks = [
     // drawn in tiles, unnumbered; and the web page export is one file with its
     // GIF in it byte for byte, that lays itself out on its own.
     ["canvas-extent-ui", ["node", ["tools/canvas-extent-browser-check.mjs"], ROOT]],
+    // The Canvas's Pages panel, in the app: "＋ Page │ Page k ⋯" one cluster
+    // the pager never covers; ▤ opens a picture of every page beside the
+    // Canvas; Ctrl-click picks pages and ⇓ exports only those, numbered within
+    // the export; a page dragged to the top takes its Blocks and the cards'
+    // pictures of it; Duplicate and Delete act on the pages picked.
+    ["canvas-pages-ui", ["node", ["tools/canvas-pages-panel-browser-check.mjs"], ROOT]],
+    // A picture is stored once (src/images/media-reuse.js): the same bytes into
+    // one file upload once, a GIF too, another file uploads its own, a gone
+    // object is not reused, offline they are parked once, a picture copied out
+    // of the file goes back at its address, and one on a page counts as used.
+    ["media-reuse   ", ["node", ["tools/media-reuse-browser-check.mjs"], ROOT]],
     // Things put on a page where the mouse is: a pasted picture or pasted
     // words, a Block with T or B or a mouse double-click (never a
     // pen's), and a picture copied after ink or Blocks still pasting as one.
