@@ -34,6 +34,19 @@ export const EXTENSIONS = [
     ],
     shortcut: "Alt+Shift+C clean · Alt+Shift+M copy as Markdown · Alt+Shift+P save as PDF · Alt+Shift+O open",
     permissions: "Runs only on the tab you use it on, and uploads nothing. Saving a PDF uses Chrome's own print engine through its debugging interface, so Chrome shows a “debugging this browser” bar while it works."
+  },
+  {
+    id: "recall-canvas-drag",
+    folder: "recall-canvas-drag",
+    tagline: "Drag any part of any web page onto a file's Canvas: a paragraph, a box, a card, a table, a code listing or a figure.",
+    details: [
+      "Hold Alt over a web page and the part under the pointer is outlined, with a ⠿ grip above it. Alt+↑ / ↓ (or Alt and the wheel) takes in more of the page or less. Let go of Alt and the grip stays while the pointer is on it.",
+      "Drag the grip onto a Canvas page: it lands as Blocks where you let go, with headings, lists, tables, code, maths, links and pictures kept, and what the page hides left out. Its pictures come with it and are saved with your other pictures, so they stay when the site moves them.",
+      "Hold Shift as you let go and it lands as a picture of it instead, exactly as it looked on the page, at the size it was there.",
+      "Alt+Shift+D shows the grips without holding Alt on that tab. The toolbar icon turns it off for a site, or everywhere."
+    ],
+    shortcut: "Hold Alt to pick · Alt+↑ / ↓ more or less · Shift at the drop for a picture · Alt+Shift+D grips without Alt",
+    permissions: "Runs on every page so that a drag can start anywhere, but does nothing until you hold Alt (or press Alt+Shift+D), and never runs on Recall itself. Uploads nothing: what you drag goes straight into Recall. It reads a page's pictures and takes a picture of the part you drag only to put them in that drag."
   }
 ];
 

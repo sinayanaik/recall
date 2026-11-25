@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Recall Drag to Canvas",
+  "version": "1.0.0",
+  "minimum_chrome_version": "118",
+  "description": "Drag any part of any web page onto a Recall Canvas: a paragraph, a table, a code block, a figure, a card. It lands as Blocks, or hold Shift to drop it as a picture.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "Recall Drag to Canvas: hold Alt over any part of a page, then drag its ⠿ onto the Canvas",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/drag.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "toggle-grips": {
+      "suggested_key": {
+        "default": "Alt+Shift+D"
+      },
+      "description": "Show the ⠿ grips on this tab without holding Alt (press again to stop)"
+    }
+  }
+}

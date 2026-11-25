@@ -15,7 +15,11 @@
 //   - words, a selection or a picture from anywhere else — a web page, another
 //     PDF reader, another app — read the same way: a page's HTML as markdown
 //     (headings, lists, tables, code and pictures kept), bare words as a PDF's
-//     words, a picture file as a picture Block.
+//     words, a picture file as a picture Block;
+//   - any part of a web page, by the ⠿ grip the Recall Drag to Canvas extension
+//     puts on it (recall-canvas-drag/): its HTML as markdown, as above, with
+//     the pictures it carried stored as the reader's own — or, with Shift held
+//     at the drop, a picture of it as it looked (./web-clip-drop.js).
 //
 // Whatever it is, it lands the size the Canvas gives its kind, not the size it
 // had where it came from (canvasSizedMarkdown, ./canvas-sizing.js; ◐ Canvas →
@@ -55,6 +59,7 @@ import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
 import { ensureTurndown } from "../core/lib-loader.js?v=__BUILD__";
 import { headingNumbersOn, stripTypedHeadingNumbersFromMarkdown } from "../notes/heading-numbers.js?v=__BUILD__";
 import { currentNotesSelectionMarkdown } from "../notes/selection.js?v=__BUILD__";
+import { keepWebClipPictures, readWebClip, WEB_CLIP_MIME, webClipPictureFile, webClipPictureWidth } from "./web-clip-drop.js?v=__BUILD__";
 
 // A Canvas page under a point, when the Canvas is on screen, or null.
 function canvasDropPageAt(target) {
@@ -416,7 +421,7 @@ function markCanvasDropPage(page) {
 
 function canvasDropCarries(dt) {
   const types = Array.from(dt?.types || []);
-  return types.includes(CANVAS_ITEM_MIME) || types.includes("text/plain") || types.includes("text/html") || dragContainsImage(dt);
+  return types.includes(CANVAS_ITEM_MIME) || types.includes(WEB_CLIP_MIME) || types.includes("text/plain") || types.includes("text/html") || dragContainsImage(dt);
 }
 
 // Every drop of words, an item or a picture on a Canvas page is read here —
@@ -425,15 +430,17 @@ function canvasDropCarries(dt) {
 function canvasDropIsOurs(dt) {
   if (dragFromCanvas) return false;
   const types = Array.from(dt?.types || []);
-  if (types.includes(CANVAS_ITEM_MIME)) return true;
+  if (types.includes(CANVAS_ITEM_MIME) || types.includes(WEB_CLIP_MIME)) return true;
   if (dragContainsImage(dt)) return true;
   if (types.includes("Files")) return false;
   return types.includes("text/plain") || types.includes("text/html") || types.includes("text/uri-list");
 }
 
-// What an outside drag looks like it is, from its types alone.
-function outsideKind(dt) {
+// What an outside drag looks like it is, from its types alone — and, for a part
+// of a web page from the extension, from whether Shift is held.
+function outsideKind(dt, shiftKey = false) {
   const types = Array.from(dt?.types || []);
+  if (types.includes(WEB_CLIP_MIME)) return shiftKey ? "picture" : "text";
   if (types.includes("Files") || (dragContainsImage(dt) && !types.includes("text/html"))) return "picture";
   return "text";
 }
@@ -563,7 +570,7 @@ function onCanvasDragOver(event) {
   const frame = canvasPageFrame(page);
   if (!frame) return;
   measureDragFor(frame.page);
-  paintGhost(frame, event.clientX, event.clientY, dragItem ? "item" : outsideKind(event.dataTransfer));
+  paintGhost(frame, event.clientX, event.clientY, dragItem ? "item" : outsideKind(event.dataTransfer, event.shiftKey));
 }
 
 function onCanvasDragLeave(event) {
@@ -582,6 +589,7 @@ function transferStrings(dt) {
   const types = Array.from(dt.types || []);
   return {
     own: types.includes(CANVAS_ITEM_MIME) ? dt.getData(CANVAS_ITEM_MIME) : "",
+    web: types.includes(WEB_CLIP_MIME) ? dt.getData(WEB_CLIP_MIME) : "",
     html: types.includes("text/html") ? dt.getData("text/html") : "",
     plain: types.includes("text/plain") ? dt.getData("text/plain") : "",
     uri: types.includes("text/uri-list") ? dt.getData("text/uri-list") : ""
@@ -634,10 +642,11 @@ async function onCanvasDrop(event) {
   if (!page || !dt || !canvasDropIsOurs(dt)) { markCanvasDropPage(null); return; }
   event.preventDefault();
   event.stopPropagation();
+  const shiftKey = event.shiftKey;
   // Where the preview was — painted for this very point, if it was not yet.
   const frame = canvasPageFrame(page);
   if (frame && canvasDropOverPage !== page) markCanvasDropPage(page);
-  if (frame) paintGhost(frame, event.clientX, event.clientY, dragItem ? "item" : outsideKind(dt));
+  if (frame) paintGhost(frame, event.clientX, event.clientY, dragItem ? "item" : outsideKind(dt, shiftKey));
   const place = ghostState?.place || null;
   const ghostItem = ghostState?.item || null;
   const measured = dragItem && dragMeasure?.key === frame?.page ? dragMeasure.result : null;
@@ -652,7 +661,7 @@ async function onCanvasDrop(event) {
   }
   if (!place || !frame) return;
   const types = Array.from(dt.types || []);
-  const files = !types.includes(CANVAS_ITEM_MIME) && dragContainsImage(dt) ? Array.from(allImageFiles(dt) || []) : [];
+  const files = !types.includes(CANVAS_ITEM_MIME) && !types.includes(WEB_CLIP_MIME) && dragContainsImage(dt) ? Array.from(allImageFiles(dt) || []) : [];
   const strings = files.length ? null : transferStrings(dt);
   if (!(await makeCanvasLiveForDrop())) return;
   if (files.length) {
@@ -661,9 +670,35 @@ async function onCanvasDrop(event) {
     addHandwritingImages(files, { page: place.page, x: place.x, y: place.y }, { width });
     return;
   }
+  const clip = strings.web ? readWebClip(strings.web) : null;
+  if (clip) {
+    await dropWebClip(clip, { place, frame, ghostItem, asPicture: shiftKey });
+    return;
+  }
   const item = ownItem && strings.own ? ownItem : await canvasItemFromStrings(strings);
   if (!item) return;
   await placeOnCanvas([item], { at: place, measured: item === ownItem ? measured : null });
+}
+
+// A part of a web page from the Recall Drag to Canvas extension
+// (./web-clip-drop.js): as Blocks, its pictures then stored as the reader's
+// own, or with Shift held, as a picture of it.
+async function dropWebClip(clip, { place, frame, ghostItem, asPicture }) {
+  if (asPicture) {
+    const file = webClipPictureFile(clip);
+    if (file) {
+      const { addHandwritingImages } = await import("../handwriting/board.js?v=__BUILD__");
+      const pageWidth = frame.box[2] - frame.box[0];
+      const width = webClipPictureWidth(clip, pageWidth * 0.92) || (ghostItem && !ghostItem.pair ? ghostItem.w : pageWidth * canvasDropWidthPercent("picture") / 100);
+      addHandwritingImages([file], { page: place.page, x: place.x, y: place.y }, { width });
+      return;
+    }
+    showToast("No picture of it was taken (it was off screen) — it goes on as Blocks", "info");
+  }
+  const item = await canvasItemFromStrings({ own: "", html: clip.html, plain: clip.text, uri: "" });
+  if (!item) return;
+  const made = await placeOnCanvas([item], { at: place });
+  if (made?.blocks?.length) keepWebClipPictures(clip, item.md).catch(() => {});
 }
 
 // One of our own items let go of over a Canvas page by a pen or a finger

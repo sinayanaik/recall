@@ -533,6 +533,7 @@ const APP_SHELL = [
   `./src/documents/card-canvas-style.js?v=${STAMP}`,
   `./src/documents/notes-grip.js?v=${STAMP}`,
   `./src/documents/canvas-drop.js?v=${STAMP}`,
+  `./src/documents/web-clip-drop.js?v=${STAMP}`,
   `./src/documents/pdf-guides.js?v=${STAMP}`,
   `./src/render/snap-guides.js?v=${STAMP}`,
   `./src/documents/pdf-shape-panel.js?v=${STAMP}`,

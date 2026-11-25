@@ -748,6 +748,11 @@ const checks = [
     // Canvas, onto new pages; the picker ticks only what is new; a drag from
     // beside lands where it is let go; the toast's Undo takes a batch back.
     ["canvas-feed-ui", ["node", ["tools/canvas-feed-browser-check.mjs"], ROOT]],
+    // Recall Drag to Canvas (recall-canvas-drag/), loaded unpacked: a part of
+    // a web page picked with Alt, dragged by its ⠿ grip with real input onto a
+    // Canvas page on another origin — Blocks with its pictures stored from the
+    // bytes it carried, or with Shift a picture of it; never on Recall itself.
+    ["canvas-drag-ext", ["node", ["tools/canvas-drag-extension-check.mjs"], ROOT]],
     // View only (✎ | 👁) on the PDFs and the Canvas, and a pinch that never
     // moves a Block: a second finger calls a finger's drag off and puts the
     // Block or the typed words back; on 👁 nothing is drawn, moved, added,

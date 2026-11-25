@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fixture article</title>
+  <style>
+    body { font: 16px/1.5 sans-serif; margin: 60px 40px; width: 700px; }
+    .card { border: 1px solid #ccc; border-radius: 12px; padding: 16px; margin: 20px 0; background: #f7fbff; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <p>An opening paragraph, outside the card.</p>
+  <div class="card" id="card">
+    <h2>Spaced repetition <svg width="14" height="14" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="4"/></svg></h2>
+    <p>Reviews are <strong>timed</strong> to land just as a memory fades. <a href="/docs/more.html">Read more</a></p>
+    <ul><li>Short gaps first</li><li>Longer gaps after</li></ul>
+    <table>
+      <thead><tr><th>Review</th><th>Gap</th></tr></thead>
+      <tbody><tr><td>1</td><td>1 day</td></tr><tr><td>2</td><td>3 days</td></tr></tbody>
+    </table>
+    <pre><code class="language-python">def gap(n):
+    return 2 ** n</code></pre>
+    <p><img src="../../icons/icon-128.png" alt="Grip icon" width="64" height="64"></p>
+    <span class="hidden">Secret hidden words</span>
+    <button type="button">Press me</button>
+    <canvas id="chart" width="120" height="60"></canvas>
+  </div>
+  <script>
+    const ctx = document.getElementById("chart").getContext("2d");
+    ctx.fillStyle = "#14a99e";
+    ctx.fillRect(10, 10, 100, 40);
+  </script>
+</body>
+</html>

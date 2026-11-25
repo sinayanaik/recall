@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Recall Drag to Canvas</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <img src="icons/icon-48.png" alt="" width="22" height="22">
+    <h1>Recall Drag to Canvas</h1>
+    <span id="version" class="version"></span>
+  </header>
+
+  <main>
+    <ol class="how">
+      <li>Hold <kbd>Alt</kbd> and point at any part of the page. It is outlined, with a <b>⠿</b> grip above it.</li>
+      <li><kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>↓</kbd> (or <kbd>Alt</kbd> and the wheel) takes in more of the page, or less.</li>
+      <li>Drag the <b>⠿</b> onto a page of a file’s <b>Canvas</b> in Recall. It lands as Blocks. Hold <kbd>Shift</kbd> as you let go for a picture of it, exactly as it looks.</li>
+    </ol>
+
+    <p id="blocked" class="status" hidden>This page can’t be used: the browser keeps its own pages and the extension store to itself.</p>
+
+    <label class="row">
+      <input type="checkbox" id="grips">
+      <span><b>Show the grips without holding Alt</b><span class="sub">On this tab, until turned off. <kbd>Alt+Shift+D</kbd></span></span>
+    </label>
+    <label class="row">
+      <input type="checkbox" id="site">
+      <span><b>Off on <span id="host">this site</span></b><span class="sub">Alt does nothing here.</span></span>
+    </label>
+    <label class="row">
+      <input type="checkbox" id="enabled">
+      <span><b>On</b><span class="sub">Turn off to stop it everywhere.</span></span>
+    </label>
+
+    <p class="note">Nothing is uploaded: what you drag goes straight into Recall, and pictures are stored there with your other pictures.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
