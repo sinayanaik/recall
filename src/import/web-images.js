@@ -95,8 +95,12 @@ export async function uploadWithRetry(file, options) {
 // Every picture in `urls` copied into storage. Returns { map, failed, skipped }:
 // `map` is { webUrl: storedUrl } for the ones that made it; `skipped` names why
 // nothing was tried at all (offline, signed out), so the caller can say so.
-export async function copyWebImages(urls, { title = "", onProgress = () => {} } = {}) {
-  const list = (urls || []).filter(isHttpUrl);
+// `files` ({ url: File }) are pictures already in hand — the ones the Recall
+// Drag to Canvas extension carried in with its drag — stored as they are rather
+// than fetched again; a `data:` address is copied only when it is one of them.
+export async function copyWebImages(urls, { title = "", onProgress = () => {}, files = null } = {}) {
+  const given = files && typeof files === "object" ? files : {};
+  const list = (urls || []).filter((url) => isHttpUrl(url) || given[url] instanceof Blob);
   const map = {};
   if (!list.length) return { map, failed: 0, skipped: "" };
   if (!webImageTransport.online()) return { map, failed: list.length, skipped: "offline" };
@@ -111,7 +115,7 @@ export async function copyWebImages(urls, { title = "", onProgress = () => {} } 
       const url = list[next];
       next += 1;
       try {
-        const original = await fetchWebImage(url);
+        const original = given[url] instanceof Blob ? given[url] : await fetchWebImage(url);
         const compressed = await compressImageToPreset(original, choice).catch(() => null);
         map[url] = await uploadWithRetry(compressed?.file || original, { folder });
       } catch (error) {

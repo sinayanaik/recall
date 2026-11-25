@@ -244,6 +244,7 @@
    while the Canvas is beside them (src/documents/notes-grip.js). */
 .notes-canvas-grip {
   position: fixed;
+  touch-action: none;
   z-index: 60;
   display: inline-flex;
   align-items: center;
@@ -260,6 +261,33 @@
   line-height: 1;
   cursor: grab;
   box-shadow: 0 2px 6px rgb(0 0 0 / 0.12);
+}
+
+/* What follows the pointer while one of these is dragged, away from a Canvas
+   page (src/documents/canvas-drop.js). */
+.canvas-drag-chip {
+  position: fixed;
+  z-index: 10000;
+  max-width: 280px;
+  padding: 4px 10px;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.22);
+  pointer-events: none;
+}
+
+.notes-canvas-grip.is-pointer-dragging,
+.card-canvas-grip.is-pointer-dragging {
+  cursor: grabbing;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .notes-canvas-grip:hover {
@@ -395,6 +423,7 @@
 .card-canvas-grip {
   display: none;
   cursor: grab;
+  touch-action: none;
 }
 
 .quiz-panel.is-parts-split:is([data-split-left="handwriting"], [data-split-right="handwriting"]):is([data-split-left="cards"], [data-split-right="cards"]) .card-canvas-grip {

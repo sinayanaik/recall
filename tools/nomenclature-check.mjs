@@ -147,7 +147,7 @@ function scanHtml(file) {
     failures.push({ file, line: lineOf(src, m.index), word: "Write", use: "Canvas", text: m[0] });
   }
 }
-for (const file of ["index.html", "recall-clipper/popup.html"]) scanHtml(file);
+for (const file of ["index.html", "recall-clipper/popup.html", "recall-canvas-drag/popup.html"]) scanHtml(file);
 
 // ── src/**/*.js ─────────────────────────────────────────────────────────────
 function walk(dir) {
@@ -167,7 +167,8 @@ function walk(dir) {
 const EXTENSION_JS = [
   "recall-clipper/background.js", "recall-clipper/popup.js", "recall-clipper/pdf-job.js",
   "recall-clipper/content/prepare.js", "recall-clipper/content/cleaner-core.js", "recall-clipper/content/cleaner-ui.js",
-  ...walk(path.join(ROOT, "recall-clipper/lib")).map((p) => path.relative(ROOT, p))
+  ...walk(path.join(ROOT, "recall-clipper/lib")).map((p) => path.relative(ROOT, p)),
+  "recall-canvas-drag/background.js", "recall-canvas-drag/popup.js", "recall-canvas-drag/content/drag.js"
 ].map((rel) => path.join(ROOT, rel));
 
 for (const abs of [...walk(path.join(ROOT, "src")), ...EXTENSION_JS]) {
@@ -187,7 +188,7 @@ for (const abs of [...walk(path.join(ROOT, "src")), ...EXTENSION_JS]) {
 }
 
 // ── manifests ───────────────────────────────────────────────────────────────
-for (const file of ["manifest.webmanifest", "recall-clipper/manifest.json"]) {
+for (const file of ["manifest.webmanifest", "recall-clipper/manifest.json", "recall-canvas-drag/manifest.json"]) {
   const json = JSON.parse(fs.readFileSync(path.join(ROOT, file), "utf8"));
   for (const key of ["name", "short_name", "description"]) {
     if (typeof json[key] === "string") test(file, 0, json[key]);

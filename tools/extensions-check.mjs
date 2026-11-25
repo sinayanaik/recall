@@ -1,7 +1,8 @@
 // Static checks for Recall Web Clipper, the browser extension (no browser needed):
 //
 //  - its manifest parses, and every file the manifest, a background script,
-//    the PDF job or the popup names is on disk;
+//    the PDF job or the popup names is on disk — for Recall Drag to Canvas
+//    (recall-canvas-drag/) too;
 //  - there is one extension: the three it replaced are gone;
 //  - lib/pdf-info.js writes a well-formed incremental update;
 //  - lib/pdf-pages.js gives each page its own height, the same way, read
@@ -22,7 +23,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const EXTENSIONS = ["recall-clipper"];
+const EXTENSIONS = ["recall-clipper", "recall-canvas-drag"];
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -44,6 +45,7 @@ for (const ext of EXTENSIONS) {
   Object.values((manifest.action && manifest.action.default_icon) || {}).forEach((f) => named.add(f));
   if (manifest.action && manifest.action.default_popup) named.add(manifest.action.default_popup);
   if (manifest.background && manifest.background.service_worker) named.add(manifest.background.service_worker);
+  (manifest.content_scripts || []).forEach((entry) => [...(entry.js || []), ...(entry.css || [])].forEach((f) => named.add(f)));
   // Files a script injects or fetches by path.
   for (const script of [manifest.background && manifest.background.service_worker, manifest.action && manifest.action.default_popup, "pdf-job.js", "popup.js"].filter((f) => f && existsSync(path.join(ROOT, ext, f)))) {
     const src = read(`${ext}/${script}`);

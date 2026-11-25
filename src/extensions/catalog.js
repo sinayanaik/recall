@@ -271,5 +271,64 @@ export const EXTENSIONS = [
         "size": 26684
       }
     ]
+  },
+  {
+    "id": "recall-canvas-drag",
+    "folder": "recall-canvas-drag",
+    "tagline": "Drag any part of any web page onto a file's Canvas: a paragraph, a box, a card, a table, a code listing or a figure.",
+    "details": [
+      "Hold Alt over a web page and the part under the pointer is outlined, with a ⠿ grip above it. Alt+↑ / ↓ (or Alt and the wheel) takes in more of the page or less. Let go of Alt and the grip stays while the pointer is on it.",
+      "Drag the grip onto a Canvas page: it lands as Blocks where you let go, with headings, lists, tables, code, maths, links and pictures kept, and what the page hides left out. Its pictures come with it and are saved with your other pictures, so they stay when the site moves them.",
+      "Hold Shift as you let go and it lands as a picture of it instead, exactly as it looked on the page, at the size it was there.",
+      "Alt+Shift+D shows the grips without holding Alt on that tab. The toolbar icon turns it off for a site, or everywhere."
+    ],
+    "shortcut": "Hold Alt to pick · Alt+↑ / ↓ more or less · Shift at the drop for a picture · Alt+Shift+D grips without Alt",
+    "permissions": "Runs on every page so that a drag can start anywhere, but does nothing until you hold Alt (or press Alt+Shift+D), and never runs on Recall itself. Uploads nothing: what you drag goes straight into Recall. It reads a page's pictures and takes a picture of the part you drag only to put them in that drag.",
+    "name": "Recall Drag to Canvas",
+    "version": "1.0.0",
+    "description": "Drag any part of any web page onto a Recall Canvas: a paragraph, a table, a code block, a figure, a card. It lands as Blocks, or hold Shift to drop it as a picture.",
+    "bytes": 53149,
+    "files": [
+      {
+        "path": "README.md",
+        "size": 5643
+      },
+      {
+        "path": "background.js",
+        "size": 4668
+      },
+      {
+        "path": "content/drag.js",
+        "size": 34892
+      },
+      {
+        "path": "icons/icon-128.png",
+        "size": 552
+      },
+      {
+        "path": "icons/icon-16.png",
+        "size": 123
+      },
+      {
+        "path": "icons/icon-48.png",
+        "size": 236
+      },
+      {
+        "path": "manifest.json",
+        "size": 1231
+      },
+      {
+        "path": "popup.css",
+        "size": 1496
+      },
+      {
+        "path": "popup.html",
+        "size": 1737
+      },
+      {
+        "path": "popup.js",
+        "size": 2571
+      }
+    ]
   }
 ];
