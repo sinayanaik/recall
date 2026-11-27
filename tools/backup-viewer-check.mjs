@@ -306,7 +306,8 @@ try {
     const br = block?.getBoundingClientRect();
     return {
       pages: pages.length, ink: Boolean(ink), paperLines,
-      shapes: first?.querySelectorAll("svg.viewer-page-svg > path").length || 0,
+      // Each shape in its own <g data-shape-id> (src/export/canvas-data.js names them so).
+      shapes: first?.querySelectorAll("svg.viewer-page-svg > path, svg.viewer-page-svg > g[data-shape-id] > path").length || 0,
       block: Boolean(block), blockMath: Boolean(block?.querySelector(".katex")),
       blockInside: Boolean(r && br && br.left >= r.left && br.right <= r.right && br.top >= r.top && br.bottom <= r.bottom),
       diamond: Boolean(diamond),

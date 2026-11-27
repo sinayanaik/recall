@@ -573,6 +573,7 @@ const APP_SHELL = [
   `./src/export/pdf.js?v=${STAMP}`,
   `./src/export/run.js?v=${STAMP}`,
   `./src/export/canvas-html.js?v=${STAMP}`,
+  `./src/export/canvas-data.js?v=${STAMP}`,
   `./src/export/sql.js?v=${STAMP}`,
   `./src/export/theme-dialog.js?v=${STAMP}`,
   `./src/export/themes.js?v=${STAMP}`,

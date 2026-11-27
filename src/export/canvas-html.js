@@ -49,6 +49,7 @@ import { DOC_SLOT_NOTEBOOK } from "../documents/doc-slot.js?v=__BUILD__";
 import { recordsForSurface } from "../documents/pdf-multi.js?v=__BUILD__";
 import { sniffImageType } from "../images/compress.js?v=__BUILD__";
 import { normalizeShape } from "../render/annot-shapes.js?v=__BUILD__";
+import { canvasData, canvasDataScript } from "./canvas-data.js?v=__BUILD__";
 import { applyPaperPalette, paperPalette, readThemeTokens } from "../format/paper-palette.js?v=__BUILD__";
 import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { regionBlockBuilders } from "../documents/pdf-region-marks.js?v=__BUILD__";
@@ -556,6 +557,8 @@ async function buildPageLayer({ blocks, shapes, crop, scale, tone, css, fonts })
         });
         if (!node) continue;
         if (node.parentNode !== host) host.appendChild(node);
+        // Its name, as the page's data has it (src/export/canvas-data.js).
+        node.setAttribute("data-shape-id", String(record.id));
         nodes.push(node);
         built.add(`shape:${record.id}`);
       }
@@ -617,6 +620,7 @@ export async function buildCanvasHtml({ onProgress = null, tone = null, pages: o
   const blocks = recordsForSurface(state.meta?.pdfBlocks, DOC_SLOT_NOTEBOOK, null).filter((block) => block && block.id);
   const drawn = [];
   const layers = [];
+  const dataPages = [];
   const css = typeof document === "undefined" ? null : usedCssCollector();
   const fonts = [];
   for (const [index, n] of wanted.entries()) {
@@ -629,6 +633,7 @@ export async function buildCanvasHtml({ onProgress = null, tone = null, pages: o
       ? exportPageBox(setup, canvasPageBox(record, n), pageContentRects(pageMarks, pageBlocks))
       : null;
     const shapes = pageMarks.filter((rec) => rec?.kind === "shape");
+    dataPages.push({ n, setup, box: Array.isArray(box) && box.length === 4 ? box.map(Number) : canvasPageBox(record, n) });
     drawn.push(canvasPageDrawing(record, n, {
       ink: pageMarks.filter((rec) => rec?.kind === "ink"),
       shapes,
@@ -700,6 +705,13 @@ export async function buildCanvasHtml({ onProgress = null, tone = null, pages: o
 ${[...new Set(fonts.filter(Boolean))].join("\n")}
 ${setting ? `.cx-pages.cx-tokens { ${setting.tokens} }\n.cx-pages .cx-layer { ${setting.type} }` : ""}` : "";
   const title = state.deckTitle || state.sourceTitle || "Canvas";
+  // The Canvas itself, for whatever reads the page next (src/export/canvas-data.js).
+  let data = "";
+  try {
+    data = canvasDataScript(canvasData({ title, pages: dataPages, blocks, marks }));
+  } catch (error) {
+    console.warn("The web page went without the Canvas's data", error);
+  }
   const dark = Boolean(tone?.dark);
   const palette = paletteStyle(tone);
   const pagesClass = `${tone ? ` paper-tokens${dark ? " is-dark-paper" : ""}` : ""}${setting ? " cx-tokens" : ""}`;
@@ -708,7 +720,7 @@ ${setting ? `.cx-pages.cx-tokens { ${setting.tokens} }\n.cx-pages .cx-layer { ${
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="Recall">
+<meta name="generator" content="Recall">${data ? `\n<meta name="recall-canvas-data" content="1">` : ""}
 <title>${escapeHtml(title)} — Canvas</title>
 <style>
 ${safeStyleText(appCss)}
@@ -722,7 +734,7 @@ ${CANVAS_HTML_CSS}
 <h1>${escapeHtml(title)}</h1></header>
 <main class="cx-pages${pagesClass}"${palette ? ` style="${palette}"` : ""}>
 ${body}
-</main>
+</main>${data ? `\n${data}` : ""}
 <script>${CANVAS_HTML_SCRIPT}</script>
 </body>
 </html>

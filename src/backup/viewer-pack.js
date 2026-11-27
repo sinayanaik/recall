@@ -211,6 +211,10 @@ export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [
   shapes.forEach((rec) => {
     const shape = normalizeShape(rec.shape);
     if (!shape) return;
+    // Each shape in a group of its own, named as the record is, so what reads
+    // the page can tell one shape's paths from the next (src/export/canvas-data.js).
+    const named = typeof rec.id === "string" && /^[\w:.-]{1,64}$/.test(rec.id);
+    if (named) parts.push(`<g data-shape-id="${rec.id}" data-shape-type="${shape.type}">`);
     shapePrimitives(shape, { recolor }).forEach((prim) => {
       if (prim.kind === "poly") parts.push(shapePathSvg(prim, toPoint));
       else if (prim.kind === "sticky") stickyIconPolys(prim.rect, prim.color).forEach((poly) => parts.push(shapePathSvg(poly, toPoint)));
@@ -218,6 +222,7 @@ export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [
         const [rx0, ry0, rx1, ry1] = prim.rect;
         boxes.push({
           kind: "words",
+          id: named ? rec.id : "",
           key: `shape:${rec.id}`,
           md: prim.text,
           x: rx0 - x0, y: y1 - ry1, w: rx1 - rx0, h: ry1 - ry0,
@@ -226,6 +231,7 @@ export function canvasPageDrawing(record, n, { ink = [], shapes = [], blocks = [
         });
       }
     });
+    if (named) parts.push("</g>");
   });
 
   const inkParts = [];
@@ -331,7 +337,8 @@ export function canvasPageMarkup(page, { number = "", label = "" } = {}) {
       // src/render/annot-shapes.js): its padding, a leading of 1.3, and the
       // ◐ Canvas Labels face (the export's stylesheet).
       const color = markupCss(box.color);
-      out.push(`<div class="cx-words" style="${place}padding:${pt(SHAPE_TEXT_PAD)};font-size:${pt(box.size || 12)};text-align:${align};${box.bold ? "font-weight:700;" : ""}${color ? `color:${color};` : ""}"><div class="rendered">${box.html || ""}</div></div>`);
+      const named = /^[\w:.-]{1,64}$/.test(String(box.id || "")) ? ` data-shape-id="${box.id}"` : "";
+      out.push(`<div class="cx-words"${named} style="${place}padding:${pt(SHAPE_TEXT_PAD)};font-size:${pt(box.size || 12)};text-align:${align};${box.bold ? "font-weight:700;" : ""}${color ? `color:${color};` : ""}"><div class="rendered">${box.html || ""}</div></div>`);
       return;
     }
     const z = `z-index:${2 + (Number(box.z) || 0)};`;
