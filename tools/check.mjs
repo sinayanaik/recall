@@ -532,6 +532,11 @@ const checks = [
   // way a text mark is drawn (src/format/mark-styles.js). Both are leaves, so
   // pure Node, like the ink format above.
   ["annot-shapes  ", ["node", ["tools/annot-shapes-check.mjs"], ROOT]],
+  // ...and the Canvas as data, which the web page export carries for a program
+  // to read beside the drawing (src/export/canvas-data.js): ids, ties, groups,
+  // the page's own points, and a <script> nothing on the Canvas can close.
+  // Pure Node: it imports only leaves.
+  ["canvas-data   ", ["node", ["tools/canvas-data-check.mjs"], ROOT]],
   // ...and of a diagram: a block's outline and where a connector stops on it
   // (src/render/node-outlines.js), and what a drag snaps to
   // (src/render/snap-guides.js). Leaves too, so pure Node.

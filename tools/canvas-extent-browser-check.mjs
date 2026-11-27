@@ -853,6 +853,64 @@ try {
     await window.__recall.settle(300);
   }`);
 
+  // ── 4c. ...and the Canvas itself, as data, for a program to read ───────
+  //
+  // The drawing loses what an arrow joins. So the page carries the Canvas as
+  // JSON too (src/export/canvas-data.js): read back out of the page, the arrow
+  // still says which two Blocks it joins, its words are its own, and every id
+  // in the data is on the page — the Block's, the shape's <g>, the label's.
+  const data = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const out = {};
+    const a = api.freshDocumentBlockId();
+    const b = api.freshDocumentBlockId();
+    api.runDiagramEdit(() => api.writeDocumentBlocks([...api.documentBlocks(),
+      { id: a, page: 1, z: 30, kind: "markdown", x: 60, y: 120, w: 140, h: 60, md: "**Porcelain crab**" },
+      { id: b, page: 1, z: 31, kind: "markdown", x: 330, y: 120, w: 160, h: 60, md: "Filters plankton with its fans" }]));
+    const arrow = api.addDocumentShape(1, { type: "arrow", p: [[200, 150], [330, 150]], heads: ["none", "filled"], text: "eats with",
+      ends: [{ id: a, side: "e" }, { id: b, side: "w" }] });
+    const sticky = api.addDocumentShape(1, { type: "sticky", p: [[520, 200]] });
+    await settle(800);
+    const built = await api.buildCanvasHtml({});
+    out.meta = /<meta name="recall-canvas-data" content="1">/.test(built.html);
+    const m = /<script type="application\\/json" id="recall-canvas-data">([\\s\\S]*?)<\\/script>/.exec(built.html);
+    out.found = Boolean(m);
+    const json = m ? JSON.parse(m[1]) : null;
+    out.format = json ? json.format + "@" + json.version : "";
+    const link = json ? json.connectors.find((c) => c.id === arrow?.id) : null;
+    out.link = link ? { from: link.from?.id === a, to: link.to?.id === b, label: link.label, heads: link.heads, points: link.points.length } : null;
+    out.blocks = json ? [a, b].every((id) => json.blocks.some((x) => x.id === id)) : false;
+    out.sticky = json ? json.shapes.some((s) => s.id === sticky?.id && s.type === "sticky") : false;
+    const frame = document.createElement("iframe");
+    document.body.appendChild(frame);
+    frame.srcdoc = built.html;
+    await new Promise((resolve) => { frame.onload = resolve; setTimeout(resolve, 4000); });
+    const doc = frame.contentDocument;
+    out.onPage = {
+      blocks: [a, b].every((id) => doc.querySelector('.cx-layer [data-pdf-block="' + id + '"]')),
+      shape: Boolean(arrow && doc.querySelector('svg g[data-shape-id="' + arrow.id + '"][data-shape-type="arrow"] path')),
+      label: Boolean(arrow && doc.querySelector('.cx-words[data-shape-id="' + arrow.id + '"]')),
+      script: Boolean(doc.getElementById("recall-canvas-data"))
+    };
+    frame.remove();
+    window.__canvasDataHtml = built.html;
+    api.applyDocumentRecordChanges({ remove: [arrow?.id, sticky?.id].filter(Boolean) });
+    api.runDiagramEdit(() => api.writeDocumentBlocks(api.documentBlocks().filter((x) => x.id !== a && x.id !== b)));
+    await settle(300);
+    return out;
+  }`);
+  check("the web page carries the Canvas as data, and says so", data.meta && data.found && data.format === "recall.canvas@1", JSON.stringify(data));
+  check("...an arrow in it keeps the two Blocks it joins, which way it points, and its words",
+    data.link && data.link.from && data.link.to && data.link.label === "eats with" && data.link.heads.join() === "none,filled" && data.link.points >= 2 && data.blocks && data.sticky,
+    JSON.stringify(data));
+  check("...and every id in the data is on the page: the Blocks, the arrow's paths, its label",
+    data.onPage.blocks && data.onPage.shape && data.onPage.label && data.onPage.script, JSON.stringify(data.onPage));
+  // A page made by the real exporter, for whatever reads these pages (the
+  // video tool's parser keeps one as a fixture): CANVAS_DATA_FIXTURE=<file>.
+  if (process.env.CANVAS_DATA_FIXTURE) {
+    writeFileSync(process.env.CANVAS_DATA_FIXTURE, await page.evaluate("() => window.__canvasDataHtml || ''"));
+  }
+
   const errs = await page.evaluate("() => window.__errs");
   check("no page errors", !errs.length, errs.join(" | "));
 } catch (error) {
